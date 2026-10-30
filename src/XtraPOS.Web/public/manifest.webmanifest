@@ -1,0 +1,21 @@
+{
+  "name": "إكسترا نقاط البيع",
+  "short_name": "إكسترا",
+  "description": "نظام نقاط البيع",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e7eef3",
+  "theme_color": "#143049",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

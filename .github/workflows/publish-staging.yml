@@ -1,0 +1,55 @@
+name: Publish to Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type staging to build a release. This never deploys production.
+        required: true
+        type: string
+
+jobs:
+  package:
+    if: github.event.inputs.confirm == 'staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test and build web
+        working-directory: src/XtraPOS.Web
+        run: |
+          npm ci
+          npx vitest run src/components/NewCustomerScreen.test.tsx src/components/CustomerBrowseScreen.test.tsx src/components/CustomersMenuScreen.test.tsx
+          npm run build
+      - name: Publish API
+        run: dotnet publish src/XtraPOS.Api/XtraPOS.Api.csproj -c Release -o "$RUNNER_TEMP/api"
+      - name: Write manifest
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          cp -r "$RUNNER_TEMP/api" "$RUNNER_TEMP/release/api"
+          cp -r src/XtraPOS.Web/dist "$RUNNER_TEMP/release/web"
+          printf '{"version":"%s","sha":"%s","createdAt":"%s","migrations":"not-applied"}\n' \
+            "$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > "$RUNNER_TEMP/release/release.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtrapos-staging-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+          retention-days: 14
+
+  deploy:
+    needs: package
+    if: github.event.inputs.confirm == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Record that no host was contacted
+        run: |
+          echo "Artifact xtrapos-staging-${{ github.sha }} is ready for download."
+          echo "No staging host is configured. Files were not copied and DNS was not changed."
+          echo "Production is not a target of this workflow."

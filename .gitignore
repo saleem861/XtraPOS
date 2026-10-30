@@ -1,0 +1,62 @@
+# Build outputs
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/dist-ssr/
+
+App_Data/
+*.log
+logs/
+*.mdf
+*.ldf
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Generated import reviews
+artifacts/
+
+# Local environment
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+*.local
+
+# Windows / Google Drive
+desktop.ini
+Thumbs.db
+.tmp.drivedownload/
+
+# Sensitive configuration
+**/App_Data/
+**/appsettings.*.json
+**/secrets.json
+**/*.pfx
+**/*.p12
+**/*.pem
+**/*.key
+**/device-config.json
+.env
+.env.*
+
+# Build output
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/artifacts/
+
+# Git backups and transfer packages
+*.bundle
+XtraPOS-transfer/
+
+# Temporary files
+New Text Document.txt
+
+# Local application configuration
+**/appsettings.json

@@ -1,0 +1,175 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>0.3.0</Version>
+    <RootNamespace>XtraPOS.Api</RootNamespace>
+    <UserSecretsId>8f3c1a2e-6b44-4d91-9c70-1a2b3c4d5e6f</UserSecretsId>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**;**/*-DESKTOP-*.cs</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(XtraPosIsolatedOut)' != ''">
+    <OutputPath>$(XtraPosIsolatedOut)</OutputPath>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="**/*-DESKTOP-*.cs" />
+    <Content Remove="**/*-DESKTOP-*.json" />
+    <None Remove="**/*-DESKTOP-*.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.31" />
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="8.0.31" />
+    <PackageReference Include="System.Formats.Cbor" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Data\Migrations\001_InitialSchema.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.001_InitialSchema.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\002_UsersRolesPermissions.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.002_UsersRolesPermissions.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\003_NormalizeSystemRoles.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.003_NormalizeSystemRoles.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\004_ItemsInventoryFoundation.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.004_ItemsInventoryFoundation.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\005_CatalogModelRefinement.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.005_CatalogModelRefinement.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\006_InventoryOwnership.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.006_InventoryOwnership.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\007_RemoveSkuOnHandQuantity.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.007_RemoveSkuOnHandQuantity.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\008_ItemsViewPermission.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.008_ItemsViewPermission.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\009_DataImportHistory.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.009_DataImportHistory.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\010_SyncFoundation.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.010_SyncFoundation.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\011_ItemEditPermissions.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.011_ItemEditPermissions.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\012_NullableDailySalesRate.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.012_NullableDailySalesRate.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\013_UserAdministration.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.013_UserAdministration.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\014_StockMovementSource.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.014_StockMovementSource.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\015_CustomerMaster.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.015_CustomerMaster.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\016_SalesFoundation.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.016_SalesFoundation.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\017_POSPaymentsAndCashSessions.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.017_POSPaymentsAndCashSessions.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\018_ManualLinePriceOverride.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.018_ManualLinePriceOverride.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\019_ArabicSearchKeys.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.019_ArabicSearchKeys.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\020_CustomerVerificationAndSpecialPrices.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.020_CustomerVerificationAndSpecialPrices.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\021_TwilioPhoneVerification.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.021_TwilioPhoneVerification.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\022_RegistrationPhoneVerification.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.022_RegistrationPhoneVerification.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\023_QuantitySpecialPrices.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.023_QuantitySpecialPrices.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\001_CentralFoundation.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.001_CentralFoundation.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\002_ItemOwnership.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.002_ItemOwnership.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\003_BranchCodeUniqueness.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.003_BranchCodeUniqueness.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\004_UserAdministration.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.004_UserAdministration.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\005_CustomerMaster.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.005_CustomerMaster.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\006_ArabicSearchKeys.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.006_ArabicSearchKeys.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\007_CustomerVerificationAndSpecialPrices.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.007_CustomerVerificationAndSpecialPrices.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\008_TwilioPhoneVerification.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.008_TwilioPhoneVerification.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\009_RegistrationPhoneVerification.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.009_RegistrationPhoneVerification.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\010_QuantitySpecialPrices.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.010_QuantitySpecialPrices.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\011_CustomerCredit.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.011_CustomerCredit.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\012_CreditCollections.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.012_CreditCollections.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\013_ReceivableSaleNumber.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.013_ReceivableSaleNumber.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\014_CreditReversals.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.014_CreditReversals.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\024_CreditPermissions.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.024_CreditPermissions.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\025_CreditSaleOutbox.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.025_CreditSaleOutbox.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\026_CreditOutboxLease.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.026_CreditOutboxLease.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\027_DebtCollections.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.027_DebtCollections.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\028_CollectionReversals.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.028_CollectionReversals.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\029_SupervisorCustomerManage.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.029_SupervisorCustomerManage.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\030_CustomerCreatePermission.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.030_CustomerCreatePermission.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\031_CustomerPasskeys.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.031_CustomerPasskeys.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\032_POSDeviceConfigurations.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.032_POSDeviceConfigurations.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
