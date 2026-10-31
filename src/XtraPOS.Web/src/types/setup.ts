@@ -48,7 +48,6 @@ export interface BranchSetupInput {
   confirmPassword: string;
   centralAdminUserId: string;
   centralAdminRole: string;
-  replaceExisting?: boolean;
   operatingMode: "" | "Standalone" | "CentralManagement";
   centralAction: "" | "create" | "existing";
   centralLocation: "" | "Local" | "Remote";

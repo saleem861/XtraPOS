@@ -134,6 +134,13 @@ public sealed class SetupService(
         TopologyPlan? topology = null,
         bool replaceExisting = false)
     {
+        // Enforce the same boundary for non-HTTP callers before any database access.
+        if (replaceExisting)
+        {
+            await emit(SetupEvent.Failed(SetupAuthorization.ReplacementDeniedMessage), cancellationToken);
+            return;
+        }
+
         if (!coordinator.TryEnter())
         {
             await emit(SetupEvent.Failed("الإعداد قيد التنفيذ. أعد المحاولة بعد قليل."), cancellationToken);
@@ -148,14 +155,9 @@ public sealed class SetupService(
 
             if (await HasExistingBranchAsync(cancellationToken))
             {
-                if (!replaceExisting)
-                {
-                    var existing = await LoadExistingAsync(cancellationToken);
-                    await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
-                    return;
-                }
-
-                await ReplaceLocalBranchAsync(cancellationToken);
+                var existing = await LoadExistingAsync(cancellationToken);
+                await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
+                return;
             }
 
             await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "started"), cancellationToken);
@@ -1339,58 +1341,6 @@ public sealed class SetupService(
         catch (SqlException exception) when (exception.Number == 208)
         {
             return false;
-        }
-    }
-
-    private async Task ReplaceLocalBranchAsync(CancellationToken cancellationToken)
-    {
-        var databaseName = connections.ConfiguredDatabase;
-        if (ProtectedDatabasePolicy.IsProtected(databaseName))
-        {
-            throw new SetupRejectedException("لا يمكن استبدال هذه القاعدة.");
-        }
-
-        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
-        await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(
-            """
-            SET ANSI_NULLS ON;
-            SET QUOTED_IDENTIFIER ON;
-            DECLARE @sql nvarchar(max) = N'';
-            SELECT @sql = @sql + N'ALTER TABLE ' + QUOTENAME(SCHEMA_NAME(schema_id)) + N'.' + QUOTENAME(name) + N' NOCHECK CONSTRAINT ALL;'
-            FROM sys.tables;
-            EXEC sys.sp_executesql @sql;
-
-            SET @sql = N'';
-            SELECT @sql = @sql + N'DELETE FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name) + N';'
-            FROM sys.tables AS t
-            WHERE t.name NOT IN (
-                N'DatabaseSchemaHistory',
-                N'Roles',
-                N'Permissions',
-                N'RolePermissions',
-                N'PriceTypes',
-                N'StockMovementTypes');
-            EXEC sys.sp_executesql @sql;
-
-            IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE SettingKey = N'DatabaseRole')
-                INSERT INTO dbo.SystemSettings (SettingKey, SettingValue) VALUES (N'DatabaseRole', N'Branch');
-
-            SET @sql = N'';
-            SELECT @sql = @sql + N'ALTER TABLE ' + QUOTENAME(SCHEMA_NAME(schema_id)) + N'.' + QUOTENAME(name) + N' WITH CHECK CHECK CONSTRAINT ALL;'
-            FROM sys.tables;
-            EXEC sys.sp_executesql @sql;
-            """,
-            connection)
-        {
-            CommandTimeout = 180,
-        };
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        db.ChangeTracker.Clear();
-        var marker = InstallationState.Path(environment.ContentRootPath);
-        if (File.Exists(marker))
-        {
-            File.Delete(marker);
         }
     }
 

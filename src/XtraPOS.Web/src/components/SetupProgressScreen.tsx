@@ -15,7 +15,7 @@ interface SetupProgressScreenProps {
   existingBranch: { name: string; code: string } | null;
   onRetry: () => void;
   onEdit: () => void;
-  onReplace: () => void;
+  onRefresh: () => void;
 }
 
 export function SetupProgressScreen({
@@ -25,12 +25,12 @@ export function SetupProgressScreen({
   existingBranch,
   onRetry,
   onEdit,
-  onReplace,
+  onRefresh,
 }: SetupProgressScreenProps) {
   const noticedBranch = existingBranch ?? (error === "تم إعداد هذا الفرع من قبل." ? { name: "", code: "" } : null);
   const branchLabel = [noticedBranch?.name, noticedBranch?.code].filter(Boolean).join(" — ");
   const warning = noticedBranch
-    ? `بيانات الفرع موجودة مسبقًا${branchLabel ? `: ${branchLabel}` : ""}. يمكنك استبدال الفرع الحالي بالإعدادات الجديدة، أو الرجوع لتغيير الإعدادات. الاستبدال يزيل إعداد الفرع على هذا الجهاز، ثم ينشئه من جديد بالإعدادات التي أدخلتها.`
+    ? `بيانات الفرع موجودة مسبقًا${branchLabel ? `: ${branchLabel}` : ""}. بياناته محفوظة ولن تُحذف من شاشة الإعداد. يمكنك فتح الفرع الموجود أو الرجوع لتغيير الإعدادات.`
     : "";
 
   return (
@@ -55,8 +55,8 @@ export function SetupProgressScreen({
       {error && !noticedBranch ? <p className="form-error">{error}</p> : null}
       {!running && noticedBranch ? (
         <div className="wizard-actions">
-          <button className="primary-button" type="button" onClick={onReplace}>
-            استبدال الفرع
+          <button className="primary-button" type="button" onClick={onRefresh}>
+            فتح الفرع الموجود
           </button>
           <button className="ghost-button" type="button" onClick={onEdit}>
             تغيير الإعدادات

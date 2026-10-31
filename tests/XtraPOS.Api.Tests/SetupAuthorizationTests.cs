@@ -7,6 +7,40 @@ namespace XtraPOS.Api.Tests;
 
 public class SetupAuthorizationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Replacement_is_denied_even_with_a_setup_token(bool configured)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Headers[SetupAuthorization.HeaderName] = "valid-setup-token";
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { [SetupAuthorization.TokenKey] = "valid-setup-token" }).Build();
+
+        Assert.False(SetupAuthorization.TryAuthorize(context.Request, configuration, Path.GetTempPath(),
+            configured, out var status, out var message, replaceExisting: true));
+        Assert.Equal(StatusCodes.Status403Forbidden, status);
+        Assert.Equal(SetupAuthorization.ReplacementDeniedMessage, message);
+    }
+
+    [Fact]
+    public async Task Direct_service_replacement_is_rejected_before_accessing_dependencies()
+    {
+        // Null dependencies deliberately fail if replacement reaches any database/setup work.
+        var service = new SetupService(null!, null!, null!, null!, null!, null!, null!,
+            null!, null!, null!, null!, null!, null!);
+        var events = new List<SetupEvent>();
+
+        await service.RunAsync(null!, (item, _) =>
+        {
+            events.Add(item);
+            return Task.CompletedTask;
+        }, CancellationToken.None, replaceExisting: true);
+
+        var failure = Assert.Single(events);
+        Assert.Equal(SetupAuthorization.ReplacementDeniedMessage, failure.Message);
+    }
+
     [Fact]
     public void Database_outage_is_not_first_run()
     {

@@ -190,7 +190,7 @@ export default function App() {
 
   async function startSetup(input: BranchSetupInput) {
     const id = ++runId.current;
-    setDraft({ ...input, replaceExisting: false });
+    setDraft(input);
     if (input.deviceRole === "CentralOnly") {
       setPhase({
         kind: "error",
@@ -436,7 +436,7 @@ export default function App() {
             existingBranch={phase.existingBranch}
             onRetry={() => void startSetup(draft)}
             onEdit={() => setPhase({ kind: "wizard" })}
-            onReplace={() => void startSetup({ ...draft, replaceExisting: true })}
+            onRefresh={() => void refresh()}
           />
         ) : null}
         {phase.kind === "unregistered" ? (

@@ -357,10 +357,10 @@ public static class ApiEndpoints
                 http.Request,
                 http.RequestServices.GetRequiredService<IConfiguration>(),
                 http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath,
-                InstallationState.IsConfigured(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath)
-                    && request?.ReplaceExisting != true,
+                InstallationState.IsConfigured(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath),
                 out var authStatus,
-                out var authMessage))
+                out var authMessage,
+                replaceExisting: request?.ReplaceExisting == true))
         {
             http.Response.StatusCode = authStatus;
             await http.Response.WriteAsJsonAsync(new { message = authMessage }, cancellationToken);
