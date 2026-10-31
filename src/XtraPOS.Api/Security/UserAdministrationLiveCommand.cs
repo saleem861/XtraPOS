@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
 
@@ -112,44 +113,79 @@ public static class UserAdministrationLiveCommand
     {
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var sql = branchOperations
-            ? """
-              SELECT
-                (SELECT COUNT(*) FROM dbo.Items),
-                (SELECT COUNT(*) FROM dbo.ItemUnits),
-                (SELECT COUNT(*) FROM dbo.ItemBranchInventory),
-                (SELECT COUNT(*) FROM dbo.BranchStockBalances),
-                (SELECT COUNT(*) FROM dbo.StockMovements),
-                (SELECT COUNT(*) FROM dbo.ItemPrices WHERE BranchID IS NOT NULL),
-                (SELECT COUNT(*) FROM dbo.Users),
-                (SELECT COUNT(*) FROM dbo.Permissions),
-                (SELECT COUNT(*) FROM dbo.DatabaseSchemaHistory),
-                (SELECT COUNT(*) FROM (SELECT EmployeeNumber FROM dbo.Users WHERE EmployeeNumber IS NOT NULL GROUP BY EmployeeNumber HAVING COUNT(*) > 1) AS d);
-              """
-            : """
-              SELECT
-                (SELECT COUNT(*) FROM dbo.Businesses),
-                (SELECT COUNT(*) FROM dbo.Branches),
-                (SELECT COUNT(*) FROM dbo.Items),
-                (SELECT COUNT(*) FROM dbo.ItemUnits),
-                (SELECT COUNT(*) FROM dbo.ItemPrices),
-                (SELECT COUNT(*) FROM dbo.Users),
-                (SELECT COUNT(*) FROM dbo.Permissions),
-                (SELECT COUNT(*) FROM dbo.DatabaseSchemaHistory),
-                (SELECT COUNT(*) FROM (SELECT EmployeeNumber FROM dbo.Users WHERE EmployeeNumber IS NOT NULL GROUP BY EmployeeNumber HAVING COUNT(*) > 1) AS d);
-              """;
-        await using var command = new SqlCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
-        var values = new int[reader.FieldCount];
-        for (var index = 0; index < values.Length; index++)
-        {
-            values[index] = reader.GetInt32(index);
-        }
+        var values = branchOperations
+            ? new[]
+            {
+                await CountRowsAsync(connection, "dbo.Items", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.ItemUnits", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.ItemBranchInventory", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.BranchStockBalances", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.StockMovements", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.ItemPrices", "BranchID", "BranchID IS NOT NULL", cancellationToken),
+                await CountRowsAsync(connection, "dbo.Users", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.Permissions", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.DatabaseSchemaHistory", null, null, cancellationToken),
+                await CountDuplicateEmployeesAsync(connection, cancellationToken),
+            }
+            : new[]
+            {
+                await CountRowsAsync(connection, "dbo.Businesses", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.Branches", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.Items", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.ItemUnits", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.ItemPrices", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.Users", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.Permissions", null, null, cancellationToken),
+                await CountRowsAsync(connection, "dbo.DatabaseSchemaHistory", null, null, cancellationToken),
+                await CountDuplicateEmployeesAsync(connection, cancellationToken),
+            };
 
         await output.WriteLineAsync(branchOperations
             ? $"{label} Items={values[0]} Units={values[1]} Inventory={values[2]} Balances={values[3]} Movements={values[4]} Overrides={values[5]} Users={values[6]} Permissions={values[7]} Migrations={values[8]} DuplicateEmployees={values[9]}"
             : $"{label} Businesses={values[0]} Branches={values[1]} Items={values[2]} Units={values[3]} Prices={values[4]} Users={values[5]} Permissions={values[6]} Migrations={values[7]} DuplicateEmployees={values[8]}");
+    }
+
+    private static async Task<int> CountRowsAsync(
+        SqlConnection connection,
+        string table,
+        string? requiredColumn,
+        string? predicate,
+        CancellationToken cancellationToken)
+    {
+        await using var probe = new SqlCommand(
+            """
+            SELECT CASE
+                WHEN OBJECT_ID(@table, N'U') IS NULL THEN 0
+                WHEN @column IS NOT NULL AND COL_LENGTH(@table, @column) IS NULL THEN 0
+                ELSE 1
+            END;
+            """,
+            connection);
+        probe.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = table;
+        probe.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = (object?)requiredColumn ?? DBNull.Value;
+        if ((int)(await probe.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
+        {
+            return 0;
+        }
+
+        var sql = predicate is null
+            ? $"SELECT COUNT(*) FROM {table};"
+            : $"SELECT COUNT(*) FROM {table} WHERE {predicate};";
+        await using var count = new SqlCommand(sql, connection);
+        return (int)(await count.ExecuteScalarAsync(cancellationToken) ?? 0);
+    }
+
+    private static async Task<int> CountDuplicateEmployeesAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            IF OBJECT_ID(N'dbo.Users', N'U') IS NULL OR COL_LENGTH(N'dbo.Users', N'EmployeeNumber') IS NULL
+                SELECT 0;
+            ELSE
+                EXEC(N'SELECT COUNT(*) FROM (SELECT EmployeeNumber FROM dbo.Users WHERE EmployeeNumber IS NOT NULL GROUP BY EmployeeNumber HAVING COUNT(*) > 1) AS duplicates');
+            """,
+            connection);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
     }
 
     private static async Task<Guid?> ScalarGuidAsync(SqlConnectionFactory connections, string sql, CancellationToken cancellationToken)

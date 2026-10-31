@@ -86,19 +86,22 @@ describe("new branch station draft", () => {
   it("keeps the station and device draft through the final setup request", async () => {
     const user = userEvent.setup();
     const submitted: BranchSetupInput[] = [];
+    const centralAdmin = {
+      userId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      username: "905017083",
+      displayName: "سليم جيوسي",
+      fullName: "سليم جيوسي",
+      employeeNumber: "905017083",
+      roleCode: "Admin",
+      roleName: "مدير النظام",
+    };
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      if (String(url).includes("/api/setup/central-admins")) {
-        return new Response(JSON.stringify({
-          admins: [{
-            userId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            username: "905017083",
-            displayName: "سليم جيوسي",
-            fullName: "سليم جيوسي",
-            employeeNumber: "905017083",
-            roleCode: "Admin",
-            roleName: "مدير النظام",
-          }],
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      const href = String(url);
+      if (href.includes("/api/setup/verify-central-admin")) {
+        return new Response(JSON.stringify({ admin: centralAdmin }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (href.includes("/api/setup/central-admins")) {
+        return new Response(JSON.stringify({ admins: [centralAdmin] }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       throw new Error("no database yet");
     }));
@@ -109,8 +112,12 @@ describe("new branch station draft", () => {
     await user.click(screen.getByRole("button", { name: "التالي" }));
     expect(screen.getByLabelText("اسم الجهاز")).toHaveProperty("value", "صندوق 1");
     await user.click(screen.getByRole("button", { name: "التالي" }));
-    expect(screen.getByRole("heading", { name: "مدير الفرع الأولي" })).toBeTruthy();
-    expect(screen.queryByLabelText("كلمة المرور")).toBeNull();
+    expect(screen.getByRole("heading", { name: "التحقق من حساب المدير" })).toBeTruthy();
+    expect(screen.getByText(/لن يُنشأ مدير جديد/)).toBeTruthy();
+    await user.type(screen.getByLabelText("اسم المستخدم"), "905017083");
+    await user.type(screen.getByLabelText("كلمة المرور"), "Admin1234");
+    await user.click(screen.getByRole("button", { name: "تحقق من المدير" }));
+    expect(screen.getByText("تم التحقق من حساب المدير.")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "التالي" }));
     await user.click(screen.getByRole("button", { name: "تنفيذ الإعداد" }));
 
