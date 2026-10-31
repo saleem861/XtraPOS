@@ -22,6 +22,8 @@ The only database this environment may use is the local SQL Server Developer ins
 
 `XtraPOS_Central` does not exist here and must not be created, migrated, or queried. Do not point the API at `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, `swstore`, or any host other than localhost. Do not deploy to `test-pos.sharbelfashion.com` and do not change production VPS services.
 
+GitHub CI is `.github/workflows/ci.yml`. Staging deployment preflight is `.github/workflows/deploy-staging.yml`, and it cannot SSH or restart services. The confirmations still required are in `deploy/STAGING_CICD.md`.
+
 `scripts/cloud-agent-start.sh` calls `scripts/cloud-agent-init-db.sh` after SQL Server is listening. That step creates `XtraPOS_Branch_Test_Cloud` when it is missing and applies pending branch migrations with `--apply-branch-migrations --confirm-database XtraPOS_Branch_Test_Cloud`. It does not create a business, branch, device, or admin, so the setup wizard stays available. It refuses any other database name or any server other than localhost. Do not run `--apply-central-migrations`. Do not point the API at `XtraPOS_Central` or a real branch database.
 
 `scripts/cloud-agent-seed-fictional.sh` is optional and is not part of startup. It creates one fictional standalone branch only when setup status is `NotConfigured`. Set `XTRAPOS_FICTIONAL_ADMIN_PASSWORD` in the environment for that run. Do not commit that password.

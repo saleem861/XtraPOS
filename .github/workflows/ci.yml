@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Frontend test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/XtraPOS.Web/package-lock.json
+
+      - name: Install, test, and build
+        working-directory: src/XtraPOS.Web
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+
+      - name: Report frontend failure
+        if: failure()
+        working-directory: src/XtraPOS.Web
+        run: |
+          echo "::error::Frontend CI failed. Vitest or the production build did not pass. No package was published and no server was contacted."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtrapos-web-${{ github.sha }}
+          path: src/XtraPOS.Web/dist
+          retention-days: 14
+          if-no-files-found: error
+
+  api:
+    name: Backend build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build solution and publish API
+        run: |
+          set -euo pipefail
+          dotnet build XtraPOS.sln -c Release --nologo
+          dotnet publish src/XtraPOS.Api/XtraPOS.Api.csproj -c Release -o "$RUNNER_TEMP/api" --no-self-contained --nologo
+
+      - name: Report backend failure
+        if: failure()
+        run: |
+          echo "::error::Backend CI failed. The Release build or API publish did not pass. SQL migrations were not run and no server was contacted."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtrapos-api-${{ github.sha }}
+          path: ${{ runner.temp }}/api
+          retention-days: 14
+          if-no-files-found: error
+
+  package:
+    name: Safe release artifact
+    needs: [web, api]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtrapos-web-${{ github.sha }}
+          path: release/web
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtrapos-api-${{ github.sha }}
+          path: release/api
+
+      - name: Write release manifest
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          test "${#sha}" -eq 40
+          version="$(date -u +%Y%m%d-%H%M%S)-${sha::7}"
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 - "$sha" "$version" "$created" <<'PY'
+          import json, pathlib, sys
+          sha, version, created = sys.argv[1:]
+          manifest = {
+              "version": version,
+              "sha": sha,
+              "createdAt": created,
+              "migrations": "not-applied",
+          }
+          text = json.dumps(manifest, indent=2) + "\n"
+          pathlib.Path("release/release.json").write_text(text)
+          pathlib.Path("release/web/release.json").write_text(text)
+          PY
+
+      - name: Reject secrets in the artifact
+        run: bash deploy/scan-release.sh release
+
+      - name: Report package failure
+        if: failure()
+        run: |
+          echo "::error::Release packaging failed. The artifact was not uploaded. No server was contacted."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtrapos-release-${{ github.sha }}
+          path: release
+          retention-days: 14
+          if-no-files-found: error
+
+  result:
+    name: CI result
+    needs: [web, api, package]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          set -euo pipefail
+          echo "frontend=${{ needs.web.result }}"
+          echo "backend=${{ needs.api.result }}"
+          echo "package=${{ needs.package.result }}"
+          if [[ "${{ needs.web.result }}" != "success" || "${{ needs.api.result }}" != "success" || "${{ needs.package.result }}" != "success" ]]; then
+            echo "::error::CI failed. frontend=${{ needs.web.result }} backend=${{ needs.api.result }} package=${{ needs.package.result }}. No deployment was attempted."
+            exit 1
+          fi
+          echo "CI passed. Artifact xtrapos-release-${{ github.sha }} contains the web build, the API publish, and release.json. Deployment was not attempted."

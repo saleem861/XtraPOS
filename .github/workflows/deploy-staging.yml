@@ -1,0 +1,65 @@
+name: Deploy to Staging
+
+# Phase 1 preparation. This workflow cannot copy files, open SSH, restart a
+# service, or run SQL. It does not use a GitHub Environment, so it cannot
+# create an unprotected "staging" environment on first dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type staging to print the deployment block list. This does not deploy.
+        required: true
+        type: string
+      git_sha:
+        description: Full 40-character commit SHA already on main. It is checked only, not deployed.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xtrapos-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Block deployment
+    if: github.event.inputs.confirm == 'staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse until staging is explicitly verified
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_ENVIRONMENT_PROTECTION: ${{ vars.STAGING_ENVIRONMENT_PROTECTION }}
+          STAGING_SSH_CONFIG: ${{ vars.STAGING_SSH_CONFIG }}
+          STAGING_SERVER_CHECKS: ${{ vars.STAGING_SERVER_CHECKS }}
+          STAGING_DEPLOY_EXECUTION: ${{ vars.STAGING_DEPLOY_EXECUTION }}
+        run: bash deploy/staging-preflight.sh
+
+  deploy:
+    name: Deployment execution
+    needs: preflight
+    if: >-
+      github.event.inputs.confirm == 'staging' &&
+      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified' &&
+      vars.STAGING_SSH_CONFIG == 'verified' &&
+      vars.STAGING_SERVER_CHECKS == 'verified' &&
+      vars.STAGING_DEPLOY_EXECUTION == 'authorized'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stop before any server contact
+        env:
+          STAGING_DEPLOY_EXECUTION: ${{ vars.STAGING_DEPLOY_EXECUTION }}
+          STAGING_SSH_CONNECT: ""
+          GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_PUBLIC_URL: https://test-pos.sharbelfashion.com
+        run: bash deploy/staging-remote-activate.sh
