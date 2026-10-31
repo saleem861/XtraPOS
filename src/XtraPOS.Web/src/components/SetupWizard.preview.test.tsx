@@ -74,7 +74,7 @@ describe("setup preview", () => {
 
   it("walks a main branch and keeps the central database distinct from the remote copy", async () => {
     const user = userEvent.setup();
-    forbidNetwork();
+    const fetchMock = forbidNetwork();
     render(<SetupPreview />);
 
     await chooseAndNext(user, "خادم / جهاز رئيسي لفرع");
@@ -107,8 +107,10 @@ describe("setup preview", () => {
     await user.click(screen.getByRole("button", { name: "التالي" }));
     await user.type(screen.getByLabelText("اسم الجهاز"), "الخادم");
     await user.click(screen.getByRole("button", { name: "التالي" }));
-    expect(screen.getByRole("heading", { name: "مدير الفرع الأولي" })).toBeTruthy();
-    expect(screen.queryByLabelText("كلمة المرور")).toBeNull();
+    expect(screen.getByRole("heading", { name: "التحقق من حساب المدير" })).toBeTruthy();
+    await user.type(screen.getByLabelText("كلمة المرور"), "preview-only-password");
+    await user.click(screen.getByRole("button", { name: "تحقق من المدير" }));
+    expect(screen.getByText("تم التحقق من حساب المدير.")).toBeTruthy();
     expect(screen.getByText("مدير المعاينة")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "التالي" }));
     expect(screen.getAllByText("XtraPOS_Central").length).toBeGreaterThan(0);
@@ -120,6 +122,7 @@ describe("setup preview", () => {
     expect(screen.queryByText("Admin1234")).toBeNull();
     expect(screen.getByRole("button", { name: "إنهاء المعاينة" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "تنفيذ الإعداد" })).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("simulates one discovered branch and skips branch selection", async () => {

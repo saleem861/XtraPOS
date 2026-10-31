@@ -7,6 +7,7 @@ public static class SetupAuthorization
     public const string HeaderName = "X-Setup-Authorization";
     public const string TokenKey = "Bootstrap:SetupToken";
     public const string TokenFileName = "setup-authorization.token";
+    public const string ReplacementDeniedMessage = "استبدال الفرع وحذف بياناته غير متاح من شاشة الإعداد. استخدم الفرع الموجود أو إعداد قاعدة جديدة.";
 
     public static string TokenPath(string contentRoot) =>
         Path.Combine(contentRoot, "App_Data", TokenFileName);
@@ -20,8 +21,16 @@ public static class SetupAuthorization
         }
     }
 
-    public static bool TryAuthorize(HttpRequest request, IConfiguration configuration, string contentRoot, bool alreadyConfigured, out int status, out string message)
+    public static bool TryAuthorize(HttpRequest request, IConfiguration configuration, string contentRoot, bool alreadyConfigured, out int status, out string message, bool replaceExisting = false)
     {
+        // Setup has no verified backup/ownership workflow. Never authorize destructive replacement.
+        if (replaceExisting)
+        {
+            status = StatusCodes.Status403Forbidden;
+            message = ReplacementDeniedMessage;
+            return false;
+        }
+
         if (alreadyConfigured)
         {
             status = StatusCodes.Status403Forbidden;

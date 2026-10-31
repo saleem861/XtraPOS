@@ -47,12 +47,25 @@ type Phase =
       steps: Record<SetupStepId, SetupStepState>;
       error: string;
       running: boolean;
+      existingBranch: { name: string; code: string } | null;
     }
   | { kind: "unregistered"; intent?: "join" | "independent" | "central" }
   | { kind: "adminSetup"; session: DeviceSession; pending: boolean; error: string }
   | { kind: "login"; session: DeviceSession; pending: boolean; error: string }
   | { kind: "passwordChange"; session: DeviceSession; user: CurrentUser; pending: boolean; error: string }
   | { kind: "home"; session: DeviceSession; user: CurrentUser; pending: boolean };
+
+function branchIdentity(device: unknown): { name: string; code: string } {
+  if (!device || typeof device !== "object") {
+    return { name: "", code: "" };
+  }
+
+  const record = device as Record<string, unknown>;
+  return {
+    name: typeof record.branchName === "string" ? record.branchName.trim() : "",
+    code: typeof record.branchCode === "string" ? record.branchCode.trim() : "",
+  };
+}
 
 function signedInPhase(session: DeviceSession, user: CurrentUser | null): Phase {
   if (!user) {
@@ -199,7 +212,7 @@ export default function App() {
       }
       return;
     }
-    setPhase({ kind: "progress", steps: pendingSteps(), error: "", running: true });
+    setPhase({ kind: "progress", steps: pendingSteps(), error: "", running: true, existingBranch: null });
 
     try {
       await createBranch(input, (event) => {
@@ -216,7 +229,7 @@ export default function App() {
       const message = error instanceof SetupClientError ? error.message : "تعذر إكمال الإعداد.";
       setPhase((current) =>
         current.kind === "progress"
-          ? { ...current, running: false, error: message, steps: markActiveAsError(current.steps) }
+          ? { ...current, running: false, error: message, steps: markActiveAsError(current.steps), existingBranch: null }
           : current,
       );
     }
@@ -224,6 +237,20 @@ export default function App() {
 
   function applySetupEvent(event: SetupStreamEvent) {
     if (event.type === "completed") {
+      if (event.alreadyConfigured) {
+        setPhase((current) =>
+          current.kind === "progress"
+            ? {
+                ...current,
+                running: false,
+                error: "",
+                existingBranch: branchIdentity(event.device),
+              }
+            : current,
+        );
+        return;
+      }
+
       const session = asDeviceSession(event.device);
       if (!session) {
         setPhase((current) =>
@@ -271,6 +298,7 @@ export default function App() {
           running: false,
           error: event.message || "تعذر إكمال الإعداد. يمكنك المحاولة مرة أخرى.",
           steps: markActiveAsError(current.steps),
+          existingBranch: null,
         };
       }
 
@@ -405,6 +433,7 @@ export default function App() {
             steps={phase.steps}
             error={phase.error}
             running={phase.running}
+            existingBranch={phase.existingBranch}
             onRetry={() => void startSetup(draft)}
             onEdit={() => setPhase({ kind: "wizard" })}
             onRefresh={() => void refresh()}

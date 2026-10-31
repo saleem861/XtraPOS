@@ -206,6 +206,7 @@ export interface SetupStreamEvent {
   state?: "started" | "succeeded";
   message?: string;
   device?: DeviceSession;
+  alreadyConfigured?: boolean;
 }
 
 export interface AdminSetupInput {

@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 function rejectApi() {
-  const fetchMock = vi.fn(() => Promise.reject(new Error("API unavailable")));
+  const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.reject(new Error("API unavailable")));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -48,7 +48,8 @@ describe("setup preview route gate", () => {
     expect(await screen.findByText("تعذر الاتصال بالخادم. تأكد أن التطبيق يعمل ثم أعد المحاولة.")).toBeTruthy();
     expect(screen.queryByText("وضع معاينة — لن يتم حفظ أو تنفيذ أي تغييرات")).toBeNull();
     expect(fetchMock).toHaveBeenCalled();
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/setup/status");
+    // Background sync status may be requested before setup status.
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/setup/status"))).toBe(true);
   });
 
   it("does not expose setup-preview in production", async () => {

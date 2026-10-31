@@ -1178,9 +1178,9 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
                 <div><dt>اسم المستخدم / رقم الموظف</dt><dd>{value.employeeNumber.trim() && value.employeeNumber.trim() !== value.username.trim() ? `${value.username} / ${value.employeeNumber}` : value.username}</dd></div>
                 <div><dt>الدور</dt><dd>{value.centralAdminRole}</dd></div>
               </dl>
-            ) : (
+            ) : centralAdmins.length === 0 ? (
               <p>لا يوجد مدير نظام فعال في الإدارة المركزية.</p>
-            )}
+            ) : null}
           </>
         ) : null}
         {step === "admin" && !isCentralLinkedNewBranch(value) ? (

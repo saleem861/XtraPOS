@@ -131,8 +131,16 @@ public sealed class SetupService(
         BranchSetup input,
         Func<SetupEvent, CancellationToken, Task> emit,
         CancellationToken cancellationToken,
-        TopologyPlan? topology = null)
+        TopologyPlan? topology = null,
+        bool replaceExisting = false)
     {
+        // Enforce the same boundary for non-HTTP callers before any database access.
+        if (replaceExisting)
+        {
+            await emit(SetupEvent.Failed(SetupAuthorization.ReplacementDeniedMessage), cancellationToken);
+            return;
+        }
+
         if (!coordinator.TryEnter())
         {
             await emit(SetupEvent.Failed("الإعداد قيد التنفيذ. أعد المحاولة بعد قليل."), cancellationToken);
@@ -145,7 +153,7 @@ public sealed class SetupService(
             await CheckServerAsync(cancellationToken);
             await emit(SetupEvent.Progress(SetupSteps.CheckServer, "succeeded"), cancellationToken);
 
-            if (InitialSyncGuard.SkipProvisioning(await connections.HasCompletedSetupAsync(cancellationToken)))
+            if (await HasExistingBranchAsync(cancellationToken))
             {
                 var existing = await LoadExistingAsync(cancellationToken);
                 await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
@@ -1312,6 +1320,28 @@ public sealed class SetupService(
             "",
             device.RegisteredAt,
             input);
+    }
+
+    private async Task<bool> HasExistingBranchAsync(CancellationToken cancellationToken)
+    {
+        if (!await connections.DatabaseExistsAsync(cancellationToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (await connections.HasCompletedSetupAsync(cancellationToken))
+            {
+                return true;
+            }
+
+            return await db.Businesses.AnyAsync(cancellationToken);
+        }
+        catch (SqlException exception) when (exception.Number == 208)
+        {
+            return false;
+        }
     }
 
     private sealed record CentralBranchLink(Guid BranchId, string BranchCode, string BranchName, string BranchType);
