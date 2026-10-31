@@ -75,40 +75,151 @@ operational_database() {
 }
 
 nginx_facts() {
-  local dump
+  local dump source status=0
   dump="$(mktemp)"
   chmod 600 "$dump"
-  trap 'rm -f "$dump"' RETURN
-  if sudo -n nginx -T >"$dump" 2>/dev/null; then
+  if [[ "${STAGING_SOURCE_ONLY:-}" == "yes" && -n "${STAGING_NGINX_DUMP:-}" ]]; then
+    case "$STAGING_NGINX_DUMP" in
+      /tmp/*|/var/tmp/*) ;;
+      *) rm -f "$dump"; die "nginx dump" ;;
+    esac
+    case "$STAGING_NGINX_DUMP" in
+      *..*) rm -f "$dump"; die "nginx dump" ;;
+    esac
+    if [[ ! -f "$STAGING_NGINX_DUMP" ]]; then
+      rm -f "$dump"
+      die "nginx dump"
+    fi
+    source="$(readlink -f "$STAGING_NGINX_DUMP")"
+    case "$source" in
+      /tmp/*|/var/tmp/*) ;;
+      *) rm -f "$dump"; die "nginx dump" ;;
+    esac
+    cp "$source" "$dump"
+  elif sudo -n nginx -T >"$dump" 2>/dev/null; then
     :
   elif nginx -T >"$dump" 2>/dev/null; then
     :
   else
     cat /etc/nginx/sites-enabled/* >"$dump" 2>/dev/null || true
   fi
-  python3 - "$dump" "$PUBLIC_NAME" "$PORT" "$FORBIDDEN_PORT" <<'PY'
-import pathlib, sys
+  python3 - "$dump" "$PUBLIC_NAME" "$PORT" "$FORBIDDEN_PORT" <<'PY' || status=$?
+import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text(errors="replace")
 name, port, forbidden = sys.argv[2:]
-blocks = []
-depth = 0
-start = None
-for index, char in enumerate(text):
-    if char == "{":
-        if depth == 0:
-            start = index
-        depth += 1
-    elif char == "}":
-        depth -= 1
-        if depth == 0 and start is not None:
-            blocks.append(text[start:index])
-            start = None
-chosen = [block for block in blocks if name in block and "server_name" in block]
-if len(chosen) != 1:
-    raise SystemExit(f"NGINX_SERVER_BLOCKS {len(chosen)}")
-block = chosen[0]
-if forbidden in block or "xtrapos-api" in block:
-    raise SystemExit("NGINX_PRODUCTION_TARGET")
+
+def strip_comments(source):
+    out = []
+    i = 0
+    in_single = False
+    in_double = False
+    while i < len(source):
+        ch = source[i]
+        if ch == "\\" and i + 1 < len(source) and (in_single or in_double):
+            out.append(ch)
+            out.append(source[i + 1])
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            while i < len(source) and source[i] != "\n":
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+def server_blocks(source):
+    cleaned = strip_comments(source)
+    bodies = []
+    seen = set()
+    occupied = 0
+    for match in re.finditer(r"\bserver\b", cleaned):
+        if match.start() < occupied:
+            continue
+        j = match.end()
+        while j < len(cleaned) and cleaned[j].isspace():
+            j += 1
+        if j >= len(cleaned) or cleaned[j] != "{":
+            continue
+        depth = 0
+        k = j
+        while k < len(cleaned):
+            if cleaned[k] == "{":
+                depth += 1
+            elif cleaned[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    body = cleaned[j + 1:k]
+                    key = "\n".join(line.strip() for line in body.splitlines() if line.strip())
+                    if key not in seen:
+                        seen.add(key)
+                        bodies.append(body)
+                    occupied = k + 1
+                    break
+            k += 1
+        else:
+            raise SystemExit("NGINX_PARSE")
+    return bodies
+
+def server_names(body):
+    names = []
+    for raw in body.splitlines():
+        line = raw.strip().rstrip(";")
+        if line.startswith("server_name "):
+            names.extend(token.strip("'\"") for token in line.split()[1:])
+    return names
+
+def listen_port(value):
+    tokens = value.split()
+    if not tokens or tokens[0].startswith("unix:"):
+        return ""
+    address = tokens[0]
+    if address.startswith("["):
+        return address.split("]:", 1)[1] if "]:" in address else ""
+    if ":" in address:
+        return address.rsplit(":", 1)[1]
+    return address if address.isdigit() else ""
+
+def is_tls(value):
+    tokens = value.split()
+    return "ssl" in tokens or listen_port(value) == "443"
+
+def listens(body):
+    found = []
+    for raw in body.splitlines():
+        line = raw.strip().rstrip(";")
+        if line.startswith("listen "):
+            found.append(line[len("listen "):].strip())
+    return found
+
+def is_https_redirect(body):
+    if re.search(r"(?m)^\s*return\s+(?:301|302|307|308)\s+https://", body):
+        return True
+    if re.search(r"(?m)^\s*return\s+https://", body):
+        return True
+    return re.search(r"(?m)^\s*rewrite\s+\S+\s+https://\S+\s+(?:permanent|redirect)\s*;", body) is not None
+
+named = [body for body in server_blocks(text) if name in server_names(body)]
+https = []
+redirects = 0
+for body in named:
+    if forbidden in body or "xtrapos-api" in body:
+        raise SystemExit("NGINX_PRODUCTION_TARGET")
+    if any(is_tls(item) for item in listens(body)):
+        https.append(body)
+        continue
+    if re.search(r"(?m)^\s*proxy_pass\b", body):
+        raise SystemExit("NGINX_HTTP_PROXY")
+    if not is_https_redirect(body):
+        raise SystemExit("NGINX_HTTP_NOT_REDIRECT")
+    redirects += 1
+if len(https) != 1:
+    raise SystemExit(f"NGINX_SERVER_BLOCKS {len(https)}")
+block = https[0]
 roots = []
 proxies = []
 for raw in block.splitlines():
@@ -122,8 +233,10 @@ if not good:
     raise SystemExit("NGINX_UPSTREAM_MISMATCH")
 print("NGINX_ROOT=" + (roots[0] if roots else ""))
 print("NGINX_UPSTREAM=" + good[0])
+print("NGINX_HTTP_REDIRECT=" + ("yes" if redirects else "no"))
 PY
   rm -f "$dump"
+  [[ "$status" -eq 0 ]] || return "$status"
 }
 
 unit_value() {
