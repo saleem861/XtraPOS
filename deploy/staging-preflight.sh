@@ -19,10 +19,10 @@ else
   note PASS "confirm is staging"
 fi
 
-if [[ "${ACTION:-}" == "deploy" || "${ACTION:-}" == "rollback" ]]; then
+if [[ "${ACTION:-}" == "inspect" || "${ACTION:-}" == "deploy" || "${ACTION:-}" == "rollback" ]]; then
   note PASS "action is ${ACTION}"
 else
-  note BLOCKED "action must be deploy or rollback"
+  note BLOCKED "action must be inspect, deploy, or rollback"
 fi
 
 sha="${GIT_SHA:-}"
@@ -39,17 +39,10 @@ else
   note BLOCKED "git_sha was well formed but this run has no repository"
 fi
 
-if [[ "${STAGING_ENVIRONMENT_PROTECTION:-}" == "verified" ]]; then
-  note PASS "STAGING_ENVIRONMENT_PROTECTION=verified"
-else
-  note BLOCKED "STAGING_ENVIRONMENT_PROTECTION must be verified after the staging Environment has a required reviewer and allows main only"
-fi
-
 echo
-echo "Deploy and rollback stay skipped until that variable is set."
-echo "They also require secrets STAGING_SSH_KEY and STAGING_KNOWN_HOSTS."
-echo "The host is administrator@69.197.178.239, the service is xtrapos-staging.service, the API port is 5088, and the root is /opt/xtrapos-staging."
-echo "No SSH, deployment, service restart, or SQL migration was performed."
+echo "The staging Environment supplies approval and the SSH secrets."
+echo "Allowed target: xtrapos-deploy@69.197.178.239, service xtrapos-staging.service, port 5088, root /opt/xtrapos-staging."
+echo "No SSH, deployment, service restart, or SQL migration was performed by preflight."
 
 if [[ "$blocked" -ne 0 ]]; then
   echo "::error::Staging deployment is blocked."

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type staging. This does not deploy until the protected environment is recorded.
+        description: Type staging. Inspect is read-only. Deploy and rollback wait for Environment approval.
         required: true
         type: string
       git_sha:
@@ -12,13 +12,14 @@ on:
         required: true
         type: string
       action:
-        description: deploy uploads that SHA. rollback restores the newest staging backup.
+        description: inspect reads the server. deploy and rollback change staging only.
         required: true
         type: choice
         options:
+          - inspect
           - deploy
           - rollback
-        default: deploy
+        default: inspect
 
 permissions:
   contents: read
@@ -43,16 +44,31 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
           GIT_SHA: ${{ inputs.git_sha }}
           ACTION: ${{ inputs.action }}
-          STAGING_ENVIRONMENT_PROTECTION: ${{ vars.STAGING_ENVIRONMENT_PROTECTION }}
         run: bash deploy/staging-preflight.sh
+
+  inspect:
+    name: Inspect staging
+    needs: preflight
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'inspect'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read staging without changing it
+        env:
+          CONFIRM: staging
+          GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-remote-activate.sh inspect
 
   deploy:
     name: Deploy staging
     needs: preflight
-    if: >-
-      github.event.inputs.confirm == 'staging' &&
-      github.event.inputs.action == 'deploy' &&
-      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified'
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'deploy'
     environment: staging
     runs-on: ubuntu-latest
     steps:
@@ -78,6 +94,8 @@ jobs:
           CONFIRM: staging
           GIT_SHA: ${{ inputs.git_sha }}
           RELEASE_DIR: ${{ runner.temp }}/release
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
         run: bash deploy/staging-remote-activate.sh deploy
@@ -85,10 +103,7 @@ jobs:
   rollback:
     name: Roll back staging
     needs: preflight
-    if: >-
-      github.event.inputs.confirm == 'staging' &&
-      github.event.inputs.action == 'rollback' &&
-      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified'
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'rollback'
     environment: staging
     runs-on: ubuntu-latest
     steps:
@@ -98,6 +113,8 @@ jobs:
         env:
           CONFIRM: staging
           GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
         run: bash deploy/staging-rollback.sh

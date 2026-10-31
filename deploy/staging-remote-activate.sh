@@ -8,7 +8,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/staging-ssh.sh"
 
 action="${1:-}"
-[[ "$action" == "deploy" || "$action" == "rollback" ]] || staging_die "action must be deploy or rollback"
+[[ "$action" == "deploy" || "$action" == "rollback" || "$action" == "inspect" ]] || staging_die "action must be inspect, deploy, or rollback"
 staging_prepare_ssh
 
 release_dir="${RELEASE_DIR:-}"
@@ -22,13 +22,22 @@ remote() {
 }
 
 probe_output="$(remote probe "$GIT_SHA" none none)"
-printf '%s\n' "$probe_output"
 grep -q '^PROBE_OK=yes$' <<<"$probe_output" || staging_die "staging probe failed"
 grep -E -q '^NGINX_UPSTREAM=.*:5088(/|$)' <<<"$probe_output" || staging_die "nginx upstream is not port 5088"
 grep -E -q '^NGINX_ROOT=/opt/xtrapos-staging/' <<<"$probe_output" || staging_die "nginx root is outside the staging root"
 grep -q '^DB_NAME=' <<<"$probe_output" || staging_die "database name was not confirmed"
 if grep -E '^DB_NAME=(XtraPOS_Central|XtraPOS_Branch|XtraPOS_Branch_01|XtraPOS_Branch_02|saleemPOSDB|Shop1|Shop2|swstore)$' <<<"$probe_output"; then
   staging_die "refusing an operational database"
+fi
+
+if [[ "$action" == "inspect" ]]; then
+  printf '%s\n' "$probe_output" | awk -F= '$1 ~ /^(PROBE_OK|POINTER|CURRENT_ID|CURRENT_TARGET|WORKING_DIRECTORY|STAGING_LISTEN|PRODUCTION_PORT|ENV_FILE|DB_NAME|KEY_DIR|ROOT_OWNER|NGINX_ROOT|NGINX_UPSTREAM)$/'
+  health_code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/health" || true)"
+  page_code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/" || true)"
+  echo "PUBLIC_HEALTH=${health_code}"
+  echo "PUBLIC_WEB=${page_code}"
+  [[ "$health_code" == "200" && "$page_code" == "200" ]] || staging_die "public staging check failed"
+  exit 0
 fi
 
 if [[ "$action" == "rollback" ]]; then

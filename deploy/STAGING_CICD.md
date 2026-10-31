@@ -1,11 +1,24 @@
 # Staging deployment
 
-Manual workflow: `.github/workflows/deploy-staging.yml`. It is not run by this change.
+Workflow: `.github/workflows/deploy-staging.yml`. Approval comes from the GitHub Environment `staging`. This change does not dispatch it.
 
-The only allowed target is `administrator@69.197.178.239`, service `xtrapos-staging.service`, API port `5088`, and root `/opt/xtrapos-staging`. Host-key checking is `yes`. A wildcard known_hosts entry is rejected.
+Allowed target: `xtrapos-deploy@69.197.178.239`. Service: `xtrapos-staging.service`. API: `127.0.0.1:5088`. Root: `/opt/xtrapos-staging`. Working directory: `/opt/xtrapos-staging/current/api`. Production `xtrapos-api.service` on port `5216` is never restarted.
 
-`deploy` downloads the CI artifact `xtrapos-release-<sha>`, scans it, copies it under `/opt/xtrapos-staging/releases`, keeps the existing `App_Data`, restarts `xtrapos-staging.service` only, and requires public HTTP 200, `/health` containing `Healthy`, and `/release.json` `sha` equal to that commit. A failed check restores the previous pointer and restarts the same service. `rollback` restores the newest directory in `/opt/xtrapos-staging/backups`.
+`current` and `current.txt` must name the same release. Activation updates both, keeps `App_Data` at `/opt/xtrapos-staging/shared/app-data`, and does not delete `/usr/share/XtraPOS/data-protection-keys`. A failed health or SHA check restores the previous pointer and restarts only `xtrapos-staging.service`.
 
-The remote probe refuses port `5216`, `xtrapos-api.service`, paths outside `/opt/xtrapos-staging`, and the databases `XtraPOS_Central`, `XtraPOS_Branch`, `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, and `swstore`. No script runs `sqlcmd` or a migration command. nginx, DNS, and certificates are not edited.
+Secrets used by the Environment, and not stored in git: `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`, `STAGING_KNOWN_HOSTS`. The host secret must be `69.197.178.239` and the user secret must be `xtrapos-deploy`. Host-key checking stays enabled.
 
-The deploy and rollback jobs stay skipped until repository variable `STAGING_ENVIRONMENT_PROTECTION` is `verified`. Set that only after GitHub Environment `staging` has a required reviewer and allows `main` only. The jobs then need secrets `STAGING_SSH_KEY` and `STAGING_KNOWN_HOSTS`. Those secrets are not created here. No SSH key was available to verify the host fingerprint, so the server layout has not been inspected.
+If `xtrapos-deploy` cannot read the unit or restart staging, the only extra privilege required is:
+
+```
+xtrapos-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart xtrapos-staging.service, /usr/bin/systemctl is-active xtrapos-staging.service, /usr/bin/systemctl show xtrapos-staging.service, /usr/bin/systemctl show xtrapos-api.service, /usr/sbin/nginx -T
+```
+
+If that account cannot replace `/opt/xtrapos-staging/current`, give it write access to the staging root only:
+
+```
+sudo chgrp xtrapos-deploy /opt/xtrapos-staging
+sudo chmod 2775 /opt/xtrapos-staging
+```
+
+Do not grant sudo for `xtrapos-api.service`, port `5216`, nginx site edits, or SQL.

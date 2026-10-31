@@ -39,8 +39,13 @@ exit 97
 EOF
 chmod 755 "$tmp/ssh" "$tmp/scp"
 
+export STAGING_SSH_HOST_SECRET="69.197.178.239"
+export STAGING_SSH_USER_SECRET="xtrapos-deploy"
+
 run_activate() {
   CONFIRM=staging GIT_SHA="$(printf 'a%.0s' {1..40})" \
+    STAGING_SSH_HOST_SECRET="$STAGING_SSH_HOST_SECRET" \
+    STAGING_SSH_USER_SECRET="$STAGING_SSH_USER_SECRET" \
     SSH_LOG="$tmp/called" SSH_BIN="$tmp/ssh" SCP_BIN="$tmp/scp" \
     bash deploy/staging-remote-activate.sh deploy >"$tmp/out" 2>"$tmp/err" || true
 }
@@ -77,10 +82,18 @@ CONFIRM=staging GIT_SHA="$sha" SSH_LOG="$tmp/called" SSH_BIN="$tmp/ssh" SCP_BIN=
   bash deploy/staging-remote-activate.sh deploy >"$tmp/out" 2>"$tmp/err" || true
 [[ -s "$tmp/called" ]] || fail "a pinned host key did not reach the ssh client"
 grep -q 'StrictHostKeyChecking=yes' "$tmp/called" || fail "ssh was not pinned to StrictHostKeyChecking=yes"
-grep -q 'administrator@69.197.178.239' "$tmp/called" || fail "ssh target was not the staging account"
+grep -q 'xtrapos-deploy@69.197.178.239' "$tmp/called" || fail "ssh target was not the staging account"
 if grep -q -E '5216|xtrapos-api|StrictHostKeyChecking=no' "$tmp/called"; then
   fail "ssh command line included a production target"
 fi
+
+: >"$tmp/called"
+STAGING_SSH_USER_SECRET=root CONFIRM=staging GIT_SHA="$(printf 'c%.0s' {1..40})" \
+  STAGING_SSH_KEY="$STAGING_SSH_KEY" STAGING_KNOWN_HOSTS="$STAGING_KNOWN_HOSTS" \
+  SSH_LOG="$tmp/called" SSH_BIN="$tmp/ssh" SCP_BIN="$tmp/scp" \
+  bash deploy/staging-remote-activate.sh inspect >"$tmp/out" 2>"$tmp/err" || true
+[[ ! -s "$tmp/called" ]] || fail "a non-deploy SSH account reached ssh"
+grep -q 'not the staging deploy account' "$tmp/err" || fail "wrong SSH account was not rejected"
 
 CONFIRM=nope GIT_SHA=dead bash deploy/staging-preflight.sh >"$tmp/out" 2>"$tmp/err" || code=$?
 [[ "${code:-0}" -ne 0 ]] || fail "preflight accepted an empty request"
