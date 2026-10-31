@@ -357,7 +357,8 @@ public static class ApiEndpoints
                 http.Request,
                 http.RequestServices.GetRequiredService<IConfiguration>(),
                 http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath,
-                InstallationState.IsConfigured(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath),
+                InstallationState.IsConfigured(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath)
+                    && request?.ReplaceExisting != true,
                 out var authStatus,
                 out var authMessage))
         {
@@ -396,7 +397,7 @@ public static class ApiEndpoints
         {
             await http.Response.WriteAsync(JsonSerializer.Serialize(setupEvent, StreamJson) + "\n", token);
             await http.Response.Body.FlushAsync(token);
-        }, cancellationToken, topology);
+        }, cancellationToken, topology, request?.ReplaceExisting == true);
     }
 
     private static async Task<IResult> ListBranchDatabasesAsync(

@@ -208,6 +208,7 @@ export async function createBranch(
       centralPassword: input.centralPassword || null,
       linkToCentral: input.linkToCentral || null,
       centralAdminUserId: input.centralAdminUserId.trim() || null,
+      replaceExisting: input.replaceExisting === true,
       branchLocation: input.branchLocation || null,
       branchRemoteChoice: input.branchRemoteChoice || null,
       branchRemoteDatabaseName: input.branchRemoteDatabaseName.trim() || null,

@@ -77,6 +77,7 @@ public sealed class CreateBranchRequest
     public string? BranchRemoteUsername { get; set; }
     public string? BranchRemotePassword { get; set; }
     public string? CentralAdminUserId { get; set; }
+    public bool ReplaceExisting { get; set; }
 }
 
 public sealed record AdminAccount(

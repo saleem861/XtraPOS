@@ -12,26 +12,32 @@ interface SetupProgressScreenProps {
   steps: Record<SetupStepId, SetupStepState>;
   error: string;
   running: boolean;
+  existingBranch: { name: string; code: string } | null;
   onRetry: () => void;
   onEdit: () => void;
-  onRefresh: () => void;
+  onReplace: () => void;
 }
 
 export function SetupProgressScreen({
   steps,
   error,
   running,
+  existingBranch,
   onRetry,
   onEdit,
-  onRefresh,
+  onReplace,
 }: SetupProgressScreenProps) {
-  const alreadyConfigured = error === "تم إعداد هذا الفرع من قبل.";
+  const noticedBranch = existingBranch ?? (error === "تم إعداد هذا الفرع من قبل." ? { name: "", code: "" } : null);
+  const branchLabel = [noticedBranch?.name, noticedBranch?.code].filter(Boolean).join(" — ");
+  const warning = noticedBranch
+    ? `بيانات الفرع موجودة مسبقًا${branchLabel ? `: ${branchLabel}` : ""}. يمكنك استبدال الفرع الحالي بالإعدادات الجديدة، أو الرجوع لتغيير الإعدادات. الاستبدال يزيل إعداد الفرع على هذا الجهاز، ثم ينشئه من جديد بالإعدادات التي أدخلتها.`
+    : "";
 
   return (
     <section className="card" aria-busy={running}>
       <ScreenHeader title="إعداد الفرع" />
       <header className="card-header">
-        <p>{running ? "يتم الآن تجهيز الفرع" : error ? "لم يكتمل الإعداد" : "اكتمل فحص الإعداد"}</p>
+        <p>{running ? "يتم الآن تجهيز الفرع" : noticedBranch ? "هذا الفرع موجود مسبقًا" : error ? "لم يكتمل الإعداد" : "اكتمل فحص الإعداد"}</p>
       </header>
       <ol className="progress-list" aria-live="polite">
         {SETUP_STEPS.map((step) => {
@@ -45,18 +51,23 @@ export function SetupProgressScreen({
           );
         })}
       </ol>
-      {error ? <p className="form-error">{error}</p> : null}
-      {!running && error ? (
+      {warning ? <p className="form-notice">{warning}</p> : null}
+      {error && !noticedBranch ? <p className="form-error">{error}</p> : null}
+      {!running && noticedBranch ? (
         <div className="wizard-actions">
-          {alreadyConfigured ? (
-            <button className="primary-button" type="button" onClick={onRefresh}>
-              تحديث الحالة
-            </button>
-          ) : (
-            <button className="primary-button" type="button" onClick={onRetry}>
-              إعادة المحاولة
-            </button>
-          )}
+          <button className="primary-button" type="button" onClick={onReplace}>
+            استبدال الفرع
+          </button>
+          <button className="ghost-button" type="button" onClick={onEdit}>
+            تغيير الإعدادات
+          </button>
+        </div>
+      ) : null}
+      {!running && error && !noticedBranch ? (
+        <div className="wizard-actions">
+          <button className="primary-button" type="button" onClick={onRetry}>
+            إعادة المحاولة
+          </button>
           <button className="ghost-button" type="button" onClick={onEdit}>
             العودة لتعديل البيانات
           </button>

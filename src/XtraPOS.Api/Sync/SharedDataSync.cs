@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Data.Central;
 
@@ -61,14 +62,21 @@ public sealed class SharedDataSync(
         var businessDescription = hasBusinessDescription || source == "#"
             ? "source.Description"
             : "CAST(NULL AS nvarchar(500))";
+        var hasItemSearch = await CentralColumnExistsAsync(central, "Items", "ItemNameSearchStrict", cancellationToken);
+        var itemSearchStrict = hasItemSearch ? "source.ItemNameSearchStrict" : "CAST(NULL AS nvarchar(500))";
+        var itemSearchLoose = hasItemSearch ? "source.ItemNameSearchLoose" : "CAST(NULL AS nvarchar(500))";
         if (source == "#")
         {
-            await StageRemoteCatalogAsync(central, connection, transaction, hasBusinessDescription, cancellationToken);
+            await StageRemoteCatalogAsync(central, connection, transaction, hasBusinessDescription, hasItemSearch, cancellationToken);
         }
 
-        await using var command = new SqlCommand(BootstrapSql(source, businessDescription), connection, transaction) { CommandTimeout = 600 };
+        await using var command = new SqlCommand(BootstrapSql(source, businessDescription, itemSearchStrict, itemSearchLoose), connection, transaction) { CommandTimeout = 600 };
         var items = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
         await transaction.CommitAsync(cancellationToken);
+        if (!hasItemSearch)
+        {
+            await ArabicSearchKeyBackfill.ApplyAsync(connection, cancellationToken);
+        }
         var afterInventory = await CountAsync(connection, "SELECT COUNT(*) FROM dbo.ItemBranchInventory;", cancellationToken);
         var afterBalances = await CountAsync(connection, "SELECT COUNT(*) FROM dbo.BranchStockBalances;", cancellationToken);
         var afterMovements = await CountAsync(connection, "SELECT COUNT(*) FROM dbo.StockMovements;", cancellationToken);
@@ -615,7 +623,7 @@ public sealed class SharedDataSync(
         SELECT COUNT(*) FROM [{central}].dbo.Items;
         """;
 
-    private static string BootstrapSql(string source, string businessDescription) =>
+    private static string BootstrapSql(string source, string businessDescription, string itemSearchStrict, string itemSearchLoose) =>
         $"""
         INSERT INTO dbo.Businesses (BusinessID, BusinessName, BusinessDisplayName, Phone, Description, Address, IsActive, CreatedAt, UpdatedAt)
         SELECT BusinessID, BusinessName, BusinessDisplayName, Phone, {businessDescription}, Address, IsActive, CreatedAt, UpdatedAt
@@ -711,15 +719,15 @@ public sealed class SharedDataSync(
             ItemID, ItemNumber, ItemName, ItemNameSearchStrict, ItemNameSearchLoose, ItemType, Manufacturer, Color, Taste, Size, Packing, Classification,
             CountryOfOrigin, ProductType, ParentItemID, IsProhibited, IsPublishedOnline, IsActive, CreatedAt, UpdatedAt)
         SELECT
-            ItemID, ItemNumber, ItemName, ItemNameSearchStrict, ItemNameSearchLoose, ItemType, Manufacturer, Color, Taste, Size, Packing, Classification,
+            ItemID, ItemNumber, ItemName, {itemSearchStrict}, {itemSearchLoose}, ItemType, Manufacturer, Color, Taste, Size, Packing, Classification,
             CountryOfOrigin, ProductType, NULL, IsProhibited, IsPublishedOnline, IsActive, CreatedAt, UpdatedAt
         FROM {source}Items AS source
         WHERE NOT EXISTS (SELECT 1 FROM dbo.Items AS target WHERE target.ItemID = source.ItemID);
 
         UPDATE target
         SET ItemName = source.ItemName,
-            ItemNameSearchStrict = source.ItemNameSearchStrict,
-            ItemNameSearchLoose = source.ItemNameSearchLoose,
+            ItemNameSearchStrict = {itemSearchStrict},
+            ItemNameSearchLoose = {itemSearchLoose},
             ItemType = source.ItemType,
             Manufacturer = source.Manufacturer,
             Color = source.Color,
@@ -910,6 +918,7 @@ public sealed class SharedDataSync(
         SqlConnection branch,
         SqlTransaction transaction,
         bool hasBusinessDescription,
+        bool hasItemSearch,
         CancellationToken cancellationToken)
     {
         await using var source = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
@@ -987,6 +996,8 @@ public sealed class SharedDataSync(
                 ItemID uniqueidentifier NOT NULL,
                 ItemNumber nvarchar(100) COLLATE DATABASE_DEFAULT NOT NULL,
                 ItemName nvarchar(500) COLLATE DATABASE_DEFAULT NOT NULL,
+                ItemNameSearchStrict nvarchar(500) COLLATE DATABASE_DEFAULT NULL,
+                ItemNameSearchLoose nvarchar(500) COLLATE DATABASE_DEFAULT NULL,
                 ItemType nvarchar(100) COLLATE DATABASE_DEFAULT NULL,
                 Manufacturer nvarchar(100) COLLATE DATABASE_DEFAULT NULL,
                 Color nvarchar(100) COLLATE DATABASE_DEFAULT NULL,
@@ -1060,7 +1071,8 @@ public sealed class SharedDataSync(
         await CopyAsync(source, branch, transaction, "SELECT UserID, RoleID, AssignedAt FROM dbo.UserRoles;", "#UserRoles", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT UserID, BranchID, IsActive, GrantedAt FROM dbo.UserBranchAccess;", "#UserBranchAccess", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt FROM dbo.PriceTypes;", "#PriceTypes", cancellationToken);
-        await CopyAsync(source, branch, transaction, "SELECT ItemID, ItemNumber, ItemName, ItemType, Manufacturer, Color, Taste, Size, Packing, Classification, CountryOfOrigin, ProductType, ParentItemID, IsProhibited, IsPublishedOnline, IsActive, CreatedAt, UpdatedAt FROM dbo.Items;", "#Items", cancellationToken);
+        var itemSearchColumns = hasItemSearch ? "ItemNameSearchStrict, ItemNameSearchLoose, " : "";
+        await CopyAsync(source, branch, transaction, "SELECT ItemID, ItemNumber, ItemName, " + itemSearchColumns + "ItemType, Manufacturer, Color, Taste, Size, Packing, Classification, CountryOfOrigin, ProductType, ParentItemID, IsProhibited, IsPublishedOnline, IsActive, CreatedAt, UpdatedAt FROM dbo.Items;", "#Items", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT ItemUnitID, ItemID, UnitsPerPackage, InternalUnitItemID, InternalUnitItemNumber, InternalUnitItemName, IsBaseUnit, IsActive, CreatedAt, UpdatedAt FROM dbo.ItemUnits;", "#ItemUnits", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT ItemID, PriceTypeID, Price, IsActive, CreatedAt, UpdatedAt FROM dbo.ItemPrices;", "#ItemPrices", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT CustomerClassificationID, BusinessID, Code, Name, DefaultPriceTypeID, DefaultVariableValueDiscountPercent, IsDefault, IsActive, CreatedAt, UpdatedAt FROM dbo.CustomerClassifications;", "#CustomerClassifications", cancellationToken);

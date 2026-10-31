@@ -131,7 +131,8 @@ public sealed class SetupService(
         BranchSetup input,
         Func<SetupEvent, CancellationToken, Task> emit,
         CancellationToken cancellationToken,
-        TopologyPlan? topology = null)
+        TopologyPlan? topology = null,
+        bool replaceExisting = false)
     {
         if (!coordinator.TryEnter())
         {
@@ -145,11 +146,16 @@ public sealed class SetupService(
             await CheckServerAsync(cancellationToken);
             await emit(SetupEvent.Progress(SetupSteps.CheckServer, "succeeded"), cancellationToken);
 
-            if (InitialSyncGuard.SkipProvisioning(await connections.HasCompletedSetupAsync(cancellationToken)))
+            if (await HasExistingBranchAsync(cancellationToken))
             {
-                var existing = await LoadExistingAsync(cancellationToken);
-                await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
-                return;
+                if (!replaceExisting)
+                {
+                    var existing = await LoadExistingAsync(cancellationToken);
+                    await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
+                    return;
+                }
+
+                await ReplaceLocalBranchAsync(cancellationToken);
             }
 
             await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "started"), cancellationToken);
@@ -1312,6 +1318,80 @@ public sealed class SetupService(
             "",
             device.RegisteredAt,
             input);
+    }
+
+    private async Task<bool> HasExistingBranchAsync(CancellationToken cancellationToken)
+    {
+        if (!await connections.DatabaseExistsAsync(cancellationToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (await connections.HasCompletedSetupAsync(cancellationToken))
+            {
+                return true;
+            }
+
+            return await db.Businesses.AnyAsync(cancellationToken);
+        }
+        catch (SqlException exception) when (exception.Number == 208)
+        {
+            return false;
+        }
+    }
+
+    private async Task ReplaceLocalBranchAsync(CancellationToken cancellationToken)
+    {
+        var databaseName = connections.ConfiguredDatabase;
+        if (ProtectedDatabasePolicy.IsProtected(databaseName))
+        {
+            throw new SetupRejectedException("لا يمكن استبدال هذه القاعدة.");
+        }
+
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            SET ANSI_NULLS ON;
+            SET QUOTED_IDENTIFIER ON;
+            DECLARE @sql nvarchar(max) = N'';
+            SELECT @sql = @sql + N'ALTER TABLE ' + QUOTENAME(SCHEMA_NAME(schema_id)) + N'.' + QUOTENAME(name) + N' NOCHECK CONSTRAINT ALL;'
+            FROM sys.tables;
+            EXEC sys.sp_executesql @sql;
+
+            SET @sql = N'';
+            SELECT @sql = @sql + N'DELETE FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name) + N';'
+            FROM sys.tables AS t
+            WHERE t.name NOT IN (
+                N'DatabaseSchemaHistory',
+                N'Roles',
+                N'Permissions',
+                N'RolePermissions',
+                N'PriceTypes',
+                N'StockMovementTypes');
+            EXEC sys.sp_executesql @sql;
+
+            IF NOT EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE SettingKey = N'DatabaseRole')
+                INSERT INTO dbo.SystemSettings (SettingKey, SettingValue) VALUES (N'DatabaseRole', N'Branch');
+
+            SET @sql = N'';
+            SELECT @sql = @sql + N'ALTER TABLE ' + QUOTENAME(SCHEMA_NAME(schema_id)) + N'.' + QUOTENAME(name) + N' WITH CHECK CHECK CONSTRAINT ALL;'
+            FROM sys.tables;
+            EXEC sys.sp_executesql @sql;
+            """,
+            connection)
+        {
+            CommandTimeout = 180,
+        };
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        db.ChangeTracker.Clear();
+        var marker = InstallationState.Path(environment.ContentRootPath);
+        if (File.Exists(marker))
+        {
+            File.Delete(marker);
+        }
     }
 
     private sealed record CentralBranchLink(Guid BranchId, string BranchCode, string BranchName, string BranchType);
