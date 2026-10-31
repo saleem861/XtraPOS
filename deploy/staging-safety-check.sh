@@ -10,7 +10,7 @@ fail() {
   exit 1
 }
 
-for file in deploy/staging-ssh.sh deploy/staging-on-server.sh deploy/staging-remote-activate.sh deploy/staging-rollback.sh deploy/staging-preflight.sh deploy/scan-release.sh; do
+for file in deploy/staging-ssh.sh deploy/staging-on-server.sh deploy/staging-remote-activate.sh deploy/staging-rollback.sh deploy/staging-preflight.sh deploy/scan-release.sh deploy/staging-db-name.sh; do
   bash -n "$file"
 done
 
@@ -101,8 +101,11 @@ CONFIRM=nope GIT_SHA=dead bash deploy/staging-preflight.sh >"$tmp/out" 2>"$tmp/e
 if grep -n -E 'mv[[:space:]]+.*App_Data' deploy/staging-on-server.sh; then
   fail "App_Data is moved off the previous release"
 fi
-if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY|STAGING_NGINX_DUMP' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
+if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY|STAGING_NGINX_DUMP|SYSTEMCTL_BIN|STAGING_DB_NAME_BIN' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
   fail "workflow enables the staging test hook"
+fi
+if grep -n -E 'STAGING_SOURCE_ONLY|SYSTEMCTL_BIN' deploy/staging-db-name.sh; then
+  fail "the privileged database helper reads an environment test hook"
 fi
 
 app_root="$(mktemp -d /tmp/xtrapos-appdata.XXXXXX)"
@@ -432,4 +435,411 @@ STAGING_SOURCE_ONLY=yes STAGING_TEST_ROOT="$app_root" STAGING_NGINX_DUMP="/etc/n
 grep -q 'REMOTE_ERROR nginx dump' "$tmp/nginx-err" || fail "nginx dump outside the test root was not rejected"
 [[ ! -s "$tmp/nginx-out" ]] || fail "rejected nginx dump produced facts"
 
+db_secret="db-password-should-not-print"
+mkdir -p "$tmp/api" "$tmp/empty-work" "$tmp/api-other" "$tmp/api-match"
+cat >"$tmp/plain.env" <<EOF
+# staging database name only
+export SqlServer__Database="XtraPOS_Branch_Test_Staging"
+SqlServer__Password=${db_secret}
+EOF
+printf 'OTHER=1\n' >"$tmp/other.env"
+printf 'SqlServer__Database=XtraPOS_Branch_Test_Other\nSqlServer__Password=%s\n' "$db_secret" >"$tmp/other-db.env"
+printf 'Database=XtraPOS_Branch_Test_Staging\n' >"$tmp/wrong-key.env"
+printf 'SqlServer__Database=XtraPOS_Central\nSqlServer__Password=%s\n' "$db_secret" >"$tmp/operational.env"
+mkdir -p "$tmp/not-a-file"
+printf 'SqlServer__Database=XtraPOS_Branch_Test_Hidden\nSqlServer__Password=%s\n' "$db_secret" >"$tmp/denied.env"
+chmod 000 "$tmp/denied.env"
+cat >"$tmp/api/appsettings.Staging.json" <<EOF
+{"SqlServer":{"Database":"XtraPOS_Branch_Test_Staging","Password":"${db_secret}"}}
+EOF
+cat >"$tmp/api-other/appsettings.Staging.json" <<EOF
+{"SqlServer":{"Database":"XtraPOS_Branch_Test_AppOnly","Password":"${db_secret}"}}
+EOF
+cp "$tmp/api/appsettings.Staging.json" "$tmp/api-match/appsettings.Staging.json"
+cat >"$tmp/db-helper" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'DB_NAME=XtraPOS_Branch_Test_Staging'
+EOF
+cat >"$tmp/db-helper-other" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'DB_NAME=XtraPOS_Branch_Test_Other'
+EOF
+cat >"$tmp/db-helper-central" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'DB_NAME=XtraPOS_Central'
+EOF
+cat >"$tmp/db-helper-leaky" <<EOF
+#!/bin/sh
+printf '%s\n' 'DB_NAME=XtraPOS_Branch_Test_Staging' 'SqlServer__Password=${db_secret}'
+EOF
+chmod 755 "$tmp/db-helper" "$tmp/db-helper-other" "$tmp/db-helper-central" "$tmp/db-helper-leaky"
+
+run_db_read() {
+  local files="$1" work="$2" mode="${3:-load}" helper="${4:-}"
+  (
+    export STAGING_SOURCE_ONLY=yes
+    export STAGING_TEST_ROOT="$app_root"
+    unset SYSTEMCTL_BIN
+    if [[ -n "$helper" ]]; then
+      export STAGING_DB_NAME_BIN="$helper"
+    else
+      unset STAGING_DB_NAME_BIN
+    fi
+    # shellcheck disable=SC1091
+    source deploy/staging-on-server.sh
+    if [[ "$mode" == "resolve" ]]; then
+      resolve_staging_database "$files" "$work"
+    else
+      load_staging_database "$files" "$work"
+    fi
+  )
+}
+
+assert_no_secret() {
+  if printf '%s\n' "$1" | grep -q "$db_secret"; then
+    fail "$2"
+  fi
+}
+
+db_info="$(run_db_read "$tmp/other.env (ignore_errors=no) $tmp/plain.env (ignore_errors=yes)" "")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "quoted environment file did not provide the staging database name"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=environment-file' || fail "database name was not read from the environment file"
+printf '%s\n' "$db_info" | grep -qx "DB_FILE=$tmp/plain.env" || fail "database name was read from the wrong environment file"
+printf '%s\n' "$db_info" | grep -qx 'DB_FILE_READABLE=yes' || fail "readable environment file was reported as unreadable"
+assert_no_secret "$db_info" "environment file read printed a secret"
+
+db_info="$(run_db_read "" "$tmp/api")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "appsettings database name was ignored when no environment file is configured"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=appsettings' || fail "appsettings was not identified as the database source"
+printf '%s\n' "$db_info" | grep -qx "DB_FILE=$tmp/api/appsettings.Staging.json" || fail "appsettings path was not reported"
+assert_no_secret "$db_info" "appsettings read printed a secret"
+
+db_info="$(run_db_read "$tmp/other.env (ignore_errors=no)" "$tmp/api")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=appsettings' || fail "appsettings was ignored when the environment file does not set the database"
+assert_no_secret "$db_info" "environment file without the database key printed a secret"
+
+db_code=0
+run_db_read "$tmp/denied.env (ignore_errors=no)" "$tmp/api-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a permission-denied environment file was accepted via appsettings"
+grep -q 'staging database name is unreadable (permissions)' "$tmp/db-err" || fail "a permission-denied environment file was not reported as permissions"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_AppOnly|XtraPOS_Branch_Test_Hidden' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a permission-denied environment file selected an unverified database name"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "a permission-denied environment file printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) $tmp/denied.env (ignore_errors=yes)" "$tmp/api-match" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a readable sibling file bypassed an unreadable environment file"
+grep -q 'staging database name is unreadable (permissions)' "$tmp/db-err" || fail "a mixed readable and unreadable environment file was not fail-closed"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a mixed environment file list selected a database without reading every file"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "a mixed environment file list printed a secret"
+fi
+
+db_info="$(run_db_read "$tmp/denied.env (ignore_errors=no)" "" load "$tmp/db-helper")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "the database-name helper was not accepted for an unreadable file"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=db-name-helper' || fail "the database-name helper was not identified as the source"
+printf '%s\n' "$db_info" | grep -qx 'DB_FILE_READABLE=no' || fail "the helper path was reported as a direct file read"
+assert_no_secret "$db_info" "the database-name helper printed a secret"
+
+db_code=0
+run_db_read "$tmp/denied.env (ignore_errors=no)" "$tmp/api-other" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a helper and appsettings disagreement was accepted"
+grep -q 'staging database name conflicts' "$tmp/db-err" || fail "a helper and appsettings disagreement was not a conflict"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging|XtraPOS_Branch_Test_AppOnly' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a helper and appsettings conflict selected a database"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "a helper and appsettings conflict printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) $tmp/denied.env (ignore_errors=no)" "" load "$tmp/db-helper-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a helper and environment-file disagreement was accepted"
+grep -q 'staging database name conflicts' "$tmp/db-err" || fail "a helper and environment-file disagreement was not a conflict"
+if grep -q -E 'DB_NAME=' "$tmp/db-out"; then
+  fail "a helper and environment-file conflict selected a database"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "a helper and environment-file conflict printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) $tmp/other-db.env (ignore_errors=yes)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "two environment files with different database names were accepted"
+grep -q 'staging database name conflicts' "$tmp/db-err" || fail "different environment file database names were not a conflict"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging|XtraPOS_Branch_Test_Other' "$tmp/db-out" "$tmp/db-err"; then
+  fail "conflicting environment files selected a database"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "conflicting environment files printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no)" "$tmp/api-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an environment file and appsettings disagreement was accepted"
+grep -q 'staging database name conflicts' "$tmp/db-err" || fail "an environment file and appsettings disagreement was not a conflict"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging|XtraPOS_Branch_Test_AppOnly' "$tmp/db-out" "$tmp/db-err"; then
+  fail "an environment file and appsettings conflict selected a database"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "an environment file and appsettings conflict printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/denied.env (ignore_errors=no)" "" load "$tmp/db-helper-leaky" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a helper that printed more than the database name was accepted"
+grep -q 'staging database name is unreadable (permissions)' "$tmp/db-err" || fail "a noisy helper was not rejected"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a noisy helper selected a database"
+fi
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "a noisy helper printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/denied.env (ignore_errors=no)" "" load "/etc/passwd" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a helper path outside the test root was executed"
+if grep -q '^root:' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a helper path outside the test root was read"
+fi
+
+db_code=0
+run_db_read "/etc/passwd (ignore_errors=no)" "$tmp/api-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a non-staging environment file was read"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "a non-staging environment file was not rejected"
+if grep -q -E '^root:|DB_NAME=|XtraPOS_Branch_Test_AppOnly' "$tmp/db-out" "$tmp/db-err"; then
+  fail "an unapproved environment file was ignored and another database was selected"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) /etc/passwd (ignore_errors=yes)" "$tmp/api" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an approved environment file hid an unapproved one"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "a mixed environment file list was not rejected"
+if grep -q -E '^root:|DB_NAME=|XtraPOS_Branch_Test_Staging|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "an unapproved environment file was ignored and the approved file was used"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) -/etc/passwd (ignore_errors=yes)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an optional unapproved environment file was ignored"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "an optional unapproved environment file was not rejected"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "an optional unapproved environment file selected a database"
+fi
+
+ln -s /etc/passwd "$tmp/passwd-link.env"
+db_code=0
+run_db_read "$tmp/passwd-link.env (ignore_errors=no)" "$tmp/api-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a symlink out of an approved directory was read"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "a symlink out of an approved directory was not rejected"
+if grep -q -E '^root:|XtraPOS_Branch_Test_AppOnly' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a symlink out of an approved directory selected another database"
+fi
+
+db_code=0
+run_db_read "/tmp/../etc/passwd (ignore_errors=no) $tmp/plain.env (ignore_errors=no)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an environment file path with .. was read"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "an environment file path with .. was not rejected"
+if grep -q -E '^root:|DB_NAME=|XtraPOS_Branch_Test_Staging' "$tmp/db-out" "$tmp/db-err"; then
+  fail "an environment file path with .. selected a database"
+fi
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) staging.env (ignore_errors=no)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a relative environment file path was ignored"
+grep -q 'staging database name is unreadable (unapproved)' "$tmp/db-err" || fail "a relative environment file path was not rejected"
+
+db_code=0
+run_db_read "$tmp/not-a-file (ignore_errors=no)" "$tmp/api-other" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a non-regular environment file was accepted via appsettings"
+grep -q 'staging database name is unreadable (permissions)' "$tmp/db-err" || fail "a non-regular environment file was not fail-closed"
+if grep -q 'XtraPOS_Branch_Test_AppOnly' "$tmp/db-out" "$tmp/db-err"; then
+  fail "a non-regular environment file selected appsettings"
+fi
+
+db_code=0
+run_db_read "$tmp/operational.env (ignore_errors=no)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an operational database from the environment file was accepted"
+grep -q 'refusing operational database' "$tmp/db-err" || fail "operational database was not refused"
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "operational database refusal printed a secret"
+fi
+
+db_code=0
+run_db_read "$tmp/denied.env (ignore_errors=no)" "" load "$tmp/db-helper-central" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an operational database from the helper was accepted"
+grep -q 'refusing operational database' "$tmp/db-err" || fail "an operational database from the helper was not refused"
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "operational helper refusal printed a secret"
+fi
+
+cat >"$tmp/safe-then-prod.env" <<EOF
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+SqlServer__Password=${db_secret}
+export SqlServer__Database="XtraPOS_Central"
+EOF
+cat >"$tmp/prod-then-safe.env" <<EOF
+SqlServer__Database=XtraPOS_Central
+SqlServer__Password=${db_secret}
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+EOF
+cat >"$tmp/same-twice.env" <<EOF
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+SqlServer__Password=${db_secret}
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+EOF
+
+assert_duplicate_rejected() {
+  local label="$1"
+  [[ "$db_code" -ne 0 ]] || fail "$label was accepted"
+  grep -q 'staging database name is unreadable (duplicate)' "$tmp/db-err" || fail "$label was not rejected as a duplicate assignment"
+  if grep -q 'refusing operational database' "$tmp/db-err"; then
+    fail "$label stopped at the first database assignment"
+  fi
+  if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_|XtraPOS_Central|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+    fail "$label selected a database or printed a secret"
+  fi
+}
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) $tmp/safe-then-prod.env (ignore_errors=yes)" "$tmp/api-other" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "a staging assignment followed by a production assignment"
+
+db_code=0
+run_db_read "$tmp/prod-then-safe.env (ignore_errors=no)" "$tmp/api-other" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "a production assignment followed by a staging assignment"
+
+db_code=0
+run_db_read "$tmp/same-twice.env (ignore_errors=no)" "$tmp/api" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "two identical database assignments"
+
+db_code=0
+run_db_read "$tmp/wrong-key.env (ignore_errors=no)" "$tmp/empty-work" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a different variable name was accepted as the database"
+grep -q 'staging database name is unreadable (name)' "$tmp/db-err" || fail "a missing SqlServer__Database key was not reported as the variable name"
+
+run_helper_files() {
+  (
+    # shellcheck disable=SC1091
+    source deploy/staging-db-name.sh
+    database_name_from_files "$@"
+  )
+}
+
+run_helper_classify() {
+  (
+    # shellcheck disable=SC1091
+    source deploy/staging-db-name.sh
+    printf '%s\n' "$1" | approved_environment_files
+  )
+}
+
+run_helper_verify() {
+  (
+    # shellcheck disable=SC1091
+    source deploy/staging-db-name.sh
+    verify_environment_files "$1"
+  )
+}
+
+run_helper_files "$tmp/plain.env" >"$tmp/db-out" 2>"$tmp/db-err"
+[[ "$(cat "$tmp/db-out")" == "DB_NAME=XtraPOS_Branch_Test_Staging" ]] || fail "the database-name helper did not print only the database name"
+[[ ! -s "$tmp/db-err" ]] || fail "the database-name helper wrote extra output"
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper printed a secret"
+fi
+
+assert_helper_duplicate() {
+  local label="$1"
+  [[ "$db_code" -eq 1 ]] || fail "$label was accepted by the database-name helper"
+  grep -qx 'DB_VERIFIER_DUPLICATE' "$tmp/db-err" || fail "$label was not rejected by the database-name helper"
+  if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_|XtraPOS_Central|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+    fail "$label was printed by the database-name helper"
+  fi
+}
+
+db_code=0
+run_helper_files "$tmp/safe-then-prod.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "a staging assignment followed by a production assignment"
+
+db_code=0
+run_helper_files "$tmp/prod-then-safe.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "a production assignment followed by a staging assignment"
+
+db_code=0
+run_helper_files "$tmp/same-twice.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "two identical database assignments"
+
+db_code=0
+run_helper_files "$tmp/plain.env" "$tmp/other-db.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 1 ]] || fail "the database-name helper accepted conflicting files"
+grep -qx 'DB_VERIFIER_CONFLICT' "$tmp/db-err" || fail "the database-name helper did not report a conflict"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper printed a database or secret during a conflict"
+fi
+
+db_code=0
+run_helper_files "$tmp/denied.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 1 ]] || fail "the database-name helper read a permission-denied file"
+grep -qx 'DB_VERIFIER_PERMISSIONS' "$tmp/db-err" || fail "the database-name helper did not report permissions"
+if grep -q -E 'XtraPOS_Branch_Test_|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper printed a database or secret after a permission failure"
+fi
+
+mkdir -p "$tmp/bin"
+cat >"$tmp/evil-systemctl" <<EOF
+#!/bin/sh
+printf 'ran\n' >>"$tmp/evil-systemctl.log"
+printf '%s\n' "$tmp/plain.env (ignore_errors=no)"
+EOF
+cp "$tmp/evil-systemctl" "$tmp/bin/systemctl"
+chmod 755 "$tmp/evil-systemctl" "$tmp/bin/systemctl"
+: >"$tmp/evil-systemctl.log"
+
+db_code=0
+STAGING_SOURCE_ONLY=yes run_helper_classify "/usr/share/XtraPOS/staging.env (ignore_errors=no) /etc/passwd (ignore_errors=yes)" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 3 ]] || fail "the database-name helper accepted a path outside the approved directories"
+[[ ! -s "$tmp/db-out" ]] || fail "the database-name helper returned a path after an unapproved entry"
+if grep -q -E '^root:|DB_NAME=|XtraPOS_Branch_Test_|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper used a file after seeing an unapproved path"
+fi
+
+db_code=0
+STAGING_SOURCE_ONLY=yes run_helper_classify "$tmp/plain.env (ignore_errors=no)" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 3 ]] || fail "the database-name helper widened its allowlist for a temporary path"
+[[ ! -s "$tmp/db-out" ]] || fail "a temporary environment file was returned by the helper"
+if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_Staging|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper read a temporary environment file"
+fi
+
+db_code=0
+STAGING_SOURCE_ONLY=yes SYSTEMCTL_BIN="$tmp/evil-systemctl" run_helper_verify "$tmp/evil-systemctl" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 1 ]] || fail "the database-name helper accepted an alternate systemctl"
+grep -qx 'DB_VERIFIER_BIN' "$tmp/db-err" || fail "an alternate systemctl was not rejected"
+[[ ! -s "$tmp/evil-systemctl.log" ]] || fail "an alternate systemctl was executed"
+
+db_code=0
+STAGING_SOURCE_ONLY=yes SYSTEMCTL_BIN="$tmp/evil-systemctl" PATH="$tmp/bin:${PATH}" \
+  bash deploy/staging-db-name.sh >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "the installed helper succeeded through an environment-selected systemctl"
+[[ ! -s "$tmp/evil-systemctl.log" ]] || fail "the installed helper executed an environment-selected systemctl"
+if grep -q -E 'XtraPOS_Branch_Test_Staging|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "the installed helper printed a database selected by the environment"
+fi
+grep -qx 'DB_VERIFIER_PATH' "$tmp/db-err" || fail "the installed helper did not keep the fixed systemctl binary"
+
+db_code=0
+bash deploy/staging-db-name.sh "$tmp/plain.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -eq 2 ]] || fail "the database-name helper accepted an argument"
+grep -qx 'DB_VERIFIER_ARGS' "$tmp/db-err" || fail "the database-name helper did not reject an argument"
+if grep -q -E 'XtraPOS_Branch_Test_|'"$db_secret"'|^root:' "$tmp/db-out" "$tmp/db-err"; then
+  fail "the database-name helper printed a value when given an argument"
+fi
+
+chmod 600 "$tmp/denied.env" 2>/dev/null || true
 echo "Staging safety checks passed"

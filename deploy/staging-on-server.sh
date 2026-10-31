@@ -53,13 +53,302 @@ refuse_production_command() {
   fi
 }
 
-database_name() {
-  local file="$1" line
-  line="$(awk -F= '$1=="SqlServer__Database"{print $2; exit}' "$file" 2>/dev/null || true)"
-  if [[ -z "$line" ]] && command -v sudo >/dev/null; then
-    line="$(sudo -n awk -F= '$1=="SqlServer__Database"{print $2; exit}' "$file" 2>/dev/null || true)"
+DB_NAME_HELPER="/usr/local/sbin/xtrapos-staging-db-name"
+
+environment_file_list() {
+  local allow_test="no" status=0
+  [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]] && allow_test="yes"
+  python3 -c 'import os, re, sys
+allow_test = sys.argv[1] == "yes"
+text = sys.stdin.read().strip()
+prefixes = ("/etc/xtrapos/", "/opt/xtrapos-staging/", "/usr/share/XtraPOS/")
+if allow_test:
+    prefixes += ("/tmp/", "/var/tmp/")
+if not text or text == "-":
+    sys.exit(0)
+paths = re.findall(r"(\S+)\s+\(ignore_errors=(?:yes|no)\)", text)
+if not paths:
+    paths = [item for item in text.split() if item.startswith("/") or item.startswith("-/")]
+seen = set()
+kept = []
+for raw in paths:
+    path = raw[1:] if raw.startswith("-") else raw
+    parts = path.split("/")
+    if not path.startswith("/") or ".." in parts or not path.startswith(prefixes):
+        sys.exit(3)
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        sys.exit(3)
+    if ".." in resolved.split("/") or not resolved.startswith(prefixes):
+        sys.exit(3)
+    if path in seen:
+        continue
+    seen.add(path)
+    kept.append(path)
+if kept:
+    print("\n".join(kept))
+' "$allow_test" <<<"$1" || status=$?
+  return "$status"
+}
+
+read_keyed_env_file() {
+  python3 -c 'import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    text = path.read_text(errors="replace")
+except OSError:
+    sys.exit(0)
+if text.startswith("\ufeff"):
+    text = text[1:]
+values = []
+for raw in text.splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or line.startswith(";"):
+        continue
+    if line.startswith("export "):
+        line = line[len("export "):].strip()
+    if "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() != "SqlServer__Database":
+        continue
+    value = value.strip().strip("\r")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "\047"}:
+        value = value[1:-1]
+    values.append(value.strip())
+if len(values) > 1:
+    sys.exit(4)
+if values:
+    print(values[0])
+' "$1"
+}
+
+file_access_state() {
+  python3 -c 'import os, stat, sys
+path = sys.argv[1]
+try:
+    info = os.lstat(path)
+except FileNotFoundError:
+    print("missing")
+    sys.exit(0)
+except OSError:
+    print("denied")
+    sys.exit(0)
+if not stat.S_ISREG(info.st_mode):
+    print("denied")
+    sys.exit(0)
+try:
+    fd = os.open(path, os.O_RDONLY)
+except PermissionError:
+    print("denied")
+    sys.exit(0)
+except OSError as exc:
+    print("denied" if exc.errno == 13 else "missing")
+    sys.exit(0)
+os.close(fd)
+print("readable")
+' "$1"
+}
+
+helper_database_name() {
+  local helper="" output=""
+  if [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]]; then
+    [[ -n "${STAGING_DB_NAME_BIN:-}" ]] || return 0
+    case "$STAGING_DB_NAME_BIN" in
+      /tmp/*|/var/tmp/*) ;;
+      *) return 0 ;;
+    esac
+    case "$STAGING_DB_NAME_BIN" in
+      *..*) return 0 ;;
+    esac
+    helper="$STAGING_DB_NAME_BIN"
+    [[ -x "$helper" ]] || return 0
+    output="$("$helper" 2>/dev/null || true)"
+  elif [[ -x "$DB_NAME_HELPER" ]]; then
+    output="$(sudo -n "$DB_NAME_HELPER" 2>/dev/null || true)"
+  else
+    return 0
   fi
-  printf '%s' "$line" | tr -d '\r' | tr -d '"' | tr -d "'"
+  printf '%s' "$output" | python3 -c 'import sys
+lines = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+if len(lines) != 1 or not lines[0].startswith("DB_NAME="):
+    sys.exit(0)
+value = lines[0].split("=", 1)[1].strip()
+if value and "\x00" not in value:
+    print(value)
+'
+}
+
+appsettings_database_name() {
+  local dir="$1" file canonical name
+  case "$dir" in
+    /opt/xtrapos-staging/current/api) ;;
+    /tmp/*|/var/tmp/*)
+      [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]] || return 0
+      ;;
+    *) return 0 ;;
+  esac
+  for file in "$dir/appsettings.Staging.json" "$dir/appsettings.json"; do
+    [[ -f "$file" && -r "$file" ]] || continue
+    canonical="$(readlink -f "$file")"
+    case "$canonical" in
+      "$dir"/*) ;;
+      *) continue ;;
+    esac
+    name="$(python3 -c 'import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+section = data.get("SqlServer") if isinstance(data, dict) else None
+if not isinstance(section, dict):
+    sys.exit(0)
+value = section.get("Database")
+if isinstance(value, str) and value.strip():
+    print(value.strip())
+' <"$file")"
+    if [[ -n "$name" ]]; then
+      printf '%s\n' "$file" "$name"
+      return 0
+    fi
+  done
+}
+
+note_database_value() {
+  local value="$1"
+  [[ -n "$value" ]] || return 0
+  if [[ -z "$noted_name" ]]; then
+    noted_name="$value"
+  elif [[ "$noted_name" != "$value" ]]; then
+    noted_conflict=1
+    noted_name=""
+  fi
+}
+
+resolve_staging_database() {
+  local env_files="$1" work="$2" path state value file="" readable="no"
+  local saw_file=0 saw_denied=0 saw_missing=0 saw_text=0
+  local noted_name="" noted_conflict=0 noted_duplicate=0 source="" problem="" app_name="" helper_name="" appsettings_info="" read_status=0
+  local list_status=0 listed=""
+  local -a configured=()
+  listed="$(environment_file_list "$env_files")" || list_status=$?
+  if [[ "$list_status" -ne 0 ]]; then
+    printf 'DB_FILE=\n'
+    printf 'DB_NAME=\n'
+    printf 'DB_NAME_SOURCE=\n'
+    printf 'DB_FILE_READABLE=no\n'
+    printf 'DB_READ_PROBLEM=unapproved\n'
+    return 0
+  fi
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    configured+=("$path")
+  done <<<"$listed"
+  if [[ "${#configured[@]}" -eq 0 && -e /etc/xtrapos/staging.env ]]; then
+    configured+=("/etc/xtrapos/staging.env")
+  fi
+  for path in "${configured[@]}"; do
+    saw_file=1
+    file="$path"
+    state="$(file_access_state "$path")"
+    case "$state" in
+      readable)
+        if grep -q 'SqlServer__Database' "$path" 2>/dev/null; then
+          saw_text=1
+        fi
+        read_status=0
+        value="$(read_keyed_env_file "$path")" || read_status=$?
+        if [[ "$read_status" -ne 0 ]]; then
+          noted_duplicate=1
+          noted_name=""
+        else
+          note_database_value "$value"
+        fi
+        ;;
+      denied)
+        saw_denied=1
+        ;;
+      *)
+        saw_missing=1
+        ;;
+    esac
+  done
+  if [[ "$noted_duplicate" -eq 0 && "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -n "$noted_name" ]]; then
+    readable="yes"
+    source="environment-file"
+  elif [[ "$saw_denied" -eq 1 || "$saw_missing" -eq 1 ]]; then
+    helper_name="$(helper_database_name)"
+    if [[ -n "$helper_name" ]]; then
+      note_database_value "$helper_name"
+      if [[ "$noted_conflict" -eq 0 && -n "$noted_name" ]]; then
+        source="db-name-helper"
+        readable="no"
+      fi
+    elif [[ "$saw_denied" -eq 1 ]]; then
+      problem="permissions"
+    else
+      problem="path"
+    fi
+    # A name from a sibling file is not the effective database while another
+    # configured file could not be read. Only the helper may confirm it.
+    if [[ "$source" != "db-name-helper" ]]; then
+      noted_name=""
+    fi
+  fi
+  if [[ -n "$work" ]]; then
+    appsettings_info="$(appsettings_database_name "$work")"
+    if [[ -n "$appsettings_info" ]]; then
+      app_name="$(printf '%s\n' "$appsettings_info" | awk 'NR==2')"
+      if [[ -n "$app_name" && -n "$noted_name" && "$app_name" != "$noted_name" ]]; then
+        noted_conflict=1
+        noted_name=""
+        source=""
+      elif [[ "$noted_duplicate" -eq 0 && "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -z "$noted_name" && -n "$app_name" && "$saw_text" -eq 0 ]]; then
+        file="$(printf '%s\n' "$appsettings_info" | awk 'NR==1')"
+        noted_name="$app_name"
+        source="appsettings"
+        readable="yes"
+      fi
+    fi
+  fi
+  if [[ "$noted_duplicate" -eq 1 ]]; then
+    problem="duplicate"
+    noted_name=""
+    source=""
+  elif [[ "$noted_conflict" -eq 1 ]]; then
+    problem="conflict"
+    noted_name=""
+    source=""
+  elif [[ -n "$noted_name" ]]; then
+    problem=""
+  elif [[ -z "$problem" && "$saw_text" -eq 1 ]]; then
+    problem="format"
+  elif [[ -z "$problem" && "$saw_file" -eq 0 ]]; then
+    problem="path"
+  elif [[ -z "$problem" ]]; then
+    problem="name"
+  fi
+  printf 'DB_FILE=%s\n' "$file"
+  printf 'DB_NAME=%s\n' "$noted_name"
+  printf 'DB_NAME_SOURCE=%s\n' "$source"
+  printf 'DB_FILE_READABLE=%s\n' "$readable"
+  printf 'DB_READ_PROBLEM=%s\n' "$problem"
+}
+
+load_staging_database() {
+  local info name problem
+  info="$(resolve_staging_database "$1" "$2")"
+  name="$(printf '%s\n' "$info" | awk -F= '/^DB_NAME=/{print substr($0, 9); exit}')"
+  problem="$(printf '%s\n' "$info" | awk -F= '/^DB_READ_PROBLEM=/{print substr($0, 17); exit}')"
+  if [[ "$problem" == "conflict" ]]; then
+    die "staging database name conflicts"
+  fi
+  [[ -n "$name" ]] || die "staging database name is unreadable (${problem:-unknown})"
+  if operational_database "$name"; then
+    die "refusing operational database"
+  fi
+  printf '%s\n' "$info"
 }
 
 operational_database() {
@@ -260,7 +549,7 @@ release_id_from_path() {
 
 probe() {
   [[ "$(unit_value "$SERVICE" Id)" == "$SERVICE" ]] || die "staging unit missing"
-  local fragment work env_files link_target txt_value txt_target staging_listen production_listen db_file db_name key_dir owner
+  local fragment work env_files link_target txt_value txt_target staging_listen production_listen db_file db_name db_info db_source db_readable key_dir owner
   fragment="$(unit_value "$SERVICE" FragmentPath)"
   work="$(unit_value "$SERVICE" WorkingDirectory)"
   env_files="$(unit_value "$SERVICE" EnvironmentFiles)"
@@ -283,20 +572,11 @@ probe() {
   production_listen="$(listener "$FORBIDDEN_PORT")"
   [[ "$production_listen" != *":${PORT}" ]] || die "production listener collided with staging"
   nginx_facts
-  db_name=""
-  db_file=""
-  if [[ -n "$env_files" && "$env_files" != "-" ]]; then
-    db_file="${env_files%% *}"
-    db_name="$(database_name "$db_file")"
-  fi
-  if [[ -z "$db_name" && -f /etc/xtrapos/staging.env ]]; then
-    db_file="/etc/xtrapos/staging.env"
-    db_name="$(database_name "$db_file")"
-  fi
-  [[ -n "$db_name" ]] || die "staging database name is unreadable"
-  if operational_database "$db_name"; then
-    die "refusing operational database"
-  fi
+  db_info="$(load_staging_database "$env_files" "$work")"
+  db_name="$(printf '%s\n' "$db_info" | awk -F= '/^DB_NAME=/{print substr($0, 9); exit}')"
+  db_file="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE=/{print substr($0, 9); exit}')"
+  db_source="$(printf '%s\n' "$db_info" | awk -F= '/^DB_NAME_SOURCE=/{print substr($0, 16); exit}')"
+  db_readable="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE_READABLE=/{print substr($0, 18); exit}')"
   if [[ -d /usr/share/XtraPOS/data-protection-keys ]]; then
     key_dir="/usr/share/XtraPOS/data-protection-keys"
   elif [[ -d "$ROOT/shared/data-protection-keys" ]]; then
@@ -314,6 +594,8 @@ probe() {
   printf 'PRODUCTION_PORT=%s\n' "$FORBIDDEN_PORT"
   printf 'ENV_FILE=%s\n' "$db_file"
   printf 'DB_NAME=%s\n' "$db_name"
+  printf 'DB_NAME_SOURCE=%s\n' "$db_source"
+  printf 'DB_FILE_READABLE=%s\n' "$db_readable"
   printf 'KEY_DIR=%s\n' "$key_dir"
   printf 'ROOT_OWNER=%s\n' "$owner"
   printf 'API_ENTER=%s\n' "$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"
