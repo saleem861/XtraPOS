@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Print the staging deployment block list and exit.
-# This script does not open SSH, restart a service, or run SQL.
+# Validate a staging request. This script does not open SSH.
 set -euo pipefail
 
 blocked=0
@@ -20,6 +19,12 @@ else
   note PASS "confirm is staging"
 fi
 
+if [[ "${ACTION:-}" == "deploy" || "${ACTION:-}" == "rollback" ]]; then
+  note PASS "action is ${ACTION}"
+else
+  note BLOCKED "action must be deploy or rollback"
+fi
+
 sha="${GIT_SHA:-}"
 if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
   note BLOCKED "git_sha must be the full 40-character commit SHA"
@@ -31,38 +36,22 @@ elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     note BLOCKED "git_sha $sha is not on main"
   fi
 else
-  note BLOCKED "git_sha was well formed but this run has no repository to prove it is on main"
+  note BLOCKED "git_sha was well formed but this run has no repository"
 fi
 
-check_var() {
-  local name="$1"
-  local expected="$2"
-  local value="${3:-}"
-  if [[ "$value" == "$expected" ]]; then
-    note PASS "$name=$expected"
-  else
-    note BLOCKED "$name must be $expected before a later revision can deploy. Current value: ${value:-empty}"
-  fi
-}
-
-check_var STAGING_ENVIRONMENT_PROTECTION verified "${STAGING_ENVIRONMENT_PROTECTION:-}"
-check_var STAGING_SSH_CONFIG verified "${STAGING_SSH_CONFIG:-}"
-check_var STAGING_SERVER_CHECKS verified "${STAGING_SERVER_CHECKS:-}"
-check_var STAGING_DEPLOY_EXECUTION authorized "${STAGING_DEPLOY_EXECUTION:-}"
+if [[ "${STAGING_ENVIRONMENT_PROTECTION:-}" == "verified" ]]; then
+  note PASS "STAGING_ENVIRONMENT_PROTECTION=verified"
+else
+  note BLOCKED "STAGING_ENVIRONMENT_PROTECTION must be verified after the staging Environment has a required reviewer and allows main only"
+fi
 
 echo
-echo "Still required before the first staging deployment:"
-echo "- GitHub Environment staging with required reviewers and deployment branch main."
-echo "- SSH username, private key, and trusted host fingerprint stored as secrets after approval."
-echo "- nginx upstream port, current.txt versus current/ symlink, and persistent config and key paths."
-echo "- A backup and an SSH rollback path for xtrapos-staging.service only."
-echo "- A follow-up change that is allowed to connect. This revision never connects."
-echo
-echo "No SSH, deployment, service restart, SQL migration, or production change was performed."
+echo "Deploy and rollback stay skipped until that variable is set."
+echo "They also require secrets STAGING_SSH_KEY and STAGING_KNOWN_HOSTS."
+echo "The host is administrator@69.197.178.239, the service is xtrapos-staging.service, the API port is 5088, and the root is /opt/xtrapos-staging."
+echo "No SSH, deployment, service restart, or SQL migration was performed."
 
 if [[ "$blocked" -ne 0 ]]; then
-  echo "::error::Staging deployment is blocked. See the BLOCKED lines above."
+  echo "::error::Staging deployment is blocked."
   exit 1
 fi
-
-echo "Gate variables are present. The deploy job still refuses to open SSH in this revision."

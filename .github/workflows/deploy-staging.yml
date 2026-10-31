@@ -1,23 +1,28 @@
 name: Deploy to Staging
 
-# Phase 1 preparation. This workflow cannot copy files, open SSH, restart a
-# service, or run SQL. It does not use a GitHub Environment, so it cannot
-# create an unprotected "staging" environment on first dispatch.
-
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type staging to print the deployment block list. This does not deploy.
+        description: Type staging. This does not deploy until the protected environment is recorded.
         required: true
         type: string
       git_sha:
-        description: Full 40-character commit SHA already on main. It is checked only, not deployed.
+        description: Full 40-character commit SHA that is already on main.
         required: true
         type: string
+      action:
+        description: deploy uploads that SHA. rollback restores the newest staging backup.
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+        default: deploy
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: xtrapos-staging-deploy
@@ -25,7 +30,7 @@ concurrency:
 
 jobs:
   preflight:
-    name: Block deployment
+    name: Preflight
     if: github.event.inputs.confirm == 'staging'
     runs-on: ubuntu-latest
     steps:
@@ -33,33 +38,66 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Refuse until staging is explicitly verified
+      - name: Check the request
         env:
           CONFIRM: ${{ inputs.confirm }}
           GIT_SHA: ${{ inputs.git_sha }}
+          ACTION: ${{ inputs.action }}
           STAGING_ENVIRONMENT_PROTECTION: ${{ vars.STAGING_ENVIRONMENT_PROTECTION }}
-          STAGING_SSH_CONFIG: ${{ vars.STAGING_SSH_CONFIG }}
-          STAGING_SERVER_CHECKS: ${{ vars.STAGING_SERVER_CHECKS }}
-          STAGING_DEPLOY_EXECUTION: ${{ vars.STAGING_DEPLOY_EXECUTION }}
         run: bash deploy/staging-preflight.sh
 
   deploy:
-    name: Deployment execution
+    name: Deploy staging
     needs: preflight
     if: >-
       github.event.inputs.confirm == 'staging' &&
-      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified' &&
-      vars.STAGING_SSH_CONFIG == 'verified' &&
-      vars.STAGING_SERVER_CHECKS == 'verified' &&
-      vars.STAGING_DEPLOY_EXECUTION == 'authorized'
+      github.event.inputs.action == 'deploy' &&
+      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download the scanned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_SHA: ${{ inputs.git_sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --commit "$GIT_SHA" --workflow ci.yml --status success --json databaseId --jq '.[0].databaseId')"
+          [[ -n "$run_id" ]] || { echo "::error::No successful CI artifact for $GIT_SHA"; exit 1; }
+          gh run download "$run_id" --repo "${GITHUB_REPOSITORY}" --name "xtrapos-release-${GIT_SHA}" --dir "${RUNNER_TEMP}/release"
+
+      - name: Reject secrets before copy
+        run: bash deploy/scan-release.sh "${RUNNER_TEMP}/release"
+
+      - name: Copy the release and restart staging only
+        env:
+          CONFIRM: staging
+          GIT_SHA: ${{ inputs.git_sha }}
+          RELEASE_DIR: ${{ runner.temp }}/release
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-remote-activate.sh deploy
+
+  rollback:
+    name: Roll back staging
+    needs: preflight
+    if: >-
+      github.event.inputs.confirm == 'staging' &&
+      github.event.inputs.action == 'rollback' &&
+      vars.STAGING_ENVIRONMENT_PROTECTION == 'verified'
+    environment: staging
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Stop before any server contact
+      - name: Restore the staging backup and restart staging only
         env:
-          STAGING_DEPLOY_EXECUTION: ${{ vars.STAGING_DEPLOY_EXECUTION }}
-          STAGING_SSH_CONNECT: ""
+          CONFIRM: staging
           GIT_SHA: ${{ inputs.git_sha }}
-          STAGING_PUBLIC_URL: https://test-pos.sharbelfashion.com
-        run: bash deploy/staging-remote-activate.sh
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-rollback.sh

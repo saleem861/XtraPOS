@@ -123,9 +123,22 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  safety:
+    name: Deployment safety checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run non-deployment safety checks
+        run: bash deploy/staging-safety-check.sh
+
+      - name: Report safety failure
+        if: failure()
+        run: echo "::error::Staging safety checks failed. No server was contacted."
+
   result:
     name: CI result
-    needs: [web, api, package]
+    needs: [web, api, package, safety]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
@@ -135,8 +148,9 @@ jobs:
           echo "frontend=${{ needs.web.result }}"
           echo "backend=${{ needs.api.result }}"
           echo "package=${{ needs.package.result }}"
-          if [[ "${{ needs.web.result }}" != "success" || "${{ needs.api.result }}" != "success" || "${{ needs.package.result }}" != "success" ]]; then
-            echo "::error::CI failed. frontend=${{ needs.web.result }} backend=${{ needs.api.result }} package=${{ needs.package.result }}. No deployment was attempted."
+          echo "safety=${{ needs.safety.result }}"
+          if [[ "${{ needs.web.result }}" != "success" || "${{ needs.api.result }}" != "success" || "${{ needs.package.result }}" != "success" || "${{ needs.safety.result }}" != "success" ]]; then
+            echo "::error::CI failed. frontend=${{ needs.web.result }} backend=${{ needs.api.result }} package=${{ needs.package.result }} safety=${{ needs.safety.result }}. No deployment was attempted."
             exit 1
           fi
           echo "CI passed. Artifact xtrapos-release-${{ github.sha }} contains the web build, the API publish, and release.json. Deployment was not attempted."
