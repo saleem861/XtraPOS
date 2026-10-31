@@ -53,13 +53,205 @@ refuse_production_command() {
   fi
 }
 
-database_name() {
-  local file="$1" line
-  line="$(awk -F= '$1=="SqlServer__Database"{print $2; exit}' "$file" 2>/dev/null || true)"
-  if [[ -z "$line" ]] && command -v sudo >/dev/null; then
-    line="$(sudo -n awk -F= '$1=="SqlServer__Database"{print $2; exit}' "$file" 2>/dev/null || true)"
+staging_systemctl() {
+  local bin="systemctl"
+  if [[ "${STAGING_SOURCE_ONLY:-}" == "yes" && -n "${SYSTEMCTL_BIN:-}" && -x "${SYSTEMCTL_BIN}" ]]; then
+    bin="$SYSTEMCTL_BIN"
   fi
-  printf '%s' "$line" | tr -d '\r' | tr -d '"' | tr -d "'"
+  "$bin" "$@"
+}
+
+environment_file_list() {
+  local allow_test="no"
+  [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]] && allow_test="yes"
+  python3 -c 'import re, sys
+allow_test = sys.argv[1] == "yes"
+text = sys.stdin.read().strip()
+prefixes = ("/etc/xtrapos/", "/opt/xtrapos-staging/", "/usr/share/XtraPOS/")
+if allow_test:
+    prefixes += ("/tmp/", "/var/tmp/")
+if not text or text == "-":
+    sys.exit(0)
+paths = re.findall(r"(\S+)\s+\(ignore_errors=(?:yes|no)\)", text)
+if not paths:
+    paths = [item for item in text.split() if item.startswith("/")]
+seen = set()
+for path in paths:
+    if path.startswith("-"):
+        path = path[1:]
+    if ".." in path.split("/"):
+        continue
+    if not path.startswith(prefixes) or path in seen:
+        continue
+    seen.add(path)
+    print(path)
+' "$allow_test" <<<"$1"
+}
+
+read_keyed_env_file() {
+  python3 -c 'import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    text = path.read_text(errors="replace")
+except OSError:
+    sys.exit(0)
+if text.startswith("\ufeff"):
+    text = text[1:]
+for raw in text.splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or line.startswith(";"):
+        continue
+    if line.startswith("export "):
+        line = line[len("export "):].strip()
+    if "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() != "SqlServer__Database":
+        continue
+    value = value.strip().strip("\r")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "\047"}:
+        value = value[1:-1]
+    print(value.strip())
+    break
+' "$1"
+}
+
+unit_database_name() {
+  local json
+  json="$(staging_systemctl show "$SERVICE" -p Environment -o json --no-pager 2>/dev/null || true)"
+  if [[ -z "$json" && "${STAGING_SOURCE_ONLY:-}" != "yes" ]] && command -v sudo >/dev/null; then
+    json="$(sudo -n systemctl show "$SERVICE" -p Environment -o json --no-pager 2>/dev/null || true)"
+  fi
+  printf '%s' "$json" | python3 -c 'import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(0)
+items = data.get("Environment") if isinstance(data, dict) else None
+if items is None:
+    sys.exit(0)
+if isinstance(items, str):
+    items = items.split()
+for item in items:
+    if not isinstance(item, str) or "=" not in item:
+        continue
+    key, value = item.split("=", 1)
+    if key == "SqlServer__Database" and value.strip():
+        print(value.strip())
+        break
+'
+}
+
+appsettings_database_name() {
+  local dir="$1" file canonical name
+  case "$dir" in
+    /opt/xtrapos-staging/current/api) ;;
+    /tmp/*|/var/tmp/*)
+      [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]] || return 0
+      ;;
+    *) return 0 ;;
+  esac
+  for file in "$dir/appsettings.Staging.json" "$dir/appsettings.json"; do
+    [[ -f "$file" && -r "$file" ]] || continue
+    canonical="$(readlink -f "$file")"
+    case "$canonical" in
+      "$dir"/*) ;;
+      *) continue ;;
+    esac
+    name="$(python3 -c 'import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+section = data.get("SqlServer") if isinstance(data, dict) else None
+if not isinstance(section, dict):
+    sys.exit(0)
+value = section.get("Database")
+if isinstance(value, str) and value.strip():
+    print(value.strip())
+' <"$file")"
+    if [[ -n "$name" ]]; then
+      printf '%s\n' "$file" "$name"
+      return 0
+    fi
+  done
+}
+
+resolve_staging_database() {
+  local env_files="$1" work="$2" path name="" file="" readable="no" saw_file=0 saw_unreadable=0 saw_missing=0 saw_text=0 source="" problem=""
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    saw_file=1
+    file="$path"
+    if [[ -f "$path" && -r "$path" ]]; then
+      readable="yes"
+      if grep -q 'SqlServer__Database' "$path" 2>/dev/null; then
+        saw_text=1
+      fi
+      name="$(read_keyed_env_file "$path")"
+      if [[ -n "$name" ]]; then
+        source="environment-file"
+        break
+      fi
+    elif [[ -e "$path" ]]; then
+      saw_unreadable=1
+    else
+      saw_missing=1
+    fi
+  done < <(environment_file_list "$env_files")
+  if [[ -z "$name" && "$saw_file" -eq 0 && -f /etc/xtrapos/staging.env && -r /etc/xtrapos/staging.env ]]; then
+    file="/etc/xtrapos/staging.env"
+    readable="yes"
+    name="$(read_keyed_env_file "$file")"
+    [[ -n "$name" ]] && source="environment-file"
+  fi
+  if [[ -z "$name" ]]; then
+    name="$(unit_database_name)"
+    if [[ -n "$name" ]]; then
+      source="unit-environment"
+    fi
+  fi
+  if [[ -z "$name" && -n "$work" ]]; then
+    local appsettings_info
+    appsettings_info="$(appsettings_database_name "$work")"
+    if [[ -n "$appsettings_info" ]]; then
+      file="$(printf '%s\n' "$appsettings_info" | awk 'NR==1')"
+      name="$(printf '%s\n' "$appsettings_info" | awk 'NR==2')"
+      source="appsettings"
+      readable="yes"
+    fi
+  fi
+  if [[ -n "$name" ]]; then
+    problem=""
+  elif [[ "$saw_unreadable" -eq 1 && "$readable" != "yes" ]]; then
+    problem="permissions"
+  elif [[ "$saw_text" -eq 1 ]]; then
+    problem="format"
+  elif [[ "$saw_missing" -eq 1 || "$saw_file" -eq 0 ]]; then
+    problem="path"
+  else
+    problem="name"
+  fi
+  printf 'DB_FILE=%s\n' "$file"
+  printf 'DB_NAME=%s\n' "$name"
+  printf 'DB_NAME_SOURCE=%s\n' "$source"
+  printf 'DB_FILE_READABLE=%s\n' "$readable"
+  printf 'DB_READ_PROBLEM=%s\n' "$problem"
+}
+
+load_staging_database() {
+  local info name problem
+  info="$(resolve_staging_database "$1" "$2")"
+  name="$(printf '%s\n' "$info" | awk -F= '/^DB_NAME=/{print substr($0, 9); exit}')"
+  problem="$(printf '%s\n' "$info" | awk -F= '/^DB_READ_PROBLEM=/{print substr($0, 17); exit}')"
+  [[ -n "$name" ]] || die "staging database name is unreadable (${problem:-unknown})"
+  if operational_database "$name"; then
+    die "refusing operational database"
+  fi
+  printf '%s\n' "$info"
 }
 
 operational_database() {
@@ -260,7 +452,7 @@ release_id_from_path() {
 
 probe() {
   [[ "$(unit_value "$SERVICE" Id)" == "$SERVICE" ]] || die "staging unit missing"
-  local fragment work env_files link_target txt_value txt_target staging_listen production_listen db_file db_name key_dir owner
+  local fragment work env_files link_target txt_value txt_target staging_listen production_listen db_file db_name db_info db_source db_readable key_dir owner
   fragment="$(unit_value "$SERVICE" FragmentPath)"
   work="$(unit_value "$SERVICE" WorkingDirectory)"
   env_files="$(unit_value "$SERVICE" EnvironmentFiles)"
@@ -283,20 +475,11 @@ probe() {
   production_listen="$(listener "$FORBIDDEN_PORT")"
   [[ "$production_listen" != *":${PORT}" ]] || die "production listener collided with staging"
   nginx_facts
-  db_name=""
-  db_file=""
-  if [[ -n "$env_files" && "$env_files" != "-" ]]; then
-    db_file="${env_files%% *}"
-    db_name="$(database_name "$db_file")"
-  fi
-  if [[ -z "$db_name" && -f /etc/xtrapos/staging.env ]]; then
-    db_file="/etc/xtrapos/staging.env"
-    db_name="$(database_name "$db_file")"
-  fi
-  [[ -n "$db_name" ]] || die "staging database name is unreadable"
-  if operational_database "$db_name"; then
-    die "refusing operational database"
-  fi
+  db_info="$(load_staging_database "$env_files" "$work")"
+  db_name="$(printf '%s\n' "$db_info" | awk -F= '/^DB_NAME=/{print substr($0, 9); exit}')"
+  db_file="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE=/{print substr($0, 9); exit}')"
+  db_source="$(printf '%s\n' "$db_info" | awk -F= '/^DB_NAME_SOURCE=/{print substr($0, 16); exit}')"
+  db_readable="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE_READABLE=/{print substr($0, 18); exit}')"
   if [[ -d /usr/share/XtraPOS/data-protection-keys ]]; then
     key_dir="/usr/share/XtraPOS/data-protection-keys"
   elif [[ -d "$ROOT/shared/data-protection-keys" ]]; then
@@ -314,6 +497,8 @@ probe() {
   printf 'PRODUCTION_PORT=%s\n' "$FORBIDDEN_PORT"
   printf 'ENV_FILE=%s\n' "$db_file"
   printf 'DB_NAME=%s\n' "$db_name"
+  printf 'DB_NAME_SOURCE=%s\n' "$db_source"
+  printf 'DB_FILE_READABLE=%s\n' "$db_readable"
   printf 'KEY_DIR=%s\n' "$key_dir"
   printf 'ROOT_OWNER=%s\n' "$owner"
   printf 'API_ENTER=%s\n' "$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"

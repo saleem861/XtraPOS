@@ -101,7 +101,7 @@ CONFIRM=nope GIT_SHA=dead bash deploy/staging-preflight.sh >"$tmp/out" 2>"$tmp/e
 if grep -n -E 'mv[[:space:]]+.*App_Data' deploy/staging-on-server.sh; then
   fail "App_Data is moved off the previous release"
 fi
-if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY|STAGING_NGINX_DUMP' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
+if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY|STAGING_NGINX_DUMP|SYSTEMCTL_BIN' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
   fail "workflow enables the staging test hook"
 fi
 
@@ -431,5 +431,95 @@ STAGING_SOURCE_ONLY=yes STAGING_TEST_ROOT="$app_root" STAGING_NGINX_DUMP="/etc/n
 [[ "$nginx_code" -ne 0 ]] || fail "nginx dump outside the test root was read"
 grep -q 'REMOTE_ERROR nginx dump' "$tmp/nginx-err" || fail "nginx dump outside the test root was not rejected"
 [[ ! -s "$tmp/nginx-out" ]] || fail "rejected nginx dump produced facts"
+
+db_secret="db-password-should-not-print"
+mkdir -p "$tmp/api"
+cat >"$tmp/plain.env" <<EOF
+# staging database name only
+export SqlServer__Database="XtraPOS_Branch_Test_Staging"
+SqlServer__Password=${db_secret}
+EOF
+printf 'OTHER=1\n' >"$tmp/other.env"
+printf 'Database=XtraPOS_Branch_Test_Staging\n' >"$tmp/wrong-key.env"
+mkdir -p "$tmp/not-a-file"
+cat >"$tmp/api/appsettings.Staging.json" <<EOF
+{"SqlServer":{"Database":"XtraPOS_Branch_Test_Staging","Password":"${db_secret}"}}
+EOF
+cat >"$tmp/systemctl-db" <<EOF
+#!/bin/sh
+case "\$*" in
+  *"-p Environment "*)
+    printf '%s\n' "{\"Environment\":[\"SqlServer__Password=${db_secret}\",\"SqlServer__Database=\${FAKE_DB_NAME}\"]}"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+chmod 755 "$tmp/systemctl-db"
+
+run_db_read() {
+  local files="$1" work="$2" mode="${3:-load}"
+  (
+    export STAGING_SOURCE_ONLY=yes
+    export STAGING_TEST_ROOT="$app_root"
+    export SYSTEMCTL_BIN="$tmp/systemctl-db"
+    export FAKE_DB_NAME="${FAKE_DB_NAME-XtraPOS_Branch_Test_Staging}"
+    # shellcheck disable=SC1091
+    source deploy/staging-on-server.sh
+    if [[ "$mode" == "resolve" ]]; then
+      resolve_staging_database "$files" "$work"
+    else
+      load_staging_database "$files" "$work"
+    fi
+  )
+}
+
+FAKE_DB_NAME="XtraPOS_Branch_Test_Staging"
+db_info="$(run_db_read "$tmp/other.env (ignore_errors=no) $tmp/plain.env (ignore_errors=yes)" "")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "quoted environment file did not provide the staging database name"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=environment-file' || fail "database name was not read from the environment file"
+printf '%s\n' "$db_info" | grep -qx "DB_FILE=$tmp/plain.env" || fail "database name was read from the wrong environment file"
+if printf '%s\n' "$db_info" | grep -q "$db_secret"; then
+  fail "environment file read printed a secret"
+fi
+
+db_info="$(run_db_read "$tmp/not-a-file (ignore_errors=no)" "")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "unreadable environment file did not use the unit assignment"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=unit-environment' || fail "unit environment was not used when the file was unreadable"
+printf '%s\n' "$db_info" | grep -qx 'DB_FILE_READABLE=no' || fail "unreadable environment file was reported as readable"
+if printf '%s\n' "$db_info" | grep -q "$db_secret"; then
+  fail "unit environment read printed a secret"
+fi
+
+db_info="$(run_db_read "/etc/passwd (ignore_errors=no)" "")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=unit-environment' || fail "a non-staging environment file was read"
+if printf '%s\n' "$db_info" | grep -q '^root:'; then
+  fail "inspection read a system account file"
+fi
+
+FAKE_DB_NAME=""
+db_info="$(run_db_read "" "$tmp/api")"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME=XtraPOS_Branch_Test_Staging' || fail "appsettings database name was ignored"
+printf '%s\n' "$db_info" | grep -qx 'DB_NAME_SOURCE=appsettings' || fail "appsettings was not identified as the database source"
+printf '%s\n' "$db_info" | grep -qx "DB_FILE=$tmp/api/appsettings.Staging.json" || fail "appsettings path was not reported"
+if printf '%s\n' "$db_info" | grep -q "$db_secret"; then
+  fail "appsettings read printed a secret"
+fi
+
+FAKE_DB_NAME="XtraPOS_Central"
+db_code=0
+run_db_read "$tmp/not-a-file (ignore_errors=no)" "" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "an operational database from the unit environment was accepted"
+grep -q 'refusing operational database' "$tmp/db-err" || fail "operational database was not refused"
+if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+  fail "operational database refusal printed a secret"
+fi
+
+FAKE_DB_NAME=""
+db_code=0
+run_db_read "$tmp/wrong-key.env (ignore_errors=no)" "$tmp/empty-work" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+[[ "$db_code" -ne 0 ]] || fail "a different variable name was accepted as the database"
+grep -q 'staging database name is unreadable (name)' "$tmp/db-err" || fail "a missing SqlServer__Database key was not reported as the variable name"
 
 echo "Staging safety checks passed"

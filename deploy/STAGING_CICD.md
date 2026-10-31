@@ -6,6 +6,8 @@ Allowed target: `xtrapos-deploy@69.197.178.239`. Service: `xtrapos-staging.servi
 
 Inspection reads the root and upstream from the one HTTPS server block for `test-pos.sharbelfashion.com`. An HTTP server block for that name is accepted only when it redirects to HTTPS and does not proxy. Nginx is not modified.
 
+The staging database name is the `SqlServer__Database` value from the unit environment file. When that file is not readable, inspection reads the same key from the unit's loaded environment, then from `SqlServer.Database` in the staging appsettings file. Other settings, including passwords, are not printed. `XtraPOS_Central`, `XtraPOS_Branch`, `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, and `swstore` are still refused.
+
 `current` and `current.txt` must name the same release. Activation updates both. It copies the previous release's `App_Data` into `/opt/xtrapos-staging/shared/app-data` and points only the new release at that shared directory. The previous release keeps its own `App_Data` directory, so a rollback still has it. Data-protection keys at `/usr/share/XtraPOS/data-protection-keys` are not deleted. After activation, a failed public `/health` check, homepage check, or release SHA check restores the previous pointer and restarts only `xtrapos-staging.service`.
 
 Secrets used by the Environment, and not stored in git: `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`, `STAGING_KNOWN_HOSTS`. The host secret must be `69.197.178.239` and the user secret must be `xtrapos-deploy`. Host-key checking stays enabled.
