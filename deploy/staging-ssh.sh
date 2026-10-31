@@ -4,7 +4,7 @@
 set -euo pipefail
 
 STAGING_SSH_HOST="69.197.178.239"
-STAGING_SSH_USER="administrator"
+STAGING_SSH_USER="xtrapos-deploy"
 STAGING_SSH_TARGET="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
 STAGING_ROOT="/opt/xtrapos-staging"
 STAGING_SERVICE="xtrapos-staging.service"
@@ -23,6 +23,8 @@ staging_prepare_ssh() {
   [[ "${GIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || staging_die "GIT_SHA must be the full commit SHA"
   [[ -n "${STAGING_SSH_KEY:-}" ]] || staging_die "STAGING_SSH_KEY is missing"
   [[ -n "${STAGING_KNOWN_HOSTS:-}" ]] || staging_die "STAGING_KNOWN_HOSTS is missing"
+  [[ "${STAGING_SSH_HOST_SECRET:-}" == "$STAGING_SSH_HOST" ]] || staging_die "STAGING_SSH_HOST is not the staging server"
+  [[ "${STAGING_SSH_USER_SECRET:-}" == "$STAGING_SSH_USER" ]] || staging_die "STAGING_SSH_USER is not the staging deploy account"
 
   local dir key hosts line
   dir="${TMPDIR:-/tmp}/xtrapos-staging-ssh.$$"

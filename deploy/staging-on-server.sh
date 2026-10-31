@@ -11,26 +11,41 @@ FORBIDDEN_SERVICE="xtrapos-api.service"
 FORBIDDEN_PORT="5216"
 PUBLIC_NAME="test-pos.sharbelfashion.com"
 
-action="${1:-}"
-sha="${2:-}"
-version="${3:-}"
-api_enter_before="${4:-}"
-
 die() {
   echo "REMOTE_ERROR $*" >&2
   exit 1
 }
 
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "sha"
-[[ "$action" =~ ^(probe|prepare|activate|rollback)$ ]] || die "action"
-if [[ "$action" == "prepare" || "$action" == "activate" ]]; then
-  [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "version"
+# Tests may source this file. A production run ignores both variables.
+if [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]]; then
+  case "${STAGING_TEST_ROOT:-}" in
+    /tmp/*|/var/tmp/*) ;;
+    *) die "test root" ;;
+  esac
+  case "$STAGING_TEST_ROOT" in
+    *..*) die "test root" ;;
+  esac
+  [[ -d "$STAGING_TEST_ROOT" ]] || die "test root"
+  ROOT="$(readlink -f "$STAGING_TEST_ROOT")"
+  case "$ROOT" in
+    /tmp/*|/var/tmp/*) ;;
+    *) die "test root" ;;
+  esac
+else
+  action="${1:-}"
+  sha="${2:-}"
+  version="${3:-}"
+  api_enter_before="${4:-}"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "sha"
+  [[ "$action" =~ ^(probe|prepare|activate|rollback)$ ]] || die "action"
+  if [[ "$action" == "prepare" || "$action" == "activate" ]]; then
+    [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "version"
+  fi
+  case "$ROOT" in
+    /opt/xtrapos-staging) ;;
+    *) die "root" ;;
+  esac
 fi
-
-case "$ROOT" in
-  /opt/xtrapos-staging) ;;
-  *) die "root" ;;
-esac
 
 refuse_production_command() {
   if [[ "$*" == *"$FORBIDDEN_SERVICE"* || "$*" == *"$FORBIDDEN_PORT"* ]]; then
@@ -112,33 +127,48 @@ PY
 }
 
 unit_value() {
-  systemctl show "$1" -p "$2" --value --no-pager
+  local value
+  value="$(systemctl show "$1" -p "$2" --value --no-pager 2>/dev/null || true)"
+  if [[ -z "$value" ]] && command -v sudo >/dev/null; then
+    value="$(sudo -n systemctl show "$1" -p "$2" --value --no-pager 2>/dev/null || true)"
+  fi
+  printf '%s' "$value"
+}
+
+listener() {
+  local port="$1" line
+  line="$(ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR==1 { print $4 }' || true)"
+  printf '%s' "$line"
+}
+
+release_id_from_path() {
+  basename "$1"
 }
 
 probe() {
   [[ "$(unit_value "$SERVICE" Id)" == "$SERVICE" ]] || die "staging unit missing"
-  local fragment work env_files pointer target db_file db_name
+  local fragment work env_files link_target txt_value txt_target staging_listen production_listen db_file db_name key_dir owner
   fragment="$(unit_value "$SERVICE" FragmentPath)"
   work="$(unit_value "$SERVICE" WorkingDirectory)"
   env_files="$(unit_value "$SERVICE" EnvironmentFiles)"
   [[ "$fragment" != *xtrapos-api* ]] || die "staging unit points at production"
-  if [[ -n "$work" && "$work" != "-" && "$work" != /opt/xtrapos-staging && "$work" != /opt/xtrapos-staging/* ]]; then
-    die "staging working directory is outside /opt/xtrapos-staging"
-  fi
-  if [[ -L "$ROOT/current" ]]; then
-    pointer="symlink"
-    target="$(readlink -f "$ROOT/current")"
-  elif [[ -f "$ROOT/current.txt" ]]; then
-    pointer="txt"
-    target="$(tr -d '\r\n' <"$ROOT/current.txt")"
-    if [[ "$target" != /* ]]; then
-      target="$ROOT/releases/$target"
-    fi
+  [[ "$work" == "/opt/xtrapos-staging/current/api" ]] || die "staging working directory is not /opt/xtrapos-staging/current/api"
+  [[ -L "$ROOT/current" ]] || die "current symlink is missing"
+  [[ -f "$ROOT/current.txt" ]] || die "current.txt is missing"
+  link_target="$(readlink -f "$ROOT/current")"
+  txt_value="$(tr -d '\r\n' <"$ROOT/current.txt")"
+  if [[ "$txt_value" == /* ]]; then
+    txt_target="$txt_value"
   else
-    die "no current symlink or current.txt"
+    txt_target="$ROOT/releases/$txt_value"
   fi
-  [[ -d "$target" ]] || die "current target is missing"
-  [[ "$target" == /opt/xtrapos-staging/* ]] || die "current target is outside the staging root"
+  [[ -d "$link_target" && -d "$txt_target" ]] || die "current target is missing"
+  [[ "$link_target" == /opt/xtrapos-staging/* && "$txt_target" == /opt/xtrapos-staging/* ]] || die "current target is outside the staging root"
+  [[ "$(release_id_from_path "$link_target")" == "$(release_id_from_path "$txt_target")" ]] || die "current symlink and current.txt disagree"
+  staging_listen="$(listener "$PORT")"
+  [[ "$staging_listen" == "127.0.0.1:${PORT}" || "$staging_listen" == "[::1]:${PORT}" ]] || die "staging port is not loopback ${PORT}"
+  production_listen="$(listener "$FORBIDDEN_PORT")"
+  [[ "$production_listen" != *":${PORT}" ]] || die "production listener collided with staging"
   nginx_facts
   db_name=""
   db_file=""
@@ -154,12 +184,25 @@ probe() {
   if operational_database "$db_name"; then
     die "refusing operational database"
   fi
+  if [[ -d /usr/share/XtraPOS/data-protection-keys ]]; then
+    key_dir="/usr/share/XtraPOS/data-protection-keys"
+  elif [[ -d "$ROOT/shared/data-protection-keys" ]]; then
+    key_dir="$ROOT/shared/data-protection-keys"
+  else
+    key_dir="missing"
+  fi
+  owner="$(stat -c '%U:%G %a' "$ROOT" 2>/dev/null || echo unknown)"
   printf 'PROBE_OK=yes\n'
-  printf 'POINTER=%s\n' "$pointer"
-  printf 'CURRENT_TARGET=%s\n' "$target"
+  printf 'POINTER=both\n'
+  printf 'CURRENT_ID=%s\n' "$(release_id_from_path "$link_target")"
+  printf 'CURRENT_TARGET=%s\n' "$link_target"
   printf 'WORKING_DIRECTORY=%s\n' "$work"
+  printf 'STAGING_LISTEN=%s\n' "$staging_listen"
+  printf 'PRODUCTION_PORT=%s\n' "$FORBIDDEN_PORT"
   printf 'ENV_FILE=%s\n' "$db_file"
   printf 'DB_NAME=%s\n' "$db_name"
+  printf 'KEY_DIR=%s\n' "$key_dir"
+  printf 'ROOT_OWNER=%s\n' "$owner"
   printf 'API_ENTER=%s\n' "$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"
 }
 
@@ -171,10 +214,36 @@ prepare() {
 }
 
 preserve_app_data() {
-  local new_api="$1" old_api="$2"
-  if [[ -d "$old_api/App_Data" && ! -e "$new_api/App_Data" ]]; then
-    ln -s "$(readlink -f "$old_api/App_Data")" "$new_api/App_Data"
+  local new_api="$1" old_api="$2" shared="$ROOT/shared/app-data" source=""
+  [[ "$new_api" == "$ROOT"/* && "$new_api" != "$old_api" ]] || die "refusing to retarget the live App_Data"
+  [[ -z "$old_api" || "$old_api" == "$ROOT"/* ]] || die "previous release is outside the staging root"
+  mkdir -p "$ROOT/shared"
+  if [[ ! -e "$shared" && ! -L "$shared" ]]; then
+    if [[ -d "$old_api/App_Data" && ! -L "$old_api/App_Data" ]]; then
+      cp -a "$old_api/App_Data" "$shared"
+    elif [[ -L "$old_api/App_Data" ]]; then
+      source="$(readlink -f "$old_api/App_Data" || true)"
+      case "$source" in
+        "$ROOT"/*)
+          if [[ -d "$source" && ! -L "$source" ]]; then
+            mkdir -p "$shared"
+            cp -a "$source/." "$shared/"
+          else
+            mkdir -p "$shared"
+          fi
+          ;;
+        *)
+          mkdir -p "$shared"
+          ;;
+      esac
+    else
+      mkdir -p "$shared"
+    fi
   fi
+  if [[ -e "$new_api/App_Data" || -L "$new_api/App_Data" ]]; then
+    rm -rf "$new_api/App_Data"
+  fi
+  ln -s "$shared" "$new_api/App_Data"
 }
 
 backup_pointer() {
@@ -196,12 +265,24 @@ backup_pointer() {
 restart_staging_only() {
   local before after body
   before="$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"
-  systemctl restart "$SERVICE"
+  if ! systemctl restart "$SERVICE" 2>/dev/null; then
+    sudo -n systemctl restart "$SERVICE" || die "cannot restart ${SERVICE}; sudo is limited to that unit"
+  fi
   after="$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"
   [[ "$before" == "$after" ]] || die "production service timestamp changed"
-  systemctl is-active --quiet "$SERVICE" || return 1
+  systemctl is-active --quiet "$SERVICE" 2>/dev/null || sudo -n systemctl is-active --quiet "$SERVICE" || return 1
   body="$(curl -fsS --max-time 20 "http://127.0.0.1:${PORT}/health" || true)"
   grep -q Healthy <<<"$body" || return 1
+}
+
+activate_pointers() {
+  local release="$1" version="$2" link_tmp text_tmp
+  link_tmp="$(mktemp -u "$ROOT/.current.XXXXXX")"
+  ln -s "$release" "$link_tmp"
+  mv -Tf "$link_tmp" "$ROOT/current"
+  text_tmp="$(mktemp "$ROOT/.current.txt.XXXXXX")"
+  printf '%s\n' "$version" >"$text_tmp"
+  mv -f "$text_tmp" "$ROOT/current.txt"
 }
 
 activate() {
@@ -227,18 +308,10 @@ activate() {
     preserve_app_data "$release/api" "$old_api"
   fi
   backup="$(backup_pointer)"
-  if [[ -L "$ROOT/current" ]]; then
-    ln -sfn "$release" "$ROOT/current"
-  else
-    cp -a "$ROOT/current.txt" "$ROOT/previous.txt"
-    printf '%s\n' "$version" >"$ROOT/current.txt"
-  fi
+  cp -a "$ROOT/current.txt" "$ROOT/previous.txt"
+  activate_pointers "$release" "$version"
   if ! restart_staging_only; then
-    if [[ -L "$ROOT/current" ]]; then
-      ln -sfn "$old_target" "$ROOT/current"
-    else
-      cp -a "$backup/current.txt" "$ROOT/current.txt"
-    fi
+    activate_pointers "$old_target" "$(basename "$old_target")"
     restart_staging_only || die "previous staging release did not become healthy"
     die "activate failed and the previous pointer was restored"
   fi
@@ -253,8 +326,12 @@ restore_latest_backup() {
     target="$(cat "$latest/current-target")"
     [[ "$target" == /opt/xtrapos-staging/* ]] || die "backup target is outside the staging root"
     ln -sfn "$target" "$ROOT/current"
+    printf '%s\n' "$(basename "$target")" >"$ROOT/current.txt"
   elif [[ -f "$latest/current.txt" ]]; then
     cp -a "$latest/current.txt" "$ROOT/current.txt"
+    if [[ -d "$ROOT/releases/$(tr -d '\r\n' <"$ROOT/current.txt")" ]]; then
+      ln -sfn "$ROOT/releases/$(tr -d '\r\n' <"$ROOT/current.txt")" "$ROOT/current"
+    fi
   elif [[ -f "$ROOT/previous.txt" ]]; then
     cp -a "$ROOT/previous.txt" "$ROOT/current.txt"
   else
@@ -269,9 +346,11 @@ rollback() {
   printf 'ROLLBACK_OK=yes\n'
 }
 
-case "$action" in
-  probe) probe ;;
-  prepare) prepare ;;
-  activate) activate ;;
-  rollback) rollback ;;
-esac
+if [[ "${STAGING_SOURCE_ONLY:-}" != "yes" ]]; then
+  case "$action" in
+    probe) probe ;;
+    prepare) prepare ;;
+    activate) activate ;;
+    rollback) rollback ;;
+  esac
+fi
