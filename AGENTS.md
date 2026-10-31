@@ -22,7 +22,9 @@ The only database this environment may use is the local SQL Server Developer ins
 
 `XtraPOS_Central` does not exist here and must not be created, migrated, or queried. Do not point the API at `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, `swstore`, or any host other than localhost. Do not deploy to `test-pos.sharbelfashion.com` and do not change production VPS services.
 
-The test database is empty. Startup lists pending branch migrations and does not apply them. Do not run `--apply-branch-migrations` or `--apply-central-migrations` unless the user explicitly approves that command and the confirmed database name is exactly `XtraPOS_Branch_Test_Cloud`. Do not complete the setup wizard in a way that creates a business or a central database without that approval.
+`scripts/cloud-agent-start.sh` calls `scripts/cloud-agent-init-db.sh` after SQL Server is listening. That step creates `XtraPOS_Branch_Test_Cloud` when it is missing and applies pending branch migrations with `--apply-branch-migrations --confirm-database XtraPOS_Branch_Test_Cloud`. It does not create a business, branch, device, or admin, so the setup wizard stays available. It refuses any other database name or any server other than localhost. Do not run `--apply-central-migrations`. Do not point the API at `XtraPOS_Central` or a real branch database.
+
+`scripts/cloud-agent-seed-fictional.sh` is optional and is not part of startup. It creates one fictional standalone branch only when setup status is `NotConfigured`. Set `XTRAPOS_FICTIONAL_ADMIN_PASSWORD` in the environment for that run. Do not commit that password.
 
 ## Resource-saving mode
 
