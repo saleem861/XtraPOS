@@ -11,26 +11,41 @@ FORBIDDEN_SERVICE="xtrapos-api.service"
 FORBIDDEN_PORT="5216"
 PUBLIC_NAME="test-pos.sharbelfashion.com"
 
-action="${1:-}"
-sha="${2:-}"
-version="${3:-}"
-api_enter_before="${4:-}"
-
 die() {
   echo "REMOTE_ERROR $*" >&2
   exit 1
 }
 
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "sha"
-[[ "$action" =~ ^(probe|prepare|activate|rollback)$ ]] || die "action"
-if [[ "$action" == "prepare" || "$action" == "activate" ]]; then
-  [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "version"
+# Tests may source this file. A production run ignores both variables.
+if [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]]; then
+  case "${STAGING_TEST_ROOT:-}" in
+    /tmp/*|/var/tmp/*) ;;
+    *) die "test root" ;;
+  esac
+  case "$STAGING_TEST_ROOT" in
+    *..*) die "test root" ;;
+  esac
+  [[ -d "$STAGING_TEST_ROOT" ]] || die "test root"
+  ROOT="$(readlink -f "$STAGING_TEST_ROOT")"
+  case "$ROOT" in
+    /tmp/*|/var/tmp/*) ;;
+    *) die "test root" ;;
+  esac
+else
+  action="${1:-}"
+  sha="${2:-}"
+  version="${3:-}"
+  api_enter_before="${4:-}"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "sha"
+  [[ "$action" =~ ^(probe|prepare|activate|rollback)$ ]] || die "action"
+  if [[ "$action" == "prepare" || "$action" == "activate" ]]; then
+    [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "version"
+  fi
+  case "$ROOT" in
+    /opt/xtrapos-staging) ;;
+    *) die "root" ;;
+  esac
 fi
-
-case "$ROOT" in
-  /opt/xtrapos-staging) ;;
-  *) die "root" ;;
-esac
 
 refuse_production_command() {
   if [[ "$*" == *"$FORBIDDEN_SERVICE"* || "$*" == *"$FORBIDDEN_PORT"* ]]; then
@@ -199,16 +214,36 @@ prepare() {
 }
 
 preserve_app_data() {
-  local new_api="$1" old_api="$2" shared="$ROOT/shared/app-data"
+  local new_api="$1" old_api="$2" shared="$ROOT/shared/app-data" source=""
+  [[ "$new_api" == "$ROOT"/* && "$new_api" != "$old_api" ]] || die "refusing to retarget the live App_Data"
+  [[ -z "$old_api" || "$old_api" == "$ROOT"/* ]] || die "previous release is outside the staging root"
   mkdir -p "$ROOT/shared"
-  if [[ ! -e "$shared" ]]; then
+  if [[ ! -e "$shared" && ! -L "$shared" ]]; then
     if [[ -d "$old_api/App_Data" && ! -L "$old_api/App_Data" ]]; then
-      mv "$old_api/App_Data" "$shared"
+      cp -a "$old_api/App_Data" "$shared"
+    elif [[ -L "$old_api/App_Data" ]]; then
+      source="$(readlink -f "$old_api/App_Data" || true)"
+      case "$source" in
+        "$ROOT"/*)
+          if [[ -d "$source" && ! -L "$source" ]]; then
+            mkdir -p "$shared"
+            cp -a "$source/." "$shared/"
+          else
+            mkdir -p "$shared"
+          fi
+          ;;
+        *)
+          mkdir -p "$shared"
+          ;;
+      esac
     else
       mkdir -p "$shared"
     fi
   fi
-  ln -sfn "$shared" "$new_api/App_Data"
+  if [[ -e "$new_api/App_Data" || -L "$new_api/App_Data" ]]; then
+    rm -rf "$new_api/App_Data"
+  fi
+  ln -s "$shared" "$new_api/App_Data"
 }
 
 backup_pointer() {
@@ -311,9 +346,11 @@ rollback() {
   printf 'ROLLBACK_OK=yes\n'
 }
 
-case "$action" in
-  probe) probe ;;
-  prepare) prepare ;;
-  activate) activate ;;
-  rollback) rollback ;;
-esac
+if [[ "${STAGING_SOURCE_ONLY:-}" != "yes" ]]; then
+  case "$action" in
+    probe) probe ;;
+    prepare) prepare ;;
+    activate) activate ;;
+    rollback) rollback ;;
+  esac
+fi
