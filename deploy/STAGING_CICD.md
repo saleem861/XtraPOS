@@ -6,7 +6,13 @@ Allowed target: `xtrapos-deploy@69.197.178.239`. Service: `xtrapos-staging.servi
 
 Inspection reads the root and upstream from the one HTTPS server block for `test-pos.sharbelfashion.com`. An HTTP server block for that name is accepted only when it redirects to HTTPS and does not proxy. Nginx is not modified.
 
-The staging database name is the `SqlServer__Database` value from the unit environment file. When that file is not readable, inspection reads the same key from the unit's loaded environment, then from `SqlServer.Database` in the staging appsettings file. Other settings, including passwords, are not printed. `XtraPOS_Central`, `XtraPOS_Branch`, `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, and `swstore` are still refused.
+The effective staging database name is `SqlServer__Database` from the staging unit's environment file. Inspection accepts that name only when every configured file is readable and the values agree. `SqlServer.Database` in appsettings is used only when no environment file is configured, or when every configured file was read and does not set the key. An unreadable environment file is not replaced with appsettings, and a name from a sibling file is not accepted while another configured file could not be read. A disagreement between the file, the verifier below, and appsettings fails closed. Inspection does not query the unit `Environment` property, because that property includes credentials. Operational names `XtraPOS_Central`, `XtraPOS_Branch`, `XtraPOS_Branch_01`, `XtraPOS_Branch_02`, `saleemPOSDB`, `Shop1`, `Shop2`, and `swstore` are still refused. Passwords are not printed.
+
+When the file mode blocks `xtrapos-deploy`, the authoritative check is the read-only helper `deploy/staging-db-name.sh`. It accepts no arguments, reads only `xtrapos-staging.service`, and prints `DB_NAME` and nothing else. It is not installed on the server. Applying it requires explicit approval, by installing that script as `/usr/local/sbin/xtrapos-staging-db-name` and adding only this sudoers rule:
+
+```
+xtrapos-deploy ALL=(root) NOPASSWD: /usr/local/sbin/xtrapos-staging-db-name
+```
 
 `current` and `current.txt` must name the same release. Activation updates both. It copies the previous release's `App_Data` into `/opt/xtrapos-staging/shared/app-data` and points only the new release at that shared directory. The previous release keeps its own `App_Data` directory, so a rollback still has it. Data-protection keys at `/usr/share/XtraPOS/data-protection-keys` are not deleted. After activation, a failed public `/health` check, homepage check, or release SHA check restores the previous pointer and restarts only `xtrapos-staging.service`.
 
