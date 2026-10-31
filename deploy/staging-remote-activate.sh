@@ -52,7 +52,7 @@ if grep -E '^DB_NAME=(XtraPOS_Central|XtraPOS_Branch|XtraPOS_Branch_01|XtraPOS_B
 fi
 
 if [[ "$action" == "inspect" ]]; then
-  printf '%s\n' "$probe_output" | awk -F= '$1 ~ /^(PROBE_OK|POINTER|CURRENT_ID|CURRENT_TARGET|WORKING_DIRECTORY|STAGING_LISTEN|PRODUCTION_PORT|ENV_FILE|DB_NAME|KEY_DIR|ROOT_OWNER|NGINX_ROOT|NGINX_UPSTREAM)$/'
+  printf '%s\n' "$probe_output" | awk -F= '$1 ~ /^(PROBE_OK|POINTER|CURRENT_ID|CURRENT_TARGET|WORKING_DIRECTORY|STAGING_LISTEN|PRODUCTION_PORT|ENV_FILE|DB_NAME|KEY_DIR|ROOT_OWNER|NGINX_ROOT|NGINX_UPSTREAM|NGINX_HTTP_REDIRECT)$/'
   health_code="$("$CURL_BIN" -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/health" || true)"
   page_code="$("$CURL_BIN" -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/" || true)"
   echo "PUBLIC_HEALTH=${health_code}"

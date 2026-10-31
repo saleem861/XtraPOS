@@ -101,7 +101,7 @@ CONFIRM=nope GIT_SHA=dead bash deploy/staging-preflight.sh >"$tmp/out" 2>"$tmp/e
 if grep -n -E 'mv[[:space:]]+.*App_Data' deploy/staging-on-server.sh; then
   fail "App_Data is moved off the previous release"
 fi
-if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
+if grep -n -E 'STAGING_TEST_ROOT|STAGING_SOURCE_ONLY|STAGING_NGINX_DUMP' .github/workflows/deploy-staging.yml .github/workflows/ci.yml; then
   fail "workflow enables the staging test hook"
 fi
 
@@ -283,5 +283,153 @@ if grep -q 'bash -s -- rollback' "$tmp/called"; then
   fail "inspect restored a release"
 fi
 grep -q 'bash -s -- probe' "$tmp/called" || fail "inspect did not probe"
+
+cat >"$tmp/nginx-redirect.conf" <<'EOF'
+# configuration file /etc/nginx/nginx.conf:
+http {
+    include /etc/nginx/sites-enabled/*;
+}
+
+# configuration file /etc/nginx/sites-enabled/test-pos:
+server {
+    listen 80;
+    listen [::]:80;
+    server_name test-pos.sharbelfashion.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl;
+    server_name test-pos.sharbelfashion.com;
+    ssl_certificate /etc/letsencrypt/live/test-pos.sharbelfashion.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/test-pos.sharbelfashion.com/privkey.pem;
+    root /opt/xtrapos-staging/current/web;
+    location /health {
+        proxy_pass http://127.0.0.1:5088;
+    }
+    location /api/ {
+        proxy_pass http://127.0.0.1:5088/;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name pos.sharbelfashion.com;
+    root /var/www/production;
+    location / {
+        proxy_pass http://127.0.0.1:5216;
+    }
+}
+EOF
+cp "$tmp/nginx-redirect.conf" "$tmp/nginx-redirect-copy.conf"
+cat "$tmp/nginx-redirect.conf" >>"$tmp/nginx-redirect-copy.conf"
+
+cat >"$tmp/nginx-https-only.conf" <<'EOF'
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl;
+    server_name test-pos.sharbelfashion.com;
+    root /opt/xtrapos-staging/current/web;
+    location /health {
+        proxy_pass http://127.0.0.1:5088;
+    }
+}
+EOF
+
+cat >"$tmp/nginx-two-https.conf" <<'EOF'
+server {
+    listen 80;
+    server_name test-pos.sharbelfashion.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name test-pos.sharbelfashion.com;
+    root /opt/xtrapos-staging/current/web;
+    location /health {
+        proxy_pass http://127.0.0.1:5088;
+    }
+}
+server {
+    listen 443 ssl;
+    server_name test-pos.sharbelfashion.com;
+    root /opt/xtrapos-staging/other/web;
+    location /health {
+        proxy_pass http://127.0.0.1:5088;
+    }
+}
+EOF
+
+cat >"$tmp/nginx-http-proxy.conf" <<'EOF'
+server {
+    listen 80;
+    server_name test-pos.sharbelfashion.com;
+    location / {
+        proxy_pass http://127.0.0.1:5088;
+    }
+}
+server {
+    listen 443 ssl;
+    server_name test-pos.sharbelfashion.com;
+    root /opt/xtrapos-staging/current/web;
+    location /health {
+        proxy_pass http://127.0.0.1:5088;
+    }
+}
+EOF
+
+run_nginx_facts() {
+  local dump="$1" nginx_code=0
+  set +e
+  (
+    export STAGING_SOURCE_ONLY=yes
+    export STAGING_TEST_ROOT="$app_root"
+    export STAGING_NGINX_DUMP="$dump"
+    # shellcheck disable=SC1091
+    source deploy/staging-on-server.sh
+    nginx_facts
+  ) >"$tmp/nginx-out" 2>"$tmp/nginx-err"
+  nginx_code=$?
+  set -e
+  return "$nginx_code"
+}
+
+nginx_code=0
+run_nginx_facts "$tmp/nginx-redirect.conf" || nginx_code=$?
+[[ "$nginx_code" -eq 0 ]] || fail "HTTP redirect plus HTTPS server was rejected: $(cat "$tmp/nginx-err")"
+grep -qx 'NGINX_ROOT=/opt/xtrapos-staging/current/web' "$tmp/nginx-out" || fail "HTTPS root was not selected"
+grep -qx 'NGINX_UPSTREAM=http://127.0.0.1:5088' "$tmp/nginx-out" || fail "HTTPS upstream was not selected"
+grep -qx 'NGINX_HTTP_REDIRECT=yes' "$tmp/nginx-out" || fail "HTTP redirect was not recognized"
+if grep -q -E '5216|xtrapos-api|NGINX_SERVER_BLOCKS' "$tmp/nginx-out" "$tmp/nginx-err"; then
+  fail "staging nginx facts included another server block"
+fi
+
+nginx_code=0
+run_nginx_facts "$tmp/nginx-redirect-copy.conf" || nginx_code=$?
+[[ "$nginx_code" -eq 0 ]] || fail "repeated nginx dump was counted twice: $(cat "$tmp/nginx-err")"
+grep -qx 'NGINX_UPSTREAM=http://127.0.0.1:5088' "$tmp/nginx-out" || fail "repeated dump changed the upstream"
+
+nginx_code=0
+run_nginx_facts "$tmp/nginx-https-only.conf" || nginx_code=$?
+[[ "$nginx_code" -eq 0 ]] || fail "HTTPS-only server was rejected: $(cat "$tmp/nginx-err")"
+grep -qx 'NGINX_HTTP_REDIRECT=no' "$tmp/nginx-out" || fail "HTTPS-only server reported a redirect"
+
+nginx_code=0
+run_nginx_facts "$tmp/nginx-two-https.conf" || nginx_code=$?
+[[ "$nginx_code" -ne 0 ]] || fail "two HTTPS server blocks were accepted"
+grep -q 'NGINX_SERVER_BLOCKS 2' "$tmp/nginx-err" || fail "two HTTPS server blocks did not keep the block count"
+
+nginx_code=0
+run_nginx_facts "$tmp/nginx-http-proxy.conf" || nginx_code=$?
+[[ "$nginx_code" -ne 0 ]] || fail "an HTTP proxy was accepted as a redirect"
+grep -q 'NGINX_HTTP_PROXY' "$tmp/nginx-err" || fail "HTTP proxy was not rejected"
+
+nginx_code=0
+STAGING_SOURCE_ONLY=yes STAGING_TEST_ROOT="$app_root" STAGING_NGINX_DUMP="/etc/nginx/nginx.conf" \
+  bash -c 'source deploy/staging-on-server.sh; nginx_facts' >"$tmp/nginx-out" 2>"$tmp/nginx-err" || nginx_code=$?
+[[ "$nginx_code" -ne 0 ]] || fail "nginx dump outside the test root was read"
+grep -q 'REMOTE_ERROR nginx dump' "$tmp/nginx-err" || fail "nginx dump outside the test root was not rejected"
+[[ ! -s "$tmp/nginx-out" ]] || fail "rejected nginx dump produced facts"
 
 echo "Staging safety checks passed"
