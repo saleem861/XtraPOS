@@ -56,9 +56,9 @@ refuse_production_command() {
 DB_NAME_HELPER="/usr/local/sbin/xtrapos-staging-db-name"
 
 environment_file_list() {
-  local allow_test="no"
+  local allow_test="no" status=0
   [[ "${STAGING_SOURCE_ONLY:-}" == "yes" ]] && allow_test="yes"
-  python3 -c 'import re, sys
+  python3 -c 'import os, re, sys
 allow_test = sys.argv[1] == "yes"
 text = sys.stdin.read().strip()
 prefixes = ("/etc/xtrapos/", "/opt/xtrapos-staging/", "/usr/share/XtraPOS/")
@@ -68,18 +68,28 @@ if not text or text == "-":
     sys.exit(0)
 paths = re.findall(r"(\S+)\s+\(ignore_errors=(?:yes|no)\)", text)
 if not paths:
-    paths = [item for item in text.split() if item.startswith("/")]
+    paths = [item for item in text.split() if item.startswith("/") or item.startswith("-/")]
 seen = set()
-for path in paths:
-    if path.startswith("-"):
-        path = path[1:]
-    if ".." in path.split("/"):
-        continue
-    if not path.startswith(prefixes) or path in seen:
+kept = []
+for raw in paths:
+    path = raw[1:] if raw.startswith("-") else raw
+    parts = path.split("/")
+    if not path.startswith("/") or ".." in parts or not path.startswith(prefixes):
+        sys.exit(3)
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        sys.exit(3)
+    if ".." in resolved.split("/") or not resolved.startswith(prefixes):
+        sys.exit(3)
+    if path in seen:
         continue
     seen.add(path)
-    print(path)
-' "$allow_test" <<<"$1"
+    kept.append(path)
+if kept:
+    print("\n".join(kept))
+' "$allow_test" <<<"$1" || status=$?
+  return "$status"
 }
 
 read_keyed_env_file() {
@@ -216,11 +226,21 @@ resolve_staging_database() {
   local env_files="$1" work="$2" path state value file="" readable="no"
   local saw_file=0 saw_denied=0 saw_missing=0 saw_text=0
   local noted_name="" noted_conflict=0 source="" problem="" app_name="" helper_name="" appsettings_info=""
+  local list_status=0 listed=""
   local -a configured=()
+  listed="$(environment_file_list "$env_files")" || list_status=$?
+  if [[ "$list_status" -ne 0 ]]; then
+    printf 'DB_FILE=\n'
+    printf 'DB_NAME=\n'
+    printf 'DB_NAME_SOURCE=\n'
+    printf 'DB_FILE_READABLE=no\n'
+    printf 'DB_READ_PROBLEM=unapproved\n'
+    return 0
+  fi
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
     configured+=("$path")
-  done < <(environment_file_list "$env_files")
+  done <<<"$listed"
   if [[ "${#configured[@]}" -eq 0 && -e /etc/xtrapos/staging.env ]]; then
     configured+=("/etc/xtrapos/staging.env")
   fi
