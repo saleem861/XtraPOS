@@ -48,6 +48,7 @@ os.close(fd)
 text = pathlib.Path(path).read_text(errors="replace")
 if text.startswith("\ufeff"):
     text = text[1:]
+values = []
 for raw in text.splitlines():
     line = raw.strip()
     if not line or line.startswith("#") or line.startswith(";"):
@@ -62,22 +63,31 @@ for raw in text.splitlines():
     value = value.strip().strip("\r")
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "\047"}:
         value = value[1:-1]
-    print(value.strip())
-    break
+    values.append(value.strip())
+if len(values) > 1:
+    sys.exit(4)
+if values:
+    print(values[0])
 ' "$1"
 }
 
 database_name_from_files() {
-  local name="" value="" path=""
+  local name="" value="" path="" read_status=0
   [[ "$#" -gt 0 ]] || {
     echo "DB_VERIFIER_PATH" >&2
     return 1
   }
   for path in "$@"; do
-    value="$(read_database_file "$path" 2>/dev/null)" || {
+    read_status=0
+    value="$(read_database_file "$path" 2>/dev/null)" || read_status=$?
+    if [[ "$read_status" -eq 4 ]]; then
+      echo "DB_VERIFIER_DUPLICATE" >&2
+      return 1
+    fi
+    if [[ "$read_status" -ne 0 ]]; then
       echo "DB_VERIFIER_PERMISSIONS" >&2
       return 1
-    }
+    fi
     [[ -n "$value" ]] || continue
     if [[ -n "$name" && "$name" != "$value" ]]; then
       echo "DB_VERIFIER_CONFLICT" >&2

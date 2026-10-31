@@ -101,6 +101,7 @@ except OSError:
     sys.exit(0)
 if text.startswith("\ufeff"):
     text = text[1:]
+values = []
 for raw in text.splitlines():
     line = raw.strip()
     if not line or line.startswith("#") or line.startswith(";"):
@@ -115,8 +116,11 @@ for raw in text.splitlines():
     value = value.strip().strip("\r")
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "\047"}:
         value = value[1:-1]
-    print(value.strip())
-    break
+    values.append(value.strip())
+if len(values) > 1:
+    sys.exit(4)
+if values:
+    print(values[0])
 ' "$1"
 }
 
@@ -225,7 +229,7 @@ note_database_value() {
 resolve_staging_database() {
   local env_files="$1" work="$2" path state value file="" readable="no"
   local saw_file=0 saw_denied=0 saw_missing=0 saw_text=0
-  local noted_name="" noted_conflict=0 source="" problem="" app_name="" helper_name="" appsettings_info=""
+  local noted_name="" noted_conflict=0 noted_duplicate=0 source="" problem="" app_name="" helper_name="" appsettings_info="" read_status=0
   local list_status=0 listed=""
   local -a configured=()
   listed="$(environment_file_list "$env_files")" || list_status=$?
@@ -253,8 +257,14 @@ resolve_staging_database() {
         if grep -q 'SqlServer__Database' "$path" 2>/dev/null; then
           saw_text=1
         fi
-        value="$(read_keyed_env_file "$path")"
-        note_database_value "$value"
+        read_status=0
+        value="$(read_keyed_env_file "$path")" || read_status=$?
+        if [[ "$read_status" -ne 0 ]]; then
+          noted_duplicate=1
+          noted_name=""
+        else
+          note_database_value "$value"
+        fi
         ;;
       denied)
         saw_denied=1
@@ -264,7 +274,7 @@ resolve_staging_database() {
         ;;
     esac
   done
-  if [[ "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -n "$noted_name" ]]; then
+  if [[ "$noted_duplicate" -eq 0 && "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -n "$noted_name" ]]; then
     readable="yes"
     source="environment-file"
   elif [[ "$saw_denied" -eq 1 || "$saw_missing" -eq 1 ]]; then
@@ -294,7 +304,7 @@ resolve_staging_database() {
         noted_conflict=1
         noted_name=""
         source=""
-      elif [[ "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -z "$noted_name" && -n "$app_name" && "$saw_text" -eq 0 ]]; then
+      elif [[ "$noted_duplicate" -eq 0 && "$saw_denied" -eq 0 && "$saw_missing" -eq 0 && "$noted_conflict" -eq 0 && -z "$noted_name" && -n "$app_name" && "$saw_text" -eq 0 ]]; then
         file="$(printf '%s\n' "$appsettings_info" | awk 'NR==1')"
         noted_name="$app_name"
         source="appsettings"
@@ -302,7 +312,11 @@ resolve_staging_database() {
       fi
     fi
   fi
-  if [[ "$noted_conflict" -eq 1 ]]; then
+  if [[ "$noted_duplicate" -eq 1 ]]; then
+    problem="duplicate"
+    noted_name=""
+    source=""
+  elif [[ "$noted_conflict" -eq 1 ]]; then
     problem="conflict"
     noted_name=""
     source=""

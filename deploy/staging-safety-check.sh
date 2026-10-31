@@ -678,6 +678,46 @@ if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
   fail "operational helper refusal printed a secret"
 fi
 
+cat >"$tmp/safe-then-prod.env" <<EOF
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+SqlServer__Password=${db_secret}
+export SqlServer__Database="XtraPOS_Central"
+EOF
+cat >"$tmp/prod-then-safe.env" <<EOF
+SqlServer__Database=XtraPOS_Central
+SqlServer__Password=${db_secret}
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+EOF
+cat >"$tmp/same-twice.env" <<EOF
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+SqlServer__Password=${db_secret}
+SqlServer__Database=XtraPOS_Branch_Test_Staging
+EOF
+
+assert_duplicate_rejected() {
+  local label="$1"
+  [[ "$db_code" -ne 0 ]] || fail "$label was accepted"
+  grep -q 'staging database name is unreadable (duplicate)' "$tmp/db-err" || fail "$label was not rejected as a duplicate assignment"
+  if grep -q 'refusing operational database' "$tmp/db-err"; then
+    fail "$label stopped at the first database assignment"
+  fi
+  if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_|XtraPOS_Central|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+    fail "$label selected a database or printed a secret"
+  fi
+}
+
+db_code=0
+run_db_read "$tmp/plain.env (ignore_errors=no) $tmp/safe-then-prod.env (ignore_errors=yes)" "$tmp/api-other" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "a staging assignment followed by a production assignment"
+
+db_code=0
+run_db_read "$tmp/prod-then-safe.env (ignore_errors=no)" "$tmp/api-other" load "$tmp/db-helper" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "a production assignment followed by a staging assignment"
+
+db_code=0
+run_db_read "$tmp/same-twice.env (ignore_errors=no)" "$tmp/api" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_duplicate_rejected "two identical database assignments"
+
 db_code=0
 run_db_read "$tmp/wrong-key.env (ignore_errors=no)" "$tmp/empty-work" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
 [[ "$db_code" -ne 0 ]] || fail "a different variable name was accepted as the database"
@@ -713,6 +753,27 @@ run_helper_files "$tmp/plain.env" >"$tmp/db-out" 2>"$tmp/db-err"
 if grep -q "$db_secret" "$tmp/db-out" "$tmp/db-err"; then
   fail "the database-name helper printed a secret"
 fi
+
+assert_helper_duplicate() {
+  local label="$1"
+  [[ "$db_code" -eq 1 ]] || fail "$label was accepted by the database-name helper"
+  grep -qx 'DB_VERIFIER_DUPLICATE' "$tmp/db-err" || fail "$label was not rejected by the database-name helper"
+  if grep -q -E 'DB_NAME=|XtraPOS_Branch_Test_|XtraPOS_Central|'"$db_secret" "$tmp/db-out" "$tmp/db-err"; then
+    fail "$label was printed by the database-name helper"
+  fi
+}
+
+db_code=0
+run_helper_files "$tmp/safe-then-prod.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "a staging assignment followed by a production assignment"
+
+db_code=0
+run_helper_files "$tmp/prod-then-safe.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "a production assignment followed by a staging assignment"
+
+db_code=0
+run_helper_files "$tmp/same-twice.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
+assert_helper_duplicate "two identical database assignments"
 
 db_code=0
 run_helper_files "$tmp/plain.env" "$tmp/other-db.env" >"$tmp/db-out" 2>"$tmp/db-err" || db_code=$?
