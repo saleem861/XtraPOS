@@ -19,9 +19,21 @@ const labels: Record<SyncState, string> = {
   Connected: "متصل بالمركز",
 };
 
+const unlinkedCentralDetail = "لا يوجد اتصال محفوظ بالمركزية.";
+
+export function isUnlinkedCentralSync(payload: SyncPayload): boolean {
+  if (payload.state === "Standalone") {
+    return true;
+  }
+
+  return payload.state === "Offline"
+    && payload.operation === "pos-replica"
+    && payload.detail === unlinkedCentralDetail;
+}
+
 export function SyncStatusBadge() {
   const [open, setOpen] = useState(false);
-  const [payload, setPayload] = useState<SyncPayload>({ state: "Offline" });
+  const [payload, setPayload] = useState<SyncPayload | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -45,6 +57,10 @@ export function SyncStatusBadge() {
       window.clearInterval(timer);
     };
   }, []);
+
+  if (!payload || isUnlinkedCentralSync(payload)) {
+    return null;
+  }
 
   const state = (payload.state === "InProgress" || payload.state === "Success" || payload.state === "Error" || payload.state === "Offline" || payload.state === "Unlinked" || payload.state === "Connected")
     ? payload.state

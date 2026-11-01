@@ -1,0 +1,120 @@
+name: Deploy to Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type staging. Inspect is read-only. Deploy and rollback wait for Environment approval.
+        required: true
+        type: string
+      git_sha:
+        description: Full 40-character commit SHA that is already on main.
+        required: true
+        type: string
+      action:
+        description: inspect reads the server. deploy and rollback change staging only.
+        required: true
+        type: choice
+        options:
+          - inspect
+          - deploy
+          - rollback
+        default: inspect
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: xtrapos-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight
+    if: github.event.inputs.confirm == 'staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the request
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          GIT_SHA: ${{ inputs.git_sha }}
+          ACTION: ${{ inputs.action }}
+        run: bash deploy/staging-preflight.sh
+
+  inspect:
+    name: Inspect staging
+    needs: preflight
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'inspect'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read staging without changing it
+        env:
+          CONFIRM: staging
+          GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-remote-activate.sh inspect
+
+  deploy:
+    name: Deploy staging
+    needs: preflight
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'deploy'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download the scanned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_SHA: ${{ inputs.git_sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --commit "$GIT_SHA" --workflow ci.yml --status success --json databaseId --jq '.[0].databaseId')"
+          [[ -n "$run_id" ]] || { echo "::error::No successful CI artifact for $GIT_SHA"; exit 1; }
+          gh run download "$run_id" --repo "${GITHUB_REPOSITORY}" --name "xtrapos-release-${GIT_SHA}" --dir "${RUNNER_TEMP}/release"
+
+      - name: Reject secrets before copy
+        run: bash deploy/scan-release.sh "${RUNNER_TEMP}/release"
+
+      - name: Copy the release and restart staging only
+        env:
+          CONFIRM: staging
+          GIT_SHA: ${{ inputs.git_sha }}
+          RELEASE_DIR: ${{ runner.temp }}/release
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-remote-activate.sh deploy
+
+  rollback:
+    name: Roll back staging
+    needs: preflight
+    if: github.event.inputs.confirm == 'staging' && github.event.inputs.action == 'rollback'
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the staging backup and restart staging only
+        env:
+          CONFIRM: staging
+          GIT_SHA: ${{ inputs.git_sha }}
+          STAGING_SSH_HOST_SECRET: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER_SECRET: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: bash deploy/staging-rollback.sh

@@ -13,6 +13,7 @@ public sealed class CentralPosReplicaSync(CentralConnectionFileStore centrals, S
         var settings = await centrals.ReadAsync(cancellationToken);
         if (settings is null || !await branches.DatabaseExistsAsync(cancellationToken))
         {
+            status.Report("Standalone", "pos-replica", "لا يوجد اتصال محفوظ بالمركزية.", null);
             return 0;
         }
 
