@@ -86,6 +86,10 @@ After setup, the browser keeps the device id and the one-time device token in lo
 
 In a development build, إعادة تعيين إعداد التطوير asks for confirmation and then drops only `XtraPOS_Branch`. The endpoint is not mapped outside Development. It is not part of the normal setup screen in a production build.
 
+## Dr. Salim
+
+`dr-salim/` is a separate perfume-house site. It does not use the XtraPOS API. From that directory, run `npm install` and `npm run dev`, then open http://localhost:5174. See `dr-salim/README.md`.
+
 ## Not in this step
 
 Items, prices, sales, payments, returns, inventory, suppliers, users, authentication, a central server, synchronization, offline sales, SQLite, customer display operation, printers, cash drawer, promotions, legacy import, and a SQL Server installer.
