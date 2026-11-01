@@ -72,9 +72,12 @@ builder.Services.AddScoped<IPhoneVerificationProvider>(services =>
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddSingleton<ILegacyEmployeeSource, SqlLegacyEmployeeSource>();
 builder.Services.AddScoped<LegacyUserImporter>();
-var dataProtectionKeys = new DirectoryInfo(string.IsNullOrWhiteSpace(builder.Configuration["DataProtection:KeyPath"])
-    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "XtraPOS", "data-protection-keys")
-    : builder.Configuration["DataProtection:KeyPath"]!);
+var configuredKeyPath = builder.Configuration["DataProtection:KeyPath"];
+var dataProtectionKeys = new DirectoryInfo(!string.IsNullOrWhiteSpace(configuredKeyPath)
+    ? configuredKeyPath!
+    : builder.Environment.IsStaging()
+        ? "/opt/xtrapos-staging/shared/data-protection-keys"
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "XtraPOS", "data-protection-keys"));
 Directory.CreateDirectory(dataProtectionKeys.FullName);
 var userKeyRing = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -96,7 +99,9 @@ var applicationName = builder.Configuration["DataProtection:ApplicationName"];
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(dataProtectionKeys)
     .SetApplicationName(string.IsNullOrWhiteSpace(applicationName)
-        ? @"C:\Users\Saleem Jayousi\OneDrive\Projects\XtraPOS\src\XtraPOS.Api"
+        ? builder.Environment.IsStaging()
+            ? "XtraPOS.Staging"
+            : @"C:\Users\Saleem Jayousi\OneDrive\Projects\XtraPOS\src\XtraPOS.Api"
         : applicationName);
 builder.Services.AddSingleton<CentralMigrationRunner>();
 builder.Services.AddScoped<CentralDatabaseService>();

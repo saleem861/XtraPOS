@@ -50,9 +50,15 @@ grep -q '^DB_NAME=' <<<"$probe_output" || staging_die "database name was not con
 if grep -E '^DB_NAME=(XtraPOS_Central|XtraPOS_Branch|XtraPOS_Branch_01|XtraPOS_Branch_02|saleemPOSDB|Shop1|Shop2|swstore)$' <<<"$probe_output"; then
   staging_die "refusing an operational database"
 fi
+if grep -E '^(CENTRAL_DB)=(XtraPOS_Central|XtraPOS_Branch|XtraPOS_Branch_01|XtraPOS_Branch_02|saleemPOSDB|Shop1|Shop2|swstore)$' <<<"$probe_output"; then
+  staging_die "refusing an operational central database"
+fi
+if grep -q '^CENTRAL_DB=unreadable$' <<<"$probe_output"; then
+  staging_die "central database name could not be read"
+fi
 
 if [[ "$action" == "inspect" ]]; then
-  printf '%s\n' "$probe_output" | awk -F= '$1 ~ /^(PROBE_OK|POINTER|CURRENT_ID|CURRENT_TARGET|WORKING_DIRECTORY|STAGING_LISTEN|PRODUCTION_PORT|ENV_FILE|DB_NAME|DB_NAME_SOURCE|DB_FILE_READABLE|KEY_DIR|ROOT_OWNER|NGINX_ROOT|NGINX_UPSTREAM|NGINX_HTTP_REDIRECT)$/'
+  printf '%s\n' "$probe_output" | awk -F= '$1 ~ /^(PROBE_OK|POINTER|CURRENT_ID|CURRENT_TARGET|WORKING_DIRECTORY|STAGING_LISTEN|PRODUCTION_PORT|ENV_FILE|DB_NAME|DB_NAME_SOURCE|DB_FILE_READABLE|KEY_DIR|CENTRAL_DB|PASSKEY_RP|PASSKEY_ORIGIN|PASSKEY_PUBLIC_URL|DATA_PROTECTION_PATH|ROOT_OWNER|NGINX_ROOT|NGINX_UPSTREAM|NGINX_HTTP_REDIRECT)$/'
   health_code="$("$CURL_BIN" -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/health" || true)"
   page_code="$("$CURL_BIN" -fsS -o /dev/null -w '%{http_code}' --max-time 20 "${STAGING_PUBLIC_URL}/" || true)"
   echo "PUBLIC_HEALTH=${health_code}"

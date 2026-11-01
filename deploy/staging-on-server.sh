@@ -577,10 +577,10 @@ probe() {
   db_file="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE=/{print substr($0, 9); exit}')"
   db_source="$(printf '%s\n' "$db_info" | awk -F= '/^DB_NAME_SOURCE=/{print substr($0, 16); exit}')"
   db_readable="$(printf '%s\n' "$db_info" | awk -F= '/^DB_FILE_READABLE=/{print substr($0, 18); exit}')"
-  if [[ -d /usr/share/XtraPOS/data-protection-keys ]]; then
-    key_dir="/usr/share/XtraPOS/data-protection-keys"
-  elif [[ -d "$ROOT/shared/data-protection-keys" ]]; then
+  if [[ -d "$ROOT/shared/data-protection-keys" ]]; then
     key_dir="$ROOT/shared/data-protection-keys"
+  elif [[ -d /usr/share/XtraPOS/data-protection-keys ]]; then
+    key_dir="/usr/share/XtraPOS/data-protection-keys"
   else
     key_dir="missing"
   fi
@@ -597,6 +597,11 @@ probe() {
   printf 'DB_NAME_SOURCE=%s\n' "$db_source"
   printf 'DB_FILE_READABLE=%s\n' "$db_readable"
   printf 'KEY_DIR=%s\n' "$key_dir"
+  printf 'CENTRAL_DB=%s\n' "$(central_database_name)"
+  printf 'PASSKEY_RP=%s\n' "$(allowlisted_env_value "$db_file" "Passkey__RpId")"
+  printf 'PASSKEY_ORIGIN=%s\n' "$(allowlisted_env_value "$db_file" "Passkey__Origins__0")"
+  printf 'PASSKEY_PUBLIC_URL=%s\n' "$(allowlisted_env_value "$db_file" "Passkey__PublicBaseUrl")"
+  printf 'DATA_PROTECTION_PATH=%s\n' "$(allowlisted_env_value "$db_file" "DataProtection__KeyPath")"
   printf 'ROOT_OWNER=%s\n' "$owner"
   printf 'API_ENTER=%s\n' "$(unit_value "$FORBIDDEN_SERVICE" ActiveEnterTimestamp)"
 }
@@ -680,6 +685,88 @@ activate_pointers() {
   mv -f "$text_tmp" "$ROOT/current.txt"
 }
 
+central_database_name() {
+  python3 -c 'import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+candidates = [
+    root / "current" / "api" / "App_Data" / "central-connection.json",
+    root / "shared" / "app-data" / "central-connection.json",
+]
+seen = False
+for path in candidates:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        continue
+    except OSError:
+        print("unreadable")
+        sys.exit(0)
+    seen = True
+    try:
+        document = json.loads(text)
+    except Exception:
+        print("unreadable")
+        sys.exit(0)
+    name = document.get("databaseName") if isinstance(document, dict) else None
+    if isinstance(name, str) and name.strip():
+        print(name.strip())
+        sys.exit(0)
+    print("unreadable")
+    sys.exit(0)
+print("absent" if not seen else "unreadable")
+' "$ROOT"
+}
+
+allowlisted_env_value() {
+  local file="$1" key="$2"
+  [[ -n "$file" && -r "$file" ]] || { printf 'unreadable'; return 0; }
+  python3 -c 'import pathlib, sys
+path, wanted = sys.argv[1], sys.argv[2]
+allowed = {
+    "Passkey__RpId",
+    "Passkey__Origins__0",
+    "Passkey__PublicBaseUrl",
+    "DataProtection__KeyPath",
+    "DataProtection__ApplicationName",
+    "ASPNETCORE_ENVIRONMENT",
+}
+if wanted not in allowed:
+    sys.exit(0)
+try:
+    text = pathlib.Path(path).read_text(errors="replace")
+except OSError:
+    print("unreadable")
+    sys.exit(0)
+if text.startswith("\ufeff"):
+    text = text[1:]
+found = None
+for raw in text.splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or line.startswith(";") or "=" not in line:
+        continue
+    if line.startswith("export "):
+        line = line[len("export "):].strip()
+    name, value = line.split("=", 1)
+    if name.strip() != wanted:
+        continue
+    value = value.strip().strip("\r")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"\"", "\047"}:
+        value = value[1:-1]
+    found = value.strip()
+print("unset" if found is None else found)
+' "$file" "$key"
+}
+
+prepare_data_protection_keys() {
+  local keys="$ROOT/shared/data-protection-keys" service_user
+  mkdir -p "$keys"
+  service_user="$(unit_value "$SERVICE" User)"
+  if [[ -n "$service_user" ]]; then
+    chown "$service_user:$service_user" "$keys" 2>/dev/null || sudo -n chown "$service_user:$service_user" "$keys" 2>/dev/null || true
+  fi
+  chmod 700 "$keys" 2>/dev/null || sudo -n chmod 700 "$keys" 2>/dev/null || true
+}
+
 activate() {
   local incoming="$ROOT/incoming/$version" release="$ROOT/releases/$version" old_target backup manifest_sha old_api
   [[ -f "$incoming/release.json" ]] || die "uploaded release is missing"
@@ -704,6 +791,7 @@ activate() {
   fi
   backup="$(backup_pointer)"
   cp -a "$ROOT/current.txt" "$ROOT/previous.txt"
+  prepare_data_protection_keys
   activate_pointers "$release" "$version"
   if ! restart_staging_only; then
     activate_pointers "$old_target" "$(basename "$old_target")"
