@@ -162,7 +162,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
 
   return (
     <section className="card home-menu">
-      <HomeBar user={user} />
+      <HomeBar />
       <dl className="home-facts">
         <div>
           <dt>المنشأة</dt>
@@ -220,7 +220,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   );
 }
 
-function HomeBar({ user }: { user: CurrentUser }) {
+function HomeBar() {
   const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
     setTitleSlot(document.getElementById("app-title-slot"));
