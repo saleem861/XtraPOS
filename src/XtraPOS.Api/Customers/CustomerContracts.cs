@@ -86,6 +86,7 @@ public sealed class CustomerWriteRequest
     public string? WhatsAppCountryCode { get; set; }
     public bool WhatsAppConsent { get; set; }
     public Guid? VerificationId { get; set; }
+    public Guid? PasskeySessionId { get; set; }
     public List<CustomerSpecialPriceDraft>? SpecialPrices { get; set; }
 }
 

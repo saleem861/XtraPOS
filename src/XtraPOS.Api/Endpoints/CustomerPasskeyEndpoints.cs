@@ -18,6 +18,8 @@ public static class CustomerPasskeyEndpoints
         staff.MapPost("/revoke", RevokeAsync);
         staff.MapGet("/sessions/{sessionId:guid}", PollAsync);
 
+        app.MapPost("/api/customers/passkey/enrollment", BeginDraftEnrollmentAsync);
+
         var phone = app.MapGroup("/api/passkey/{token}");
         phone.MapGet("", ViewAsync);
         phone.MapPost("/phone/send", SendPhoneAsync);
@@ -35,6 +37,35 @@ public static class CustomerPasskeyEndpoints
         return Results.Ok(await passkeys.StatusAsync(id, cancellationToken));
     }
 
+    private static async Task<IResult> BeginDraftEnrollmentAsync(HttpContext http, DraftEnrollmentBody? body, AuthService auth, PermissionService permissions, CustomerPasskeyService passkeys, CancellationToken cancellationToken)
+    {
+        var caller = await RequireAsync(http, auth, permissions, [PermissionCodes.CustomersCreate, PermissionCodes.CustomersManage], cancellationToken);
+        if (caller.Result is not null) return caller.Result;
+        if (string.IsNullOrWhiteSpace(body?.Name) || string.IsNullOrWhiteSpace(body.Phone))
+        {
+            return Results.Json(new { code = "NAME", message = "أدخل اسم الزبون ورقم الهاتف قبل توليد Passkey." }, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        try
+        {
+            var customerId = body.CustomerId is Guid id && id != Guid.Empty ? id : Guid.NewGuid();
+            var exists = await passkeys.CustomerExistsAsync(customerId, cancellationToken);
+            if (exists && await passkeys.HasActiveAsync(customerId, cancellationToken)
+                && !await permissions.HasPermissionAsync(caller.UserId, PermissionCodes.CustomersManage, cancellationToken))
+            {
+                return Results.Json(new { code = "FORBIDDEN", message = "تعديل Passkey لزبون موجود يحتاج صلاحية الإدارة." }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var replacing = exists && await passkeys.HasActiveAsync(customerId, cancellationToken);
+            var started = await passkeys.BeginAsync(caller.UserId, customerId, "Enroll", replacing, cancellationToken, body.Name.Trim(), body.Phone.Trim(), exists);
+            return Results.Ok(new { customerId, started.SessionId, started.Token, started.ExpiresAt, started.UrlPath, publicUrl = PublicUrl(http, started.UrlPath) });
+        }
+        catch (PasskeyRejectedException exception)
+        {
+            return Reject(exception);
+        }
+    }
+
     private static async Task<IResult> BeginEnrollmentAsync(HttpContext http, Guid id, AuthService auth, PermissionService permissions, CustomerPasskeyService passkeys, CancellationToken cancellationToken)
     {
         var caller = await RequireAsync(http, auth, permissions, [PermissionCodes.CustomersCreate, PermissionCodes.CustomersManage], cancellationToken);
@@ -48,7 +79,7 @@ public static class CustomerPasskeyEndpoints
         try
         {
             var started = await passkeys.BeginAsync(caller.UserId, id, "Enroll", active, cancellationToken);
-            return Results.Ok(new { started.SessionId, started.Token, started.ExpiresAt, started.UrlPath });
+            return Results.Ok(new { started.SessionId, started.Token, started.ExpiresAt, started.UrlPath, publicUrl = PublicUrl(http, started.UrlPath) });
         }
         catch (PasskeyRejectedException exception)
         {
@@ -68,7 +99,7 @@ public static class CustomerPasskeyEndpoints
             }
 
             var started = await passkeys.BeginAsync(caller.UserId, id, "Verify", false, cancellationToken);
-            return Results.Ok(new { started.SessionId, started.Token, started.ExpiresAt, started.UrlPath });
+            return Results.Ok(new { started.SessionId, started.Token, started.ExpiresAt, started.UrlPath, publicUrl = PublicUrl(http, started.UrlPath) });
         }
         catch (PasskeyRejectedException exception)
         {
@@ -221,6 +252,13 @@ public static class CustomerPasskeyEndpoints
         }
     }
 
+    private static string? PublicUrl(HttpContext http, string path)
+    {
+        var configured = http.RequestServices.GetRequiredService<IConfiguration>()["Passkey:PublicBaseUrl"];
+        if (string.IsNullOrWhiteSpace(configured)) return null;
+        return configured.TrimEnd('/') + path;
+    }
+
     private static string RelyingParty(HttpContext http)
     {
         var configured = http.RequestServices.GetRequiredService<IConfiguration>()["Passkey:RpId"];
@@ -268,6 +306,13 @@ public static class CustomerPasskeyEndpoints
         }
 
         return (Results.Forbid(), Guid.Empty);
+    }
+
+    private sealed class DraftEnrollmentBody
+    {
+        public Guid? CustomerId { get; set; }
+        public string? Name { get; set; }
+        public string? Phone { get; set; }
     }
 
     private sealed class PhoneBody

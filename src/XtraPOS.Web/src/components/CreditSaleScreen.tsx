@@ -7,6 +7,7 @@ import type { CartDraft } from "../cart/model";
 import { cartTotals } from "../cart/model";
 import { creditEligible, deferredAmount } from "../credit/creditSale";
 import { FullKeyboard } from "./FullKeyboard";
+import { ScreenHeader } from "./ScreenHeader";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 
@@ -124,7 +125,8 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
 
   return (
     <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="البيع بالدين / تأجيل الدفع">
-      <header className="new-customer-bar">
+      <ScreenHeader title="البيع بالدين / تأجيل الدفع" onBack={onBack} />
+      <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <p>{branchName} · {userName}</p>
         <h2>البيع بالدين / تأجيل الدفع</h2>

@@ -1,3 +1,4 @@
+import { OperationProgress } from "./OperationProgress";
 import { ScreenHeader } from "./ScreenHeader";
 
 interface StatusScreenProps {
@@ -11,9 +12,11 @@ export function StatusScreen({ title, message, actionLabel, onAction }: StatusSc
   return (
     <section className="card">
       <ScreenHeader title={title} />
-      <header className="card-header">
-        <p>{message}</p>
-      </header>
+      {message.startsWith("جاري") ? <OperationProgress label={message} /> : (
+        <header className="card-header">
+          <p>{message}</p>
+        </header>
+      )}
       {actionLabel && onAction ? (
         <div className="form">
           <button className="primary-button" type="button" onClick={onAction}>

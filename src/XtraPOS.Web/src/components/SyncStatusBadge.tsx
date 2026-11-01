@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-type SyncState = "InProgress" | "Success" | "Error" | "Offline";
+type SyncState = "InProgress" | "Success" | "Error" | "Offline" | "Unlinked" | "Connected";
 
 interface SyncPayload {
   state?: string;
@@ -11,10 +11,12 @@ interface SyncPayload {
 }
 
 const labels: Record<SyncState, string> = {
-  InProgress: "جارٍ المزامنة",
+  InProgress: "جاري المزامنة",
   Success: "تمت المزامنة",
   Error: "خطأ في المزامنة",
   Offline: "الاتصال غير متاح",
+  Unlinked: "غير مرتبط بالمركز",
+  Connected: "متصل بالمركز",
 };
 
 export function SyncStatusBadge() {
@@ -44,7 +46,7 @@ export function SyncStatusBadge() {
     };
   }, []);
 
-  const state = (payload.state === "InProgress" || payload.state === "Success" || payload.state === "Error" || payload.state === "Offline")
+  const state = (payload.state === "InProgress" || payload.state === "Success" || payload.state === "Error" || payload.state === "Offline" || payload.state === "Unlinked" || payload.state === "Connected")
     ? payload.state
     : "Offline";
 

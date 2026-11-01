@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Customers;
 
 namespace XtraPOS.Api.Sync;
@@ -57,7 +58,7 @@ public static class CentralChangeApply
         }
         else if (entityType is "Customers" or "CustomerClassifications")
         {
-            await ApplyCustomerAsync(connection, null, entityType, payload, cancellationToken);
+            await ApplyCustomerAsync(connection, null, entityType, payload, authoritative: false, cancellationToken);
         }
         else if (entityType == "CustomerItemSpecialPrices")
         {
@@ -71,11 +72,12 @@ public static class CentralChangeApply
         string entityType,
         Guid entityId,
         string? payload,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool authoritative = false)
     {
         if (entityType is "Customers" or "CustomerClassifications")
         {
-            await ApplyCustomerAsync(connection, transaction, entityType, payload, cancellationToken);
+            await ApplyCustomerAsync(connection, transaction, entityType, payload, authoritative, cancellationToken);
             return;
         }
 
@@ -349,6 +351,7 @@ public static class CentralChangeApply
         SqlTransaction? transaction,
         string entityType,
         string? payload,
+        bool authoritative,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(payload))
@@ -387,6 +390,8 @@ public static class CentralChangeApply
                 SET BusinessID = @business,
                     CustomerNumber = @number,
                     Name = @name,
+                    NameSearchStrict = @nameStrict,
+                    NameSearchLoose = @nameLoose,
                     Phone = @phone,
                     NormalizedPhone = @normalized,
                     SecondaryPhone = @secondaryPhone,
@@ -404,16 +409,16 @@ public static class CentralChangeApply
                     PhoneVerifiedE164 = @verifiedPhone,
                     UpdatedAt = @updatedAt
                 WHERE CustomerID = @id
-                  AND (UpdatedAt IS NULL OR @updatedAt >= UpdatedAt);
+                  AND (@authoritative = 1 OR UpdatedAt IS NULL OR @updatedAt >= UpdatedAt);
             ELSE
                 INSERT INTO dbo.Customers (
-                    CustomerID, BusinessID, CustomerNumber, Name, Phone, NormalizedPhone,
+                    CustomerID, BusinessID, CustomerNumber, Name, NameSearchStrict, NameSearchLoose, Phone, NormalizedPhone,
                     SecondaryPhone, SecondaryNormalizedPhone, CustomerClassificationID, PriceTypeID,
                     VariableValueDiscountPercent, IsActive, Notes, LegacySource, LegacyCustomerKey,
                     WhatsAppPhoneE164, PhoneVerificationStatus, PhoneVerifiedAt, PhoneVerifiedE164,
                     CreatedAt, UpdatedAt)
                 VALUES (
-                    @id, @business, @number, @name, @phone, @normalized,
+                    @id, @business, @number, @name, @nameStrict, @nameLoose, @phone, @normalized,
                     @secondaryPhone, @secondaryNormalized, @classification, @priceType,
                     @discount, @active, @notes, @legacySource, @legacyKey,
                     @whatsApp, @phoneStatus, @verifiedAt, @verifiedPhone,
@@ -421,6 +426,9 @@ public static class CentralChangeApply
             """,
             connection,
             transaction);
+        command.Parameters.AddWithValue("@nameStrict", ArabicSearchNormalizer.NormalizeStrict(customer.Name));
+        command.Parameters.AddWithValue("@nameLoose", ArabicSearchNormalizer.NormalizeLoose(customer.Name));
+        command.Parameters.AddWithValue("@authoritative", authoritative);
         command.Parameters.AddWithValue("@id", customer.CustomerId);
         command.Parameters.AddWithValue("@business", customer.BusinessId);
         command.Parameters.AddWithValue("@number", (object?)customer.CustomerNumber ?? DBNull.Value);

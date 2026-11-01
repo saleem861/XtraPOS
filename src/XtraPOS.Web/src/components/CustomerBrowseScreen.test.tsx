@@ -66,6 +66,7 @@ describe("استعراض الزبائن", () => {
     await userEvent.click(screen.getAllByRole("button", { name: "عرض" })[0]);
     expect(await screen.findByLabelText("اسم الزبون")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "حفظ الزبون" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "حذف" })).toBeNull();
   });
 
   it("keeps save available when the role can edit", async () => {
@@ -87,5 +88,26 @@ describe("استعراض الزبائن", () => {
     await userEvent.type(screen.getByLabelText("بحث عن زبون"), "س");
     await userEvent.click(await screen.findByRole("button", { name: "عرض" }));
     expect(await screen.findByRole("button", { name: "حفظ" })).toBeTruthy();
+  });
+
+  it("asks for confirmation before deleting a customer", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") return json({ status: "Deleted" });
+      return json({
+        totalCount: 1,
+        customers: [{ customerId: "customer-1", customerNumber: "100", name: "محل النور", classificationName: "محل تجاري" }],
+      });
+    }));
+    stubMedia();
+    render(<CustomerBrowseScreen session={session} permissions={["Customers.Manage"]} onBack={() => undefined} />);
+    await userEvent.type(screen.getByLabelText("بحث عن زبون"), "محل");
+    await userEvent.click(await screen.findByRole("button", { name: "حذف" }));
+    expect(screen.getAllByText("محل النور").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("100").length).toBeGreaterThan(1);
+    expect(screen.getByText("هل أنت متأكد من حذف هذا الزبون؟ لا يمكن التراجع عن عملية الحذف.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "إلغاء" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "تأكيد الحذف" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "إلغاء" }));
+    expect(screen.queryByRole("button", { name: "تأكيد الحذف" })).toBeNull();
   });
 });

@@ -2,10 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   createTestBranch,
   getLocalDeviceRecovery,
-  listBranchDatabases,
   recoverMainDevice,
   SetupClientError,
-  type BranchDatabaseCandidate,
   type LocalRecoveryContext,
 } from "../api/client";
 import type { DeviceSession } from "../types/setup";
@@ -18,13 +16,11 @@ interface UnregisteredDeviceScreenProps {
   onboardingAuthorization?: string;
 }
 
-type Mode = "choice" | "join" | "joinForm" | "create";
+type Mode = "join" | "create";
 
 export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join", onboardingAuthorization = "" }: UnregisteredDeviceScreenProps) {
-  const [mode, setMode] = useState<Mode>(intent === "join" ? "join" : "create");
+  const mode: Mode = intent === "join" ? "join" : "create";
   const linkToCentral = intent === "central";
-  const [branches, setBranches] = useState<BranchDatabaseCandidate[]>([]);
-  const [selected, setSelected] = useState<BranchDatabaseCandidate | null>(null);
   const [context, setContext] = useState<LocalRecoveryContext | null>(null);
   const [loadError, setLoadError] = useState("");
   const [username, setUsername] = useState("");
@@ -45,15 +41,19 @@ export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join
     }
 
     let active = true;
-    void listBranchDatabases()
+    void getLocalDeviceRecovery()
       .then((loaded) => {
-        if (active) {
-          setBranches(loaded);
+        if (!active) {
+          return;
         }
+
+        setContext(loaded);
+        setDeviceName(loaded.suggestedDeviceName);
+        setStationId(loaded.stations[0]?.stationId ?? "");
       })
       .catch((reason: unknown) => {
         if (active) {
-          setLoadError(reason instanceof SetupClientError ? reason.message : "تعذر قراءة الفروع.");
+          setLoadError(reason instanceof SetupClientError ? reason.message : "تعذر قراءة الفرع الحالي.");
         }
       });
     return () => {
@@ -61,26 +61,9 @@ export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join
     };
   }, [mode]);
 
-  async function openBranch(branch: BranchDatabaseCandidate) {
-    setPending(true);
-    setError("");
-    setSelected(branch);
-    try {
-      const loaded = await getLocalDeviceRecovery(branch.databaseName);
-      setContext(loaded);
-      setDeviceName(loaded.suggestedDeviceName);
-      setStationId(loaded.stations[0]?.stationId ?? "");
-      setMode("joinForm");
-    } catch (reason: unknown) {
-      setError(reason instanceof SetupClientError ? reason.message : "تعذر قراءة الفرع.");
-    } finally {
-      setPending(false);
-    }
-  }
-
   async function join(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending || !context || !selected) {
+    if (pending || !context) {
       return;
     }
 
@@ -94,7 +77,6 @@ export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join
         stationId: stationId || undefined,
         stationNumber: context.stations.length === 0 ? 1 : undefined,
         stationName: context.stations.length === 0 ? "كاونتر 1" : undefined,
-        databaseName: selected.databaseName,
       }));
     } catch (reason: unknown) {
       setError(reason instanceof SetupClientError ? reason.message : "تعذر ربط هذا الجهاز.");
@@ -136,41 +118,34 @@ export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join
         <p>هذا الجهاز غير مرتبط بفرع</p>
       </header>
       {mode === "join" ? (
-        <>
-          {loadError ? <p className="form-error">{loadError}</p> : null}
-          <div className="choice-list">
-            {branches.map((branch) => (
-              <button className="choice-button" key={branch.databaseName} type="button" disabled={pending} onClick={() => void openBranch(branch)}>
-                <strong>{branch.branchName}</strong>
-                <span>{branch.businessName}</span>
-              </button>
-            ))}
-          </div>
-          {error ? <p className="form-error">{error}</p> : null}
-        </>
-      ) : null}
-      {mode === "joinForm" && context && selected ? (
         <form className="form" onSubmit={(event) => void join(event)}>
-          <dl className="details compact-details">
-            <div><dt>اسم المنشأة</dt><dd>{context.businessName}</dd></div>
-            <div><dt>اسم الفرع</dt><dd>{context.branchName}</dd></div>
-          </dl>
-          <label className="field"><span>اسم المستخدم</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={pending} /></label>
-          <label className="field"><span>كلمة المرور</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" disabled={pending} /></label>
-          {context.stations.length > 0 ? (
-            <label className="field">
-              <span>نقطة البيع</span>
-              <select value={stationId} onChange={(event) => setStationId(event.target.value)} disabled={pending}>
-                {context.stations.map((station) => (
-                  <option key={station.stationId} value={station.stationId}>{station.stationName}</option>
-                ))}
-              </select>
-            </label>
+          <p>المنظمة موجودة على هذا الجهاز. أدخل حساب مدير النظام لربط هذه النقطة بالفرع الحالي. لن تُنشأ منظمة جديدة.</p>
+          {loadError ? <p className="form-error">{loadError}</p> : null}
+          {context ? (
+            <>
+              <dl className="details compact-details">
+                <div><dt>اسم المنشأة</dt><dd>{context.businessName}</dd></div>
+                <div><dt>اسم الفرع</dt><dd>{context.branchName}</dd></div>
+              </dl>
+              <label className="field"><span>اسم المستخدم</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={pending} /></label>
+              <label className="field"><span>كلمة المرور</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" disabled={pending} /></label>
+              {context.stations.length > 0 ? (
+                <label className="field">
+                  <span>نقطة البيع</span>
+                  <select value={stationId} onChange={(event) => setStationId(event.target.value)} disabled={pending}>
+                    {context.stations.map((station) => (
+                      <option key={station.stationId} value={station.stationId}>{station.stationName}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <label className="field"><span>اسم الجهاز</span><input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} disabled={pending} /></label>
+              {error ? <p className="form-error">{error}</p> : null}
+              <button className="primary-button" type="submit" disabled={pending || deviceName.trim().length === 0}>{pending ? "جارٍ الربط" : "ربط هذا الجهاز بالفرع الحالي"}</button>
+              <button className="ghost-button" type="button" disabled>الانضمام إلى فرع موجود — قريباً</button>
+            </>
           ) : null}
-          <label className="field"><span>اسم الجهاز</span><input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} disabled={pending} /></label>
-          {error ? <p className="form-error">{error}</p> : null}
-          <button className="primary-button" type="submit" disabled={pending || deviceName.trim().length === 0}>{pending ? "جارٍ الربط" : "ربط هذا الجهاز"}</button>
-          <button className="ghost-button" type="button" onClick={() => setMode("join")}>رجوع</button>
+          {onCancel ? <button className="ghost-button" type="button" onClick={onCancel}>رجوع</button> : null}
         </form>
       ) : null}
       {mode === "create" ? (

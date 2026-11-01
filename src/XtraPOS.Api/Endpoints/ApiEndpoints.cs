@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
@@ -14,6 +15,9 @@ namespace XtraPOS.Api.Endpoints;
 
 public static class ApiEndpoints
 {
+    private static readonly SemaphoreSlim CentralProbeGate = new(1, 1);
+    private static DateTime CentralProbeAt = DateTime.MinValue;
+    private static string CentralProbeState = "Disconnected";
     private static readonly JsonSerializerOptions StreamJson = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -211,18 +215,14 @@ public static class ApiEndpoints
                 body = await http.Request.ReadFromJsonAsync<DeviceResetRequest>(cancellationToken);
             }
 
-            if (body?.DeleteExclusiveDatabase == true)
+            var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
+            var connections = http.RequestServices.GetRequiredService<SqlConnectionFactory>();
+            var deleteDatabase = body?.DeleteExclusiveDatabase == true;
+            if (deleteDatabase && !ProtectedDatabasePolicy.AllowsInstallationReset(connections.ConfiguredDatabase))
             {
-                var refusal = ProtectedDatabasePolicy.RefuseDrop(
-                    body.DatabaseName,
-                    body.ExclusiveLocal,
-                    body.BackupVerified,
-                    body.UnsyncedFinancial);
-                if (refusal is not null)
-                {
-                    var id = SetupLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath, http.RequestServices.GetRequiredService<IHostEnvironment>().EnvironmentName, "device-reset-drop", "refused", detail: refusal);
-                    return Results.Json(new { message = refusal, diagnosticId = id }, statusCode: StatusCodes.Status409Conflict);
-                }
+                var refusal = "حذف هذه القاعدة مرفوض. القواعد المركزية والمشتركة وقواعد النظام محمية.";
+                SetupLog.Write(environment.ContentRootPath, environment.EnvironmentName, "device-reset-drop", "refused", detail: refusal);
+                return Results.Json(new { message = refusal }, statusCode: StatusCodes.Status409Conflict);
             }
 
             if (body?.DeregisterCentral == true && body.PosNumber is int posNumber)
@@ -236,10 +236,132 @@ public static class ApiEndpoints
                 }
             }
 
-            var revoked = await devices.RevokeCurrentAsync(http.Request, cancellationToken);
-            return revoked ? Results.Ok(new { status = "Reset" }) : Results.Unauthorized();
+            if (!deleteDatabase)
+            {
+                var revoked = await devices.RevokeCurrentAsync(http.Request, cancellationToken);
+                return revoked
+                    ? Results.Ok(new { status = "Reset", databaseDeleted = false })
+                    : Results.Unauthorized();
+            }
+
+            var db = http.RequestServices.GetRequiredService<BranchDbContext>();
+            await db.Database.CloseConnectionAsync();
+            try
+            {
+                await connections.DropConfiguredInstallationAsync(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                app.Logger.LogError(exception, "Installation database reset failed.");
+                return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+
+            InstallationState.Clear(environment.ContentRootPath);
+            SetupAuthorization.Invalidate(environment.ContentRootPath);
+            return Results.Ok(new { status = "Reset", databaseDeleted = true });
         });
-        app.MapGet("/api/sync/status", (SyncStatusStore sync) => Results.Ok(sync.Current));
+        app.MapGet("/api/sync/status", async (SyncStatusStore sync, SyncEndpointStore endpoints, SqlConnectionFactory connections, CancellationToken cancellationToken) =>
+        {
+            SyncEndpointView? endpoint = null;
+            var replica = "";
+            var branchReady = false;
+            try
+            {
+                branchReady = await connections.DatabaseExistsAsync(cancellationToken);
+                if (branchReady)
+                {
+                    endpoint = await endpoints.GetAsync(DatabaseRole.Central, cancellationToken);
+                    await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+                    await connection.OpenAsync(cancellationToken);
+                    await using var command = new SqlCommand(
+                        "SELECT SettingValue FROM dbo.SystemSettings WHERE SettingKey = N'CustomerReplicaState';",
+                        connection);
+                    replica = await command.ExecuteScalarAsync(cancellationToken) as string ?? "";
+                }
+            }
+            catch (Exception)
+            {
+                endpoint = null;
+                branchReady = false;
+            }
+
+            var current = sync.Current;
+            if (!branchReady || endpoint is null || !string.Equals(endpoint.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal))
+            {
+                return Results.Ok(new SyncSnapshot("Unlinked", current.Operation, "غير مرتبط بالمركز", null, DateTime.UtcNow));
+            }
+
+            if (current.State == "InProgress" && current.UpdatedAtUtc > DateTime.UtcNow.AddMinutes(-3))
+            {
+                return Results.Ok(current with { Detail = string.IsNullOrWhiteSpace(current.Detail) ? "جاري المزامنة" : current.Detail });
+            }
+
+            var confirmedAt = endpoint.LastSuccessfulSyncAt ?? DateTime.MinValue;
+            if (current.State == "Error" && current.UpdatedAtUtc >= confirmedAt)
+            {
+                return Results.Ok(current);
+            }
+
+            if (endpoint.LastSuccessfulSyncAt is not null && replica == SharedDataSync.ReplicaReady && string.IsNullOrWhiteSpace(endpoint.LastError))
+            {
+                return Results.Ok(new SyncSnapshot("Success", "customer-replica", null, null, endpoint.LastSuccessfulSyncAt.Value));
+            }
+
+            if (!string.IsNullOrWhiteSpace(endpoint.LastError))
+            {
+                return Results.Ok(new SyncSnapshot("Error", "customer-replica", endpoint.LastError, current.DiagnosticId, current.UpdatedAtUtc));
+            }
+
+            return Results.Ok(new SyncSnapshot("Connected", "customer-replica", "متصل بالمركز", null, DateTime.UtcNow));
+        });
+        app.MapGet("/api/central/connection", async (SyncEndpointStore endpoints, CancellationToken cancellationToken) =>
+        {
+            if (DateTime.UtcNow - CentralProbeAt < TimeSpan.FromSeconds(20))
+            {
+                return Results.Ok(new { state = CentralProbeState });
+            }
+
+            await CentralProbeGate.WaitAsync(cancellationToken);
+            try
+            {
+                if (DateTime.UtcNow - CentralProbeAt < TimeSpan.FromSeconds(20))
+                {
+                    return Results.Ok(new { state = CentralProbeState });
+                }
+
+                var state = "Disconnected";
+                var settings = await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
+                if (settings is not null)
+                {
+                    try
+                    {
+                        var builder = new SqlConnectionStringBuilder(settings.BuildConnectionString(settings.DatabaseName))
+                        {
+                            ConnectTimeout = 3,
+                        };
+                        await using var connection = new SqlConnection(builder.ConnectionString);
+                        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+                        await connection.OpenAsync(timeout.Token);
+                        await using var ping = new SqlCommand("SELECT 1;", connection) { CommandTimeout = 3 };
+                        await ping.ExecuteScalarAsync(timeout.Token);
+                        state = "Connected";
+                    }
+                    catch (Exception)
+                    {
+                        state = "Disconnected";
+                    }
+                }
+
+                CentralProbeState = state;
+                CentralProbeAt = DateTime.UtcNow;
+                return Results.Ok(new { state });
+            }
+            finally
+            {
+                CentralProbeGate.Release();
+            }
+        });
         app.MapPost("/api/sync/pos-replica", async (CentralPosReplicaSync replica, CancellationToken cancellationToken) =>
         {
             var count = await replica.PullAsync(cancellationToken);

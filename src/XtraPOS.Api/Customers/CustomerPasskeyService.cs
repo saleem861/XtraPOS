@@ -26,10 +26,22 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         return new PasskeyStatus(revoked is > 0 ? "Revoked" : "None", false);
     }
 
-    public async Task<PasskeySessionStart> BeginAsync(Guid employeeId, Guid customerId, string purpose, bool replacing, CancellationToken cancellationToken)
+    public async Task<PasskeySessionStart> BeginAsync(
+        Guid employeeId,
+        Guid customerId,
+        string purpose,
+        bool replacing,
+        CancellationToken cancellationToken,
+        string? draftName = null,
+        string? draftPhone = null,
+        bool requireCustomer = true)
     {
         await using var connection = await OpenAsync(cancellationToken);
-        await RequireCustomerAsync(connection, customerId, cancellationToken);
+        if (requireCustomer)
+        {
+            await RequireCustomerAsync(connection, customerId, cancellationToken);
+        }
+
         if (purpose == "Enroll" && replacing)
         {
             await ExpireOpenAsync(connection, customerId, "Enroll", cancellationToken);
@@ -41,8 +53,9 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         var expires = DateTime.UtcNow.Add(SessionLifetime);
         await using var insert = new SqlCommand(
             """
-            INSERT INTO dbo.CustomerPasskeySessions (SessionID, TokenHash, CustomerID, Purpose, EmployeeUserID, ExpiresAt, Result)
-            VALUES (@id, @hash, @customer, @purpose, @employee, @expires, N'Pending');
+            INSERT INTO dbo.CustomerPasskeySessions
+                (SessionID, TokenHash, CustomerID, Purpose, EmployeeUserID, ExpiresAt, Result, DraftName, DraftPhone)
+            VALUES (@id, @hash, @customer, @purpose, @employee, @expires, N'Pending', @name, @phone);
             """,
             connection);
         insert.Parameters.AddWithValue("@id", sessionId);
@@ -51,10 +64,55 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         insert.Parameters.AddWithValue("@purpose", purpose);
         insert.Parameters.AddWithValue("@employee", employeeId);
         insert.Parameters.AddWithValue("@expires", expires);
+        insert.Parameters.AddWithValue("@name", (object?)draftName ?? DBNull.Value);
+        insert.Parameters.AddWithValue("@phone", (object?)draftPhone ?? DBNull.Value);
         await insert.ExecuteNonQueryAsync(cancellationToken);
         await AuditAsync(connection, customerId, employeeId, purpose == "Enroll" ? "EnrollmentStarted" : "VerificationStarted", cancellationToken);
         var path = purpose == "Enroll" ? $"/passkey/enroll/{token}" : $"/passkey/verify/{token}";
         return new PasskeySessionStart(sessionId, token, expires, path);
+    }
+
+    public async Task<bool> CustomerExistsAsync(Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        return await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Customers WHERE CustomerID = @id;", customerId, cancellationToken) is > 0;
+    }
+
+    public async Task<Guid> ClaimEnrollmentAsync(Guid sessionId, Guid employeeId, string? phone, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT CustomerID, EmployeeUserID, Purpose, Result, DraftPhone FROM dbo.CustomerPasskeySessions WHERE SessionID = @id;",
+            connection);
+        command.Parameters.AddWithValue("@id", sessionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new PasskeyRejectedException("NOT_FOUND", "طلب Passkey غير موجود.");
+        }
+
+        var customerId = reader.GetGuid(0);
+        var owner = reader.GetGuid(1);
+        var purpose = reader.GetString(2);
+        var result = reader.GetString(3);
+        var draftPhone = reader.IsDBNull(4) ? null : reader.GetString(4);
+        await reader.CloseAsync();
+        if (owner != employeeId || !string.Equals(purpose, "Enroll", StringComparison.Ordinal) || !string.Equals(result, "Verified", StringComparison.Ordinal))
+        {
+            throw new PasskeyRejectedException("NOT_READY", "لم يكتمل حفظ Passkey لهذا الزبون.");
+        }
+
+        if (!PhonesMatch(draftPhone, phone))
+        {
+            throw new PasskeyRejectedException("PHONE", "رقم الهاتف لا يطابق Passkey الذي تم إنشاؤه.");
+        }
+
+        if (await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.CustomerPasskeys WHERE CustomerID = @id AND Status = N'Active';", customerId, cancellationToken) is not > 0)
+        {
+            throw new PasskeyRejectedException("NO_PASSKEY", "لا يوجد Passkey مفعل.");
+        }
+
+        return customerId;
     }
 
     public async Task<PasskeyPublicView> ViewAsync(string token, CancellationToken cancellationToken)
@@ -66,8 +124,8 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
             throw new PasskeyRejectedException("EXPIRED", "انتهت صلاحية الطلب.");
         }
 
-        var name = await TextAsync(connection, "SELECT Name FROM dbo.Customers WHERE CustomerID = @id;", row.CustomerId, cancellationToken) ?? "زبون";
-        var phone = await TextAsync(connection, "SELECT WhatsAppPhoneE164 FROM dbo.Customers WHERE CustomerID = @id;", row.CustomerId, cancellationToken);
+        var name = await TextAsync(connection, "SELECT Name FROM dbo.Customers WHERE CustomerID = @id;", row.CustomerId, cancellationToken) ?? row.DraftName ?? "زبون";
+        var phone = await TextAsync(connection, "SELECT WhatsAppPhoneE164 FROM dbo.Customers WHERE CustomerID = @id;", row.CustomerId, cancellationToken) ?? row.DraftPhone;
         var has = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.CustomerPasskeys WHERE CustomerID = @id AND Status = N'Active';", row.CustomerId, cancellationToken);
         return new PasskeyPublicView(name, Mask(phone), row.Purpose, (int)Math.Max(0, (row.ExpiresAt - DateTime.UtcNow).TotalSeconds), row.PhoneVerifiedAt is not null, has is > 0);
     }
@@ -121,7 +179,7 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         await using var insert = new SqlCommand(
             """
             INSERT INTO dbo.CustomerPasskeys (CredentialId, CustomerID, PublicKeyX, PublicKeyY, SignCount, Status)
-            VALUES (@cred, @customer, @x, @y, 0, N'PendingCashier');
+            VALUES (@cred, @customer, @x, @y, 0, N'Active');
             """,
             connection);
         insert.Parameters.AddWithValue("@cred", checkedKey.CredentialId);
@@ -130,7 +188,7 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         insert.Parameters.AddWithValue("@y", checkedKey.Y);
         await insert.ExecuteNonQueryAsync(cancellationToken);
         await ConsumeAsync(connection, row.SessionId, "Verified", checkedKey.CredentialId, cancellationToken);
-        await AuditAsync(connection, row.CustomerId, null, "PasskeyAwaitingCashier", cancellationToken);
+        await AuditAsync(connection, row.CustomerId, row.EmployeeId, "PasskeyActivated", cancellationToken);
     }
 
     public async Task ConfirmBindingAsync(Guid customerId, Guid employeeId, CancellationToken cancellationToken)
@@ -325,12 +383,21 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         }
 
         await using var command = new SqlCommand(
-            "SELECT SessionID, CustomerID, Purpose, EmployeeUserID, ExpiresAt, PhoneVerifiedAt, ConsumedAt FROM dbo.CustomerPasskeySessions WHERE TokenHash = @hash;",
+            "SELECT SessionID, CustomerID, Purpose, EmployeeUserID, ExpiresAt, PhoneVerifiedAt, ConsumedAt, DraftName, DraftPhone FROM dbo.CustomerPasskeySessions WHERE TokenHash = @hash;",
             connection);
         command.Parameters.AddWithValue("@hash", hash);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        return new SessionRow(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), reader.GetGuid(3), reader.GetDateTime(4), reader.IsDBNull(5) ? null : reader.GetDateTime(5), reader.IsDBNull(6) ? null : reader.GetDateTime(6));
+        return new SessionRow(
+            reader.GetGuid(0),
+            reader.GetGuid(1),
+            reader.GetString(2),
+            reader.GetGuid(3),
+            reader.GetDateTime(4),
+            reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+            reader.IsDBNull(6) ? null : reader.GetDateTime(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
+            reader.IsDBNull(8) ? null : reader.GetString(8));
     }
 
     private static async Task RequireCustomerAsync(SqlConnection connection, Guid customerId, CancellationToken cancellationToken)
@@ -381,11 +448,25 @@ public sealed class CustomerPasskeyService(SqlConnectionFactory connections)
         return connection;
     }
 
+    private static bool PhonesMatch(string? stored, string? submitted)
+    {
+        var left = Digits(stored);
+        var right = Digits(submitted);
+        if (left.Length == 0 || right.Length == 0) return false;
+        return left.EndsWith(right, StringComparison.Ordinal) || right.EndsWith(left, StringComparison.Ordinal);
+    }
+
+    private static string Digits(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return new string(value.Where(char.IsDigit).ToArray());
+    }
+
     private static string Mask(string? phone)
     {
         if (string.IsNullOrWhiteSpace(phone) || phone.Length < 4) return "هاتف الزبون المسجّل";
         return phone[..3] + new string('*', Math.Max(0, phone.Length - 5)) + phone[^2..];
     }
 
-    private sealed record SessionRow(Guid SessionId, Guid CustomerId, string Purpose, Guid EmployeeId, DateTime ExpiresAt, DateTime? PhoneVerifiedAt, DateTime? ConsumedAt);
+    private sealed record SessionRow(Guid SessionId, Guid CustomerId, string Purpose, Guid EmployeeId, DateTime ExpiresAt, DateTime? PhoneVerifiedAt, DateTime? ConsumedAt, string? DraftName, string? DraftPhone);
 }

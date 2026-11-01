@@ -167,6 +167,9 @@
     <EmbeddedResource Include="Data\Migrations\032_POSDeviceConfigurations.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.032_POSDeviceConfigurations.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\033_CustomerPasskeyDraft.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.033_CustomerPasskeyDraft.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>

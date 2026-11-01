@@ -13,7 +13,6 @@ import {
   FolderOpen,
   Keyboard,
   LockKeyhole,
-  LogOut,
   Monitor,
   PackageSearch,
   Percent,
@@ -22,6 +21,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  ShieldCheck,
   ShoppingBag,
   ShoppingCart,
   Store,
@@ -46,7 +46,8 @@ import { createHeldSaleClient, HeldSaleClientError } from "../api/heldSales";
 import { createItemClient } from "../api/items";
 import { createCustomerClient, type CustomerListItem } from "../api/customers";
 import { NewCustomerScreen } from "./NewCustomerScreen";
-import { PasskeyQrPanel } from "./PasskeyQrPanel";
+import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
+import { ScreenHeader } from "./ScreenHeader";
 import { CreditSaleScreen } from "./CreditSaleScreen";
 import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
@@ -145,7 +146,7 @@ export function customerSyncLabel(state: string | null): string {
   }
 }
 
-export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
+export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [professionalShell, setProfessionalShell] = useState(prefersProfessionalShell);
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -156,8 +157,7 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
     return () => query.removeEventListener("change", apply);
   }, []);
   useEffect(() => {
-    const active = professionalShell && document.getElementById("pos-topbar-slot") !== null;
-    document.documentElement.classList.toggle("pos-pro-shell", active);
+    document.documentElement.classList.toggle("pos-pro-shell", professionalShell);
     return () => document.documentElement.classList.remove("pos-pro-shell");
   }, [professionalShell]);
   const scope: CartScope = {
@@ -220,6 +220,9 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
   const [customerSort, setCustomerSort] = useState<{ column: CustomerSortColumn; direction: "asc" | "desc" } | null>(null);
   const [saleCustomer, setSaleCustomer] = useState<CustomerListItem | null>(null);
   const [passkeyVerify, setPasskeyVerify] = useState(false);
+  const [passkeyNotice, setPasskeyNotice] = useState<"" | "success" | "failure">("");
+  const [regularPricing, setRegularPricing] = useState(false);
+  const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
   const [searchSort, setSearchSort] = useState<{ column: SearchSortColumn; direction: "asc" | "desc" } | null>(null);
   const [searchFrame, setSearchFrame] = useState<{ top: number; height: number } | null>(null);
@@ -349,10 +352,12 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
 
   useEffect(() => {
     if (!cart?.customerId) {
-      setSaleCustomer(null);
+      if (!regularPricingRef.current) setSaleCustomer(null);
       return;
     }
     if (saleCustomer?.customerId === cart.customerId) return;
+    regularPricingRef.current = false;
+    setRegularPricing(false);
     let cancelled = false;
     void customers.get(cart.customerId).then((customer) => {
       if (!cancelled && customer) setSaleCustomer(customer);
@@ -689,12 +694,18 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
   }
 
   function chooseCustomer(customer: CustomerListItem) {
+    regularPricingRef.current = false;
+    setRegularPricing(false);
+    setPasskeyNotice("");
     setSaleCustomer(customer);
     setCustomerOpen(false);
     void changeCustomer(customer.customerId);
   }
 
   function useWalkInCustomer() {
+    regularPricingRef.current = false;
+    setRegularPricing(false);
+    setPasskeyNotice("");
     setSaleCustomer(null);
     setCustomerOpen(false);
     void changeCustomer(null);
@@ -838,6 +849,9 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
       const next = createCart(scope);
       await persist(next);
       setSaleCustomer(null);
+      regularPricingRef.current = false;
+      setRegularPricing(false);
+      setPasskeyNotice("");
       setCompletedShare({ saleId: completed.saleId, phone });
       setReceipt(completed);
       setPaying(false);
@@ -1021,16 +1035,7 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      {(() => {
-        const titleRow = (
-          <div className="card-header pos-title-row">
-            <button className="nav-button" type="button" onClick={onBack}><ArrowLeft className="pos-pro-icon" aria-hidden="true" />رجوع</button>
-            <h2>نقطة البيع</h2>
-          </div>
-        );
-        const slot = professionalShell ? document.getElementById("pos-topbar-slot") : null;
-        return slot ? createPortal(titleRow, slot) : titleRow;
-      })()}
+      <ScreenHeader title="نقطة البيع" onBack={onBack} />
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
@@ -1057,13 +1062,14 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
         <div className="pos-original-total"><span><Coins className="pos-pro-icon" aria-hidden="true" />المجموع قبل الخصم</span><strong>{formatPosMoney(originalCartTotal(cart))}</strong></div>
         <div><button type="button" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
         <div><button type="button" onClick={openCustomerSearch}><span>اسم الزبون</span><strong title={saleCustomer?.name ?? "زبون عادي"}>{saleCustomer?.name ?? (cart.customerId ? "—" : "زبون عادي")}</strong></button></div>
-        {saleCustomer ? <div><button type="button" onClick={() => setPasskeyVerify(true)}>التحقق من هوية الزبون</button></div> : null}
-        <div><span>نوع الزبون</span><strong>{saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
-        <div><span><Tag className="pos-pro-icon" aria-hidden="true" />التسعيرة</span><strong dir="ltr">{saleCustomer?.priceCode || (cart.customerId ? (priceTier || "—") : "Price0")}</strong></div>
+        {saleCustomer ? <div><button type="button" onClick={() => { setPasskeyNotice(""); setPasskeyVerify(true); }}><ShieldCheck className="pos-pro-icon" aria-hidden="true" />التحقق من الزبون</button></div> : null}
+        <div><span>نوع الزبون</span><strong>{regularPricing ? "عادي" : saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
+        <div><span><Tag className="pos-pro-icon" aria-hidden="true" />التسعيرة</span><strong dir="ltr">{regularPricing ? "Price0" : saleCustomer?.priceCode || (cart.customerId ? (priceTier || "—") : "Price0")}</strong></div>
         <div><span><Store className="pos-pro-icon" aria-hidden="true" />النقطة</span><strong title={session.stationName}>{session.stationName || "—"}</strong></div>
         <div><span><UserRound className="pos-pro-icon" aria-hidden="true" />اسم الموظف</span><strong title={user.displayName}>{user.displayName}</strong></div>
-        <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{saleCustomer ? saleCustomer.variableValueDiscountPercent : "0"}</strong></div>
+        <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{regularPricing || !saleCustomer ? "0" : saleCustomer.variableValueDiscountPercent}</strong></div>
       </div>
+      {passkeyNotice ? <p className={passkeyNotice === "success" ? "status-ok passkey-result" : "status-error passkey-result"} role="status">{passkeyNotice === "success" ? passkeyVerifiedMessage : passkeyFailedMessage}</p> : null}
       <div className="pos-summary">
         <div>
           <div className="pos-total-label"><Coins className="pos-pro-icon" aria-hidden="true" />المجموع</div>
@@ -1174,7 +1180,6 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
                 }}><Icon aria-hidden="true" /><span>{label}</span></button>
               );
             })}
-            <button type="button" onClick={onLogout} disabled={!onLogout} title="تسجيل الخروج"><LogOut aria-hidden="true" /><span>تسجيل الخروج</span></button>
             <button type="button" disabled title="الجرد"><PackageSearch aria-hidden="true" /><span>الجرد</span></button>
           </div>
         </section>
@@ -1195,7 +1200,28 @@ export function PosScreen({ session, user, onBack, onLogout }: PosScreenProps) {
         </section>
       </aside>
       </div>
-      {passkeyVerify && saleCustomer ? <PasskeyQrPanel session={session} customerId={saleCustomer.customerId} purpose="verification" canReplace={false} onClose={() => setPasskeyVerify(false)} /> : null}
+      {passkeyVerify && saleCustomer ? (
+        <PasskeyQrPanel
+          session={session}
+          customerId={saleCustomer.customerId}
+          customerSaved
+          purpose="verification"
+          canReplace={false}
+          autoStart
+          onVerified={() => {
+            setPasskeyVerify(false);
+            setPasskeyNotice("success");
+          }}
+          onFailed={() => {
+            regularPricingRef.current = true;
+            setRegularPricing(true);
+            setPasskeyVerify(false);
+            setPasskeyNotice("failure");
+            void changeCustomer(null);
+          }}
+          onClose={() => setPasskeyVerify(false)}
+        />
+      ) : null}
       {printSheet ? (
         <InvoicePreview
           document={printSheet}

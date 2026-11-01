@@ -1,3 +1,5 @@
+using XtraPOS.Api.Data;
+
 namespace XtraPOS.Api.Devices;
 
 public static class ProtectedDatabasePolicy
@@ -29,6 +31,16 @@ public static class ProtectedDatabasePolicy
         }
 
         return false;
+    }
+
+    public static bool AllowsInstallationReset(string? databaseName)
+    {
+        if (IsProtected(databaseName) || !BranchDatabase.IsAllowedName(databaseName))
+        {
+            return false;
+        }
+
+        return !string.Equals(databaseName!.Trim(), BranchDatabase.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     public static string? RefuseDrop(string? databaseName, bool exclusiveLocal, bool backupVerified, bool unsyncedFinancial)

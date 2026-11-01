@@ -1,8 +1,9 @@
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Devices;
 
 namespace XtraPOS.Api.Sync;
 
-public sealed class CustomerReplicaSyncWorker(IServiceProvider services, ILogger<CustomerReplicaSyncWorker> logger) : BackgroundService
+public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncStatusStore status, ILogger<CustomerReplicaSyncWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -52,6 +53,10 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, ILogger
             || settings is null
             || !string.Equals(view.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal))
         {
+            if (BranchDatabaseOverride.Database is null)
+            {
+                status.Report("Unlinked", "customer-replica", "غير مرتبط بالمركز", null);
+            }
             return;
         }
 
@@ -66,6 +71,11 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, ILogger
             return;
         }
 
+        var reportsStatus = BranchDatabaseOverride.Database is null;
+        if (reportsStatus)
+        {
+            status.Report("InProgress", "customer-replica", "جاري المزامنة", null);
+        }
         var result = await sync.PullAsync(view.EndpointId, settings, stoppingToken);
         if (!result.CentralReachable)
         {
@@ -74,8 +84,17 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, ILogger
                 await sync.SetReplicaStateAsync(SharedDataSync.ReplicaStale, stoppingToken);
             }
 
+            if (reportsStatus)
+            {
+                status.Report("Error", "customer-replica", result.Error ?? "تعذر تحديث البيانات المركزية.", null);
+            }
             logger.LogWarning("Central master sync left the local copy unchanged: {Error}", result.Error);
             return;
+        }
+
+        if (reportsStatus)
+        {
+            status.Report("Success", "customer-replica", null, null);
         }
 
         if (state == SharedDataSync.ReplicaStale)

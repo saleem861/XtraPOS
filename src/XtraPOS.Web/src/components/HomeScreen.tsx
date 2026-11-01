@@ -1,11 +1,12 @@
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Package, Settings, ShoppingCart, UsersRound } from "lucide-react";
+import { Link2, Package, RotateCcw, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { CustomersMenuScreen } from "./CustomersMenuScreen";
+import { ScreenHeader } from "./ScreenHeader";
 import { CentralSetupScreen } from "./CentralSetupScreen";
 import { ItemCatalogScreen } from "./ItemCatalogScreen";
 import { PosScreen } from "./PosScreen";
@@ -16,7 +17,7 @@ interface HomeScreenProps {
   user: CurrentUser;
   pending: boolean;
   onLogout: () => void;
-  onReset: () => void;
+  onReset: (freshSetup: boolean) => void;
 }
 
 export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeScreenProps) {
@@ -36,6 +37,20 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const canViewItems = isAdmin || user.permissions.includes("Items.View");
   const canViewUsers = isAdmin || user.permissions.includes("Users.View");
 
+  useEffect(() => {
+    const home = () => {
+      setShowItems(false);
+      setShowPos(false);
+      setShowSettings(false);
+      setShowUsers(false);
+      setShowCentral(false);
+      setShowCustomers(false);
+      setResetOpen(false);
+    };
+    window.addEventListener("xtrapos-home", home);
+    return () => window.removeEventListener("xtrapos-home", home);
+  }, []);
+
   async function resetDevice() {
     setResetError("");
     const response = await fetch("/api/device/reset", {
@@ -50,12 +65,13 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
         databaseName: "",
       }),
     });
+    const payload = await response.json().catch(() => null) as { message?: string; databaseDeleted?: boolean } | null;
     if (!response.ok) {
-      setResetError("تعذر إعادة تهيئة هذا الجهاز.");
+      setResetError(payload?.message?.trim() || "تعذر إعادة تهيئة هذا الجهاز.");
       return;
     }
     await clearPersistedDevice();
-    onReset();
+    onReset(payload?.databaseDeleted === true);
   }
 
   if (showPos && canViewItems) {
@@ -85,6 +101,63 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
 
   if (showCustomers) {
     return <CustomersMenuScreen session={session} user={user} onBack={() => setShowCustomers(false)} />;
+  }
+
+  if (showSettings) {
+    return (
+      <section className="card settings-screen">
+        <ScreenHeader
+          title="الإعدادات"
+          context={`${user.branchName} · ${user.stationName} · ${user.deviceName}`}
+          onBack={() => {
+            setResetOpen(false);
+            setShowSettings(false);
+          }}
+        />
+        {resetOpen ? (
+          <form className="form" onSubmit={(event) => { event.preventDefault(); void resetDevice(); }}>
+            <p>ستُمسح تهيئة هذه النقطة فقط. قاعدة الفرع المشتركة وXtraPOS_Central وقاعدة المقاطعة لا تُحذف.</p>
+            <label className="check-line">
+              <input type="checkbox" checked={deregisterCentral} onChange={(event) => setDeregisterCentral(event.target.checked)} />
+              <span>إلغاء تسجيل النقطة في المركزية</span>
+            </label>
+            <label className="check-line">
+              <input type="checkbox" checked={deleteDatabase} onChange={(event) => setDeleteDatabase(event.target.checked)} />
+              <span>حذف قاعدة البيانات المحلية الحصرية أيضًا</span>
+            </label>
+            <p>تحديد حذف القاعدة يزيل قاعدة هذا التثبيت وتسجيل أجهزته، ثم تعود شاشة الإعداد الأولى. XtraPOS_Central وقاعدة المقاطعة لا تُحذف.</p>
+            <label className="check-line">
+              <input type="checkbox" required />
+              <span>أؤكد إعادة تهيئة هذا الجهاز</span>
+            </label>
+            {resetError ? <p className="form-error">{resetError}</p> : null}
+            <button className="primary-button" type="submit" disabled={pending}>تأكيد إعادة التهيئة</button>
+            <button className="ghost-button" type="button" onClick={() => setResetOpen(false)}>رجوع</button>
+          </form>
+        ) : (
+          <div className="home-nav">
+            {canViewUsers ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowUsers(true)}>
+                <span className="home-nav-icon" aria-hidden="true"><Users /></span>
+                <span><strong>إدارة المستخدمين</strong></span>
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowCentral(true)}>
+                <span className="home-nav-icon" aria-hidden="true"><Link2 /></span>
+                <span><strong>الربط المركزي</strong></span>
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => { setResetError(""); setDeregisterCentral(false); setDeleteDatabase(false); setResetOpen(true); }}>
+                <span className="home-nav-icon" aria-hidden="true"><RotateCcw /></span>
+                <span><strong>إعادة تهيئة النقطة</strong></span>
+              </button>
+            ) : null}
+          </div>
+        )}
+      </section>
+    );
   }
 
   return (
@@ -143,67 +216,18 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
           </button>
         ) : null}
       </div>
-      {showSettings ? (
-        <div className="settings-menu">
-          {canViewUsers ? (
-            <button className="nav-button" type="button" onClick={() => setShowUsers(true)}>
-              إدارة المستخدمين
-            </button>
-          ) : null}
-          {isAdmin ? (
-            <button className="nav-button" type="button" onClick={() => setShowCentral(true)}>
-              الربط المركزي
-            </button>
-          ) : null}
-          {isAdmin ? (
-            <button className="nav-button" type="button" onClick={() => { setResetError(""); setDeregisterCentral(false); setDeleteDatabase(false); setResetOpen(true); }}>
-              إعادة تهيئة النقطة
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {resetOpen ? (
-        <form className="form" onSubmit={(event) => { event.preventDefault(); void resetDevice(); }}>
-          <p>ستُمسح تهيئة هذه النقطة فقط. قاعدة الفرع المشتركة وXtraPOS_Central وقاعدة المقاطعة لا تُحذف.</p>
-          <label className="check-line">
-            <input type="checkbox" checked={deregisterCentral} onChange={(event) => setDeregisterCentral(event.target.checked)} />
-            <span>إلغاء تسجيل النقطة في المركزية</span>
-          </label>
-          <label className="check-line">
-            <input type="checkbox" checked={deleteDatabase} onChange={(event) => setDeleteDatabase(event.target.checked)} />
-            <span>حذف قاعدة البيانات المحلية الحصرية أيضًا</span>
-          </label>
-          <p>حذف القاعدة يُرفض ما لم يثبت الخادم أنها حصرية لهذا الجهاز وبعد نسخة احتياطية. الخيار غير محدد افتراضياً.</p>
-          <label className="check-line">
-            <input type="checkbox" required />
-            <span>أؤكد إعادة تهيئة هذا الجهاز</span>
-          </label>
-          {resetError ? <p className="form-error">{resetError}</p> : null}
-          <button className="primary-button" type="submit">تأكيد إعادة التهيئة</button>
-          <button className="ghost-button" type="button" onClick={() => setResetOpen(false)}>إلغاء</button>
-        </form>
-      ) : null}
-      <button className="primary-button" type="button" onClick={onLogout} disabled={pending}>
-        تسجيل الخروج
-      </button>
     </section>
   );
 }
 
 function HomeBar({ user }: { user: CurrentUser }) {
-  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
+  const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    setTopbarSlot(document.getElementById("pos-topbar-slot"));
+    setTitleSlot(document.getElementById("app-title-slot"));
   }, []);
-  if (!topbarSlot) {
+  if (!titleSlot) {
     return null;
   }
 
-  return createPortal(
-    <div className="home-topbar">
-      <h1>الرئيسية</h1>
-      <span>{`${user.businessName} · ${user.branchName} · ${user.displayName}`}</span>
-    </div>,
-    topbarSlot,
-  );
+  return titleSlot ? createPortal(<span>الرئيسية</span>, titleSlot) : null;
 }

@@ -37,7 +37,11 @@ export interface SavedCustomer {
   phoneVerificationStatus: string | null;
   whatsAppPhoneE164: string | null;
   priceCode: string | null;
+  priceTypeId: string | null;
   classificationName: string | null;
+  customerClassificationId: string | null;
+  notes: string | null;
+  variableValueDiscountPercent: number | null;
 }
 
 export interface CustomerWriteBody {
@@ -52,6 +56,7 @@ export interface CustomerWriteBody {
   variableValueDiscountPercent?: number;
   rowVersion?: string;
   verificationId?: string;
+  passkeySessionId?: string;
   specialPrices?: { itemNumber: string; minimumQuantity: number; bundlePrice: number }[];
 }
 
@@ -95,7 +100,7 @@ function mapCustomer(customer: CustomerPayload): CustomerListItem {
     phone: customer.phone ?? null,
     classificationName: customer.classificationName ?? null,
     priceCode: customer.priceCode ?? null,
-    variableValueDiscountPercent: customer.variableValueDiscountPercent == null ? "0" : String(customer.variableValueDiscountPercent),
+    variableValueDiscountPercent: customer.variableValueDiscountPercent == null || customer.variableValueDiscountPercent === "" ? "" : String(customer.variableValueDiscountPercent),
     customerClassificationId: customer.customerClassificationId ?? null,
     priceTypeId: customer.priceTypeId ?? null,
     notes: customer.notes ?? null,
@@ -145,6 +150,7 @@ export function createCustomerClient(session: DeviceSession) {
       });
       const payload = await response.json() as { message?: string; customer?: CustomerPayload };
       if (!response.ok || !payload.customer) throw new SetupClientError(payload.message ?? "تعذر حفظ الزبون.");
+      const discount = payload.customer.variableValueDiscountPercent;
       return {
         customerId: payload.customer.customerId,
         customerNumber: payload.customer.customerNumber ?? null,
@@ -153,7 +159,11 @@ export function createCustomerClient(session: DeviceSession) {
         phoneVerificationStatus: payload.customer.phoneVerificationStatus ?? null,
         whatsAppPhoneE164: payload.customer.whatsAppPhoneE164 ?? null,
         priceCode: payload.customer.priceCode ?? null,
+        priceTypeId: payload.customer.priceTypeId ?? null,
         classificationName: payload.customer.classificationName ?? null,
+        customerClassificationId: payload.customer.customerClassificationId ?? null,
+        notes: payload.customer.notes ?? null,
+        variableValueDiscountPercent: discount == null || discount === "" ? null : Number(discount),
       };
     },
     async sendRegistration(customerNumber: string, destinationE164: string): Promise<{ verificationId: string; expiresAt: string; resendAvailableAt: string; maskedDestination: string }> {
@@ -238,6 +248,14 @@ export function createCustomerClient(session: DeviceSession) {
       if (!response.ok) {
         const payload = await response.json() as { message?: string };
         throw new SetupClientError(payload.message ?? "تعذر حفظ السعر الخاص.");
+      }
+    },
+    async remove(customerId: string): Promise<void> {
+      const response = await fetch(`/api/customers/${customerId}`, { method: "DELETE", headers: deviceHeaders(session) });
+      if (response.status === 403) throw new SetupClientError("لا توجد صلاحية لحذف الزبون.");
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { message?: string };
+        throw new SetupClientError(payload.message ?? "تعذر حذف الزبون.");
       }
     },
     async get(customerId: string): Promise<CustomerListItem | null> {

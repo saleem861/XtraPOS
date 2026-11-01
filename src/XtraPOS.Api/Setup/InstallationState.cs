@@ -16,6 +16,15 @@ public static class InstallationState
         File.WriteAllText(path, "Configured");
     }
 
+    public static void Clear(string contentRoot)
+    {
+        var path = Path(contentRoot);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
     public static string Path(string contentRoot)
     {
         return System.IO.Path.Combine(contentRoot, "App_Data", FileName);

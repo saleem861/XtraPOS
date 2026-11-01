@@ -42,7 +42,7 @@ describe("إضافة زبون جديد", () => {
     }));
     render(<NewCustomerScreen session={session} onBack={() => undefined} onSaved={(id) => saved.push(id)} />);
     expect((await screen.findByRole("button", { name: "حفظ الزبون" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: "تفعيل Passkey" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "توليد Passkey" })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("رقم الزبون"), { target: { value: "0592594707" } });
     expect((screen.getByLabelText("رقم الهاتف للتحقق") as HTMLInputElement).value).toBe("592594707");
     fireEvent.change(screen.getByLabelText("اسم الزبون"), { target: { value: "سليم" } });
@@ -114,7 +114,7 @@ describe("إضافة زبون جديد", () => {
     const notes = await screen.findByLabelText("ملاحظات");
     expect(notes.closest(".is-second")?.lastElementChild?.contains(notes)).toBe(true);
     expect(screen.getAllByLabelText(/رمز /)).toHaveLength(4);
-    expect(screen.getByRole("button", { name: "تفعيل Passkey" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "توليد Passkey" })).toBeTruthy();
     expect(screen.queryByLabelText("لوحة المفاتيح")).toBeNull();
     expect(screen.getByText("لا توجد أسعار استثنائية لهذا الزبون")).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
@@ -159,9 +159,62 @@ describe("إضافة زبون جديد", () => {
     fireEvent.change(screen.getByLabelText("اسم الزبون"), { target: { value: "سليم أحمد" } });
     await act(async () => { fireEvent.click(save); });
     expect(saved).toEqual(["customer-1"]);
+    expect(await screen.findByRole("dialog", { name: "تم حفظ تعديلات الزبون بنجاح" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "موافق" })).toBeTruthy();
     const update = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[1]?.method === "PUT");
     expect(String(update?.[0])).toBe("/api/customers/customer-1");
     expect(JSON.parse(String(update?.[1].body))).toMatchObject({ name: "سليم أحمد", customerClassificationId: "class", priceTypeId: "price" });
+  });
+
+  it("sends the central price type when the opened customer still has the branch id", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/classifications")) return json({ classifications: [{ customerClassificationId: "class", name: "زبون مميز" }] });
+      if (String(url).endsWith("/price-types")) return json([{ priceTypeId: "central-price", priceCode: "SpecialCustomer", priceName: "مميز" }]);
+      if (String(url).endsWith("/calling-codes")) return json([{ code: "972", name: "إسرائيل" }]);
+      if (String(url).includes("special-prices")) return json([]);
+      if (String(url).includes("credit-policy")) return json({ creditEnabled: false, creditLimit: 0, paymentTermDays: 30, creditStatus: "Inactive", rowVersion: "", configured: false, outstanding: 0, available: 0, centralReachable: true });
+      if (init?.method === "PUT") {
+        return json({ customer: { customerId: "customer-1", name: "أسيد حمدان", customerNumber: "0595497078", customerClassificationId: "class", priceTypeId: "central-price", priceCode: "SpecialCustomer", notes: "ملاحظة محفوظة", variableValueDiscountPercent: 10, rowVersion: "AQIDBAUGBwg=", phoneVerificationStatus: "Verified", whatsAppPhoneE164: "+972595497078" } });
+      }
+      return json({ customerId: "customer-1", name: "أسيد حمدان", customerNumber: "0595497078", customerClassificationId: "class", priceTypeId: "branch-price", priceCode: "SpecialCustomer", variableValueDiscountPercent: 10, notes: "", rowVersion: "AQIDBAUGBwg=", phoneVerificationStatus: "Verified", whatsAppPhoneE164: "+972595497078" });
+    }));
+    render(<NewCustomerScreen session={session} customerId="customer-1" permissions={["Customers.Manage"]} onBack={() => undefined} onSaved={() => undefined} />);
+    expect((await screen.findByRole("combobox", { name: "نوع التسعيرة (كود النظام)" })).textContent).toContain("SpecialCustomer");
+    fireEvent.change(screen.getByLabelText("ملاحظات"), { target: { value: "ملاحظة محفوظة" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "حفظ" })); });
+    expect(await screen.findByRole("dialog", { name: "تم حفظ تعديلات الزبون بنجاح" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "موافق" })).toBeTruthy();
+    const update = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[1]?.method === "PUT");
+    expect(JSON.parse(String(update?.[1].body))).toMatchObject({ priceTypeId: "central-price", notes: "ملاحظة محفوظة", variableValueDiscountPercent: 10 });
+  });
+
+  it("shows the stored discount and fills a missing price type from the customer type", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (String(url).endsWith("/classifications")) return json({ classifications: [{ customerClassificationId: "class", name: "محل تجاري" }] });
+      if (String(url).endsWith("/price-types")) return json([{ priceTypeId: "dealer", priceCode: "Dealer", priceName: "تاجر" }]);
+      if (String(url).endsWith("/calling-codes")) return json([{ code: "972", name: "إسرائيل" }]);
+      if (String(url).includes("special-prices")) return json([]);
+      if (String(url).includes("credit-policy")) return json({ creditEnabled: false, creditLimit: 0, paymentTermDays: 30, creditStatus: "Inactive", rowVersion: "", configured: false, outstanding: 0, available: 0, centralReachable: true });
+      return json({
+        customerId: "customer-1",
+        name: "محل النور",
+        customerNumber: "100",
+        customerClassificationId: "class",
+        classificationName: "محل تجاري",
+        priceTypeId: null,
+        priceCode: null,
+        variableValueDiscountPercent: 27.27,
+        rowVersion: "AQIDBAUGBwg=",
+        phoneVerificationStatus: "Verified",
+        whatsAppPhoneE164: "+972590000002",
+      });
+    }));
+    render(<NewCustomerScreen session={session} customerId="customer-1" onBack={() => undefined} onSaved={() => undefined} />);
+    expect(await screen.findByDisplayValue("27.27")).toBeTruthy();
+    expect((await screen.findByRole("combobox", { name: "نوع التسعيرة (كود النظام)" })).textContent).toContain("Dealer");
+    expect((screen.getByLabelText("نسبة الخصم") as HTMLInputElement).value).toBe("27.27");
+    expect(await screen.findByText("الرصيد القائم 0 — المتاح 0")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "إعادة المحاولة" })).toBeNull();
   });
 
   it("ties the debt switch to an active account and a positive limit", async () => {
@@ -193,6 +246,8 @@ describe("إضافة زبون جديد", () => {
       return json({ customerId: "customer-1", name: "سليم", customerNumber: "1", rowVersion: "AQIDBAUGBwg=", phoneVerificationStatus: "Verified", whatsAppPhoneE164: "+972592594707" });
     }));
     render(<NewCustomerScreen session={session} customerId="customer-1" permissions={["Credit.ManageLimit"]} readOnly title="عرض زبون" onBack={() => undefined} onSaved={() => undefined} />);
+    expect(await screen.findByRole("button", { name: "إعادة المحاولة" })).toBeTruthy();
+    expect(screen.getByText("الرصيد القائم والمتاح غير معروفين.")).toBeTruthy();
     const allowDebt = await screen.findByRole("switch", { name: "السماح بالبيع بالدين" });
     expect((allowDebt as HTMLInputElement).disabled).toBe(false);
     fireEvent.click(allowDebt);

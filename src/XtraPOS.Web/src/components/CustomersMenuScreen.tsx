@@ -1,10 +1,9 @@
 import { ChartNoAxesCombined, ContactRound, UserRoundPlus, WalletCards } from "lucide-react";
-import { ArrowLeft } from "lucide-react";
-import { useLayoutEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useState } from "react";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { CustomerBrowseScreen } from "./CustomerBrowseScreen";
 import { NewCustomerScreen } from "./NewCustomerScreen";
+import { ScreenHeader } from "./ScreenHeader";
 
 interface CustomersMenuScreenProps {
   session: DeviceSession;
@@ -45,24 +44,6 @@ export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScre
   const canManage = user.permissions.includes("Customers.Manage") || user.permissions.includes("System.Administer");
   const canCreate = canManage || user.permissions.includes("Customers.Create");
   const canView = canCreate || user.permissions.includes("Customers.View");
-  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    setTopbarSlot(document.getElementById("pos-topbar-slot"));
-  }, []);
-  const topbar = topbarSlot
-    ? createPortal(
-        <div className="customers-topbar">
-          <h1>إدارة الزبائن</h1>
-          <span>{`${user.businessName} · ${user.branchName} · ${user.displayName}`}</span>
-          <button type="button" onClick={onBack}>
-            <ArrowLeft aria-hidden="true" />
-            رجوع
-          </button>
-        </div>,
-        topbarSlot,
-      )
-    : null;
-
   if (view === "add") {
     return (
       <NewCustomerScreen
@@ -84,7 +65,7 @@ export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScre
 
   return (
     <section className="card customers-menu">
-      {topbar}
+      <ScreenHeader title="إدارة الزبائن" onBack={onBack} />
       {notice ? <p className="new-customer-success">{notice}</p> : null}
       <div className="customers-menu-grid">
         {cards.map((card) => {

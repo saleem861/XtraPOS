@@ -151,24 +151,38 @@ public sealed class SharedDataSync(
         await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
         await remote.OpenAsync(cancellationToken);
         await branch.OpenAsync(cancellationToken);
-        var priceTypes = await ReadPriceTypesAsync(branch, cancellationToken);
+        var priceTypes = await ReadPriceTypesAsync(remote, branch, cancellationToken);
         await CopyClassificationsAsync(remote, branch, priceTypes, cancellationToken);
         await CopyCustomersAsync(remote, branch, priceTypes, cancellationToken);
         await CopySpecialPricesAsync(remote, branch, cancellationToken);
     }
 
-    private static async Task<Dictionary<Guid, Guid>> ReadPriceTypesAsync(SqlConnection branch, CancellationToken cancellationToken)
+    private static async Task<Dictionary<Guid, Guid>> ReadPriceTypesAsync(SqlConnection remote, SqlConnection branch, CancellationToken cancellationToken)
     {
-        var byCode = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
-        await using var command = new SqlCommand("SELECT PriceTypeID, PriceCode FROM dbo.PriceTypes;", branch);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        var localByCode = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = new SqlCommand("SELECT PriceTypeID, PriceCode FROM dbo.PriceTypes;", branch))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            byCode[reader.GetString(1)] = reader.GetGuid(0);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                localByCode[reader.GetString(1)] = reader.GetGuid(0);
+            }
         }
 
-        await using var remoteCodes = new SqlCommand("SELECT PriceTypeID, PriceCode FROM dbo.PriceTypes;", branch);
-        return byCode.ToDictionary(pair => pair.Value, pair => pair.Value);
+        var map = new Dictionary<Guid, Guid>();
+        await using var remoteCommand = new SqlCommand("SELECT PriceTypeID, PriceCode FROM dbo.PriceTypes;", remote);
+        await using var remoteReader = await remoteCommand.ExecuteReaderAsync(cancellationToken);
+        while (await remoteReader.ReadAsync(cancellationToken))
+        {
+            var remoteId = remoteReader.GetGuid(0);
+            var code = remoteReader.GetString(1);
+            if (localByCode.TryGetValue(code, out var localId))
+            {
+                map[remoteId] = localId;
+            }
+        }
+
+        return map;
     }
 
     private static async Task CopyClassificationsAsync(
@@ -205,7 +219,7 @@ public sealed class SharedDataSync(
             upsert.Parameters.AddWithValue("@code", reader.IsDBNull(2) ? DBNull.Value : reader.GetString(2));
             upsert.Parameters.AddWithValue("@name", reader.GetString(3));
             var priceType = reader.IsDBNull(4) ? (Guid?)null : reader.GetGuid(4);
-            upsert.Parameters.AddWithValue("@priceType", priceType is Guid id && priceTypes.ContainsKey(id) ? id : DBNull.Value);
+            upsert.Parameters.AddWithValue("@priceType", priceType is Guid id && priceTypes.TryGetValue(id, out var localPriceType) ? localPriceType : DBNull.Value);
             upsert.Parameters.AddWithValue("@discount", reader.GetDecimal(5));
             upsert.Parameters.AddWithValue("@isDefault", reader.GetBoolean(6));
             upsert.Parameters.AddWithValue("@active", reader.GetBoolean(7));
@@ -263,7 +277,7 @@ public sealed class SharedDataSync(
             upsert.Parameters.AddWithValue("@secondaryNormalized", reader.IsDBNull(7) ? DBNull.Value : reader.GetString(7));
             upsert.Parameters.AddWithValue("@classification", reader.IsDBNull(8) ? DBNull.Value : reader.GetGuid(8));
             var priceType = reader.IsDBNull(9) ? (Guid?)null : reader.GetGuid(9);
-            upsert.Parameters.AddWithValue("@priceType", priceType is Guid id && priceTypes.ContainsKey(id) ? id : DBNull.Value);
+            upsert.Parameters.AddWithValue("@priceType", priceType is Guid id && priceTypes.TryGetValue(id, out var localPriceType) ? localPriceType : DBNull.Value);
             upsert.Parameters.AddWithValue("@discount", reader.GetDecimal(10));
             upsert.Parameters.AddWithValue("@active", reader.GetBoolean(11));
             upsert.Parameters.AddWithValue("@notes", reader.IsDBNull(12) ? DBNull.Value : reader.GetString(12));
@@ -424,6 +438,11 @@ public sealed class SharedDataSync(
                 applied++;
             }
 
+            if (centralConnection is not null)
+            {
+                await RepairNullCustomerPriceTypesAsync(centralConnection, connection, cancellationToken);
+            }
+
             await SaveCheckpointAsync(connection, endpointId, checkpoint, cancellationToken);
             await SetEndpointStateAsync(connection, endpointId, null, cancellationToken);
             return new SyncRunResult(applied, null, true);
@@ -433,6 +452,59 @@ public sealed class SharedDataSync(
             var message = SqlEndpointSettings.DescribeConnectionFailure(exception);
             await TryRecordErrorAsync(endpointId, message, cancellationToken);
             return new SyncRunResult(0, message, false);
+        }
+    }
+
+    private static async Task RepairNullCustomerPriceTypesAsync(SqlConnection remote, SqlConnection branch, CancellationToken cancellationToken)
+    {
+        var priceTypes = await ReadPriceTypesAsync(remote, branch, cancellationToken);
+        if (priceTypes.Count == 0)
+        {
+            return;
+        }
+
+        var missing = new List<Guid>();
+        await using (var local = new SqlCommand("SELECT CustomerID FROM dbo.Customers WHERE PriceTypeID IS NULL;", branch))
+        await using (var reader = await local.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                missing.Add(reader.GetGuid(0));
+            }
+        }
+
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        var centralPrices = new Dictionary<Guid, Guid>();
+        await using (var remoteCommand = new SqlCommand("SELECT CustomerID, PriceTypeID FROM dbo.Customers WHERE PriceTypeID IS NOT NULL;", remote))
+        await using (var reader = await remoteCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                centralPrices[reader.GetGuid(0)] = reader.GetGuid(1);
+            }
+        }
+
+        foreach (var customerId in missing)
+        {
+            if (!centralPrices.TryGetValue(customerId, out var remotePriceType) || !priceTypes.TryGetValue(remotePriceType, out var localPriceType))
+            {
+                continue;
+            }
+
+            await using var update = new SqlCommand(
+                """
+                UPDATE dbo.Customers
+                SET PriceTypeID = @priceType
+                WHERE CustomerID = @id AND PriceTypeID IS NULL;
+                """,
+                branch);
+            update.Parameters.AddWithValue("@priceType", localPriceType);
+            update.Parameters.AddWithValue("@id", customerId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 

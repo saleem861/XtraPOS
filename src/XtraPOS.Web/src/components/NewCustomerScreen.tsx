@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, Pencil, QrCode, Save, Send, ShieldCheck, Tag } from "lucide-react";
+import { ArrowLeft, CircleCheck, Pencil, QrCode, Save, Send, ShieldCheck, Tag } from "lucide-react";
 import { SetupClientError } from "../api/client";
-import { createCustomerClient, type CustomerWriteBody, type SpecialPriceRow } from "../api/customers";
+import { createCustomerClient, type CreditPolicy, type CustomerWriteBody, type SpecialPriceRow } from "../api/customers";
 import { createItemClient } from "../api/items";
 import { createPricingClient } from "../api/pricing";
 import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
-import { PasskeyQrPanel } from "./PasskeyQrPanel";
+import { ScreenHeader } from "./ScreenHeader";
+import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
 import { FullKeyboard } from "./FullKeyboard";
 import {
   alternatePalestinianPrefix,
   canSaveCustomer,
+  customerSaveConfirmed,
   customerTypeDefault,
   customerTypeOrder,
   defaultCallingCode,
@@ -105,6 +107,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [classificationId, setClassificationId] = useState("");
   const [priceTypeId, setPriceTypeId] = useState("");
   const [discount, setDiscount] = useState("");
+  const storedPriceMissing = useRef(false);
+  const loadedPriceCode = useRef("");
   const [notes, setNotes] = useState("");
   const [recordVersion, setRecordVersion] = useState("");
   const [verifiedDestination, setVerifiedDestination] = useState<string | null>(null);
@@ -114,7 +118,12 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [resendAt, setResendAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [message, setMessage] = useState("");
+  const [saveUi, setSaveUi] = useState<"idle" | "saving" | "success">("idle");
   const [passkeyOpen, setPasskeyOpen] = useState(false);
+  const [passkeyNotice, setPasskeyNotice] = useState<"" | "success" | "failure">("");
+  const [passkeyVerified, setPasskeyVerified] = useState(false);
+  const [passkeySessionId, setPasskeySessionId] = useState<string | null>(null);
+  const [reservedCustomerId, setReservedCustomerId] = useState<string | null>(null);
   const [specials, setSpecials] = useState<SpecialPriceRow[]>([]);
   const [specialsOpen, setSpecialsOpen] = useState(false);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
@@ -157,8 +166,11 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         setCustomerNumber(row.customerNumber ?? "");
         setName(row.name ?? "");
         setClassificationId(row.customerClassificationId ?? "");
-        setPriceTypeId(row.priceTypeId ?? "");
-        setDiscount(row.variableValueDiscountPercent);
+        const storedPrice = row.priceTypeId ?? "";
+        storedPriceMissing.current = storedPrice === "";
+        loadedPriceCode.current = row.priceCode ?? "";
+        setPriceTypeId(storedPrice);
+        setDiscount(row.variableValueDiscountPercent == null || row.variableValueDiscountPercent === "" ? "" : String(row.variableValueDiscountPercent));
         setNotes(row.notes ?? "");
         setRecordVersion(row.rowVersion ?? "");
         const phone = row.whatsAppPhoneE164 || row.phone || "";
@@ -171,23 +183,26 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         if (row.phoneVerificationStatus === "Verified" && row.whatsAppPhoneE164) setVerifiedDestination(row.whatsAppPhoneE164);
       }).catch(() => setMessage("تعذر تحميل بيانات الزبون."));
       void customers.specialPrices(customerId).then(setSpecials).catch(() => setSpecials([]));
-      void customers.creditPolicy(customerId).then((policy) => {
-        setCreditEnabled(policy.creditEnabled);
-        setCreditLimit(String(policy.creditLimit));
-        setPaymentTermDays(String(policy.paymentTermDays));
-        setCreditStatus(policy.creditStatus);
-        setCreditVersion(policy.rowVersion);
-        setCreditOutstanding(policy.outstanding);
-        setCreditAvailableAmount(policy.available);
-        setCreditAvailable(policy.centralReachable);
-        setCreditNotice(policy.centralReachable ? "" : "تعذر الاتصال بجهة الائتمان المركزية.");
-      }).catch((error: unknown) => {
-        setCreditAvailable(false);
-        setCreditAvailableAmount(null);
-        setCreditNotice(error instanceof SetupClientError ? error.message : "تعذر الاتصال بجهة الائتمان المركزية.");
-      });
+      void loadCreditPolicy(customerId);
     }
   }, [customers, customerId]);
+
+  useEffect(() => {
+    if (!customerId || priceTypes.length === 0) return;
+    const known = priceTypes.some((price) => price.priceTypeId === priceTypeId);
+    if (known) return;
+    const byCode = loadedPriceCode.current
+      ? priceTypes.find((price) => price.priceCode.localeCompare(loadedPriceCode.current, undefined, { sensitivity: "accent" }) === 0)
+      : undefined;
+    if (byCode) {
+      setPriceTypeId(byCode.priceTypeId);
+      return;
+    }
+    if (!storedPriceMissing.current) return;
+    const selected = classifications.find((row) => row.customerClassificationId === classificationId);
+    const defaults = selected ? customerTypeDefault(selected.name, priceTypes) : null;
+    if (defaults?.priceTypeId) setPriceTypeId(defaults.priceTypeId);
+  }, [customerId, classificationId, classifications, priceTypes, priceTypeId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -208,7 +223,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   }, []);
 
   const destination = destinationE164(countryCode, whatsAppLocal);
-  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId });
+  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId, passkeyVerified });
   const wait = Math.max(0, Math.ceil((resendAt - now) / 1000));
   const orderedTypes = customerTypeOrder
     .map((label) => classifications.find((row) => row.name === label))
@@ -250,6 +265,9 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     }
     setWhatsAppEdited(value.trim() !== "");
     setVerifiedDestination(null);
+    setPasskeyVerified(false);
+    setPasskeySessionId(null);
+    setPasskeyNotice("");
   }
 
   function changeType(id: string) {
@@ -276,6 +294,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       rowVersion: recordVersion || undefined,
       verificationId: verificationId ?? undefined,
       variableValueDiscountPercent: Number.isFinite(parsed) ? parsed : undefined,
+      passkeySessionId: !customerId && passkeyVerified ? passkeySessionId ?? undefined : undefined,
       specialPrices: customerId ? undefined : specials.filter((row) => row.isActive).map((row) => ({
         itemNumber: row.itemNumber,
         minimumQuantity: row.minimumQuantity,
@@ -334,15 +353,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     if (digits && boxes[index + 1]) boxes[index + 1].focus();
   }
 
-  async function saveCredit(customerIdToSave: string, activation: { enabled: boolean; status: "Active" | "Inactive" | "Suspended" }, limit: number, terms: number) {
-    const policy = await customers.saveCreditPolicy(customerIdToSave, {
-      creditEnabled: activation.enabled,
-      creditLimit: limit,
-      paymentTermDays: terms,
-      creditStatus: activation.status,
-      rowVersion: creditVersion || undefined,
-      reason: "customer-screen",
-    });
+  function applyCreditPolicy(policy: CreditPolicy) {
     setCreditEnabled(policy.creditEnabled);
     setCreditLimit(String(policy.creditLimit));
     setPaymentTermDays(String(policy.paymentTermDays));
@@ -354,7 +365,41 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     setCreditNotice(policy.centralReachable ? "" : "تعذر الاتصال بجهة الائتمان المركزية.");
   }
 
+  function loadCreditPolicy(id: string) {
+    void customers.creditPolicy(id).then(applyCreditPolicy).catch((error: unknown) => {
+      setCreditAvailable(false);
+      setCreditAvailableAmount(null);
+      setCreditNotice(error instanceof SetupClientError ? error.message : "تعذر الاتصال بجهة الائتمان المركزية.");
+    });
+  }
+
+  async function saveCredit(customerIdToSave: string, activation: { enabled: boolean; status: "Active" | "Inactive" | "Suspended" }, limit: number, terms: number) {
+    const policy = await customers.saveCreditPolicy(customerIdToSave, {
+      creditEnabled: activation.enabled,
+      creditLimit: limit,
+      paymentTermDays: terms,
+      creditStatus: activation.status,
+      rowVersion: creditVersion || undefined,
+      reason: "customer-screen",
+    });
+    applyCreditPolicy(policy);
+  }
+
+  function applyLoaded(row: { customerNumber?: string | null; name?: string; customerClassificationId?: string | null; priceTypeId?: string | null; priceCode?: string | null; variableValueDiscountPercent?: string | number | null; notes?: string | null; rowVersion?: string | null; whatsAppPhoneE164?: string | null; phone?: string | null; phoneVerificationStatus?: string | null }) {
+    setCustomerNumber(row.customerNumber ?? "");
+    setName(row.name ?? "");
+    setClassificationId(row.customerClassificationId ?? "");
+    const storedPrice = row.priceTypeId ?? "";
+    storedPriceMissing.current = storedPrice === "";
+    loadedPriceCode.current = row.priceCode ?? "";
+    setPriceTypeId(storedPrice);
+    setDiscount(row.variableValueDiscountPercent == null || row.variableValueDiscountPercent === "" ? "" : String(row.variableValueDiscountPercent));
+    setNotes(row.notes ?? "");
+    setRecordVersion(row.rowVersion ?? "");
+  }
+
   async function save() {
+    if (saveUi === "saving") return;
     const activation = creditSwitchState(creditEnabled, creditStatus);
     const limit = Number(creditLimit);
     const terms = Number(paymentTermDays);
@@ -377,20 +422,40 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       return;
     }
     if (!saveEnabled) return;
-    if (!customerId && !verificationId) return;
+    if (!customerId && !verificationId && !passkeyVerified) return;
+    setSaveUi("saving");
+    setMessage("");
     try {
-      const saved = await customers.saveCustomer(body(), savedCustomerId);
+      const sent = body();
+      const saved = await customers.saveCustomer(sent, savedCustomerId);
       setSavedCustomerId(saved.customerId);
+      const selectedPriceCode = priceTypes.find((price) => price.priceTypeId === sent.priceTypeId)?.priceCode ?? null;
+      if (customerId && !customerSaveConfirmed(sent, saved, selectedPriceCode)) {
+        setSaveUi("idle");
+        setMessage("تعذر تأكيد حفظ التعديلات.");
+        return;
+      }
       if (canManageCredit && changed) {
         try {
           await saveCredit(saved.customerId, activation, limit, terms);
         } catch (error) {
-          setMessage(error instanceof SetupClientError ? `تم حفظ الزبون. ${error.message}` : "تم حفظ الزبون. تعذر حفظ إعدادات الائتمان وتحتاج إلى مراجعة.");
+          setSaveUi("idle");
+          const creditMessage = error instanceof SetupClientError ? error.message : "تعذر حفظ إعدادات الائتمان.";
+          setMessage(customerId ? `تم حفظ تعديلات الزبون. ${creditMessage}` : creditMessage);
+          if (customerId) onSaved(saved.customerId);
           return;
         }
       }
+      if (customerId) {
+        const fresh = await customers.get(saved.customerId);
+        if (fresh && customerSaveConfirmed(sent, fresh, selectedPriceCode)) applyLoaded(fresh);
+        else applyLoaded({ ...sent, customerNumber, priceCode: saved.priceCode, rowVersion: saved.rowVersion, priceTypeId: saved.priceTypeId ?? sent.priceTypeId });
+        setRecordVersion(saved.rowVersion || fresh?.rowVersion || "");
+      }
+      setSaveUi("success");
       onSaved(saved.customerId);
     } catch (error) {
+      setSaveUi("idle");
       setMessage(error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.");
     }
   }
@@ -435,7 +500,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
 
   return (
     <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label={specialsOpen ? "الأسعار الاستثنائية للزبون" : title}>
-      <header className="new-customer-bar">
+      <ScreenHeader title={specialsOpen ? "الأسعار الاستثنائية للزبون" : title} onBack={onBack} />
+      <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <h2>{specialsOpen ? "الأسعار الاستثنائية للزبون" : title}</h2>
         <button type="button" className="new-customer-back" onClick={specialsOpen ? () => setSpecialsOpen(false) : onBack}><ArrowLeft aria-hidden="true" />رجوع</button>
@@ -512,26 +578,9 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
               setCreditStatus(next.status);
             }} />
           </label>
-          <p>{creditAvailable ? `الرصيد القائم ${creditOutstanding} — المتاح ${creditAvailableAmount ?? "—"}` : "الرصيد القائم والمتاح غير معروفين."}</p>
-          {creditNotice ? <p className="status-error">{creditNotice}</p> : null}
-          {customerId ? <button type="button" onClick={() => {
-            setCreditNotice("");
-            void customers.creditPolicy(customerId).then((policy) => {
-              setCreditEnabled(policy.creditEnabled);
-              setCreditLimit(String(policy.creditLimit));
-              setPaymentTermDays(String(policy.paymentTermDays));
-              setCreditStatus(policy.creditStatus);
-              setCreditVersion(policy.rowVersion);
-              setCreditOutstanding(policy.outstanding);
-              setCreditAvailableAmount(policy.available);
-              setCreditAvailable(policy.centralReachable);
-              setCreditNotice("");
-            }).catch((error: unknown) => {
-              setCreditAvailable(false);
-              setCreditAvailableAmount(null);
-              setCreditNotice(error instanceof SetupClientError ? error.message : "تعذر الاتصال بجهة الائتمان المركزية.");
-            });
-          }}>إعادة المحاولة</button> : null}
+          <p className="credit-balance">{creditAvailable ? `الرصيد القائم ${creditOutstanding} — المتاح ${creditAvailableAmount ?? "—"}` : "الرصيد القائم والمتاح غير معروفين."}</p>
+          {creditNotice ? <p className="status-error credit-notice">{creditNotice}</p> : null}
+          {customerId && creditNotice ? <button type="button" className="credit-retry" onClick={() => loadCreditPolicy(customerId)}>إعادة المحاولة</button> : null}
           {readOnly && customerId && canManageCredit ? <button type="button" onClick={() => void save()}>حفظ الاستدانة</button> : null}
         </fieldset>
         )}
@@ -543,13 +592,61 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         </div>
         )}
         {message ? <p className="new-customer-message">{message}</p> : null}
+        {saveUi === "saving" ? (
+          <div className="customer-save-progress" role="status" aria-label="جاري الحفظ">
+            <span className="customer-save-spinner" />
+          </div>
+        ) : null}
+        {saveUi === "success" ? (
+          <div className="customer-save-progress" role="presentation">
+            <div className="customer-save-card" role="dialog" aria-modal="true" aria-label={customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}>
+              <CircleCheck size={64} aria-hidden="true" />
+              <p>{customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}</p>
+              <button type="button" onClick={() => setSaveUi("idle")}>موافق</button>
+            </div>
+          </div>
+        ) : null}
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly && (customerId || savedCustomerId) ? (
+      {!readOnly ? (
         <div className="passkey-qr-row">
-          <button id="passkey-qr" className="passkey-qr-button" type="button" onClick={() => setPasskeyOpen(true)}><QrCode aria-hidden="true" />تفعيل Passkey</button>
-          {passkeyOpen ? <PasskeyQrPanel session={session} customerId={(customerId || savedCustomerId) as string} purpose="enrollment" canReplace={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} onClose={() => setPasskeyOpen(false)} /> : null}
+          <button id="passkey-qr" className="passkey-qr-button" type="button" onClick={() => {
+            if (!name.trim() || !destination) {
+              setMessage("أدخل اسم الزبون ورقم الهاتف قبل توليد Passkey.");
+              return;
+            }
+            setMessage("");
+            setPasskeyNotice("");
+            setPasskeyOpen(true);
+          }}><QrCode aria-hidden="true" />توليد Passkey</button>
+          {passkeyOpen ? (
+            <PasskeyQrPanel
+              session={session}
+              customerId={customerId || savedCustomerId || reservedCustomerId || ""}
+              customerSaved={Boolean(customerId || savedCustomerId)}
+              draft={{ name, phone: destination }}
+              purpose="enrollment"
+              canReplace={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")}
+              autoStart
+              onReserved={setReservedCustomerId}
+              onEnrolled={(id) => {
+                setPasskeySessionId(id);
+                setPasskeyVerified(true);
+                setPasskeyNotice("success");
+                setPasskeyOpen(false);
+              }}
+              onFailed={() => {
+                setPasskeyVerified(false);
+                setPasskeySessionId(null);
+                setPasskeyNotice("failure");
+                setPasskeyOpen(false);
+              }}
+              onClose={() => setPasskeyOpen(false)}
+            />
+          ) : null}
+          {passkeyNotice === "success" ? <p className="new-customer-success" role="status">{passkeyVerifiedMessage}</p> : null}
+          {passkeyNotice === "failure" ? <p className="status-error" role="alert">{passkeyFailedMessage}</p> : null}
         </div>
       ) : null}
       {readOnly ? null : (
@@ -567,7 +664,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         </div>
         <button id="verify-code" className="verify-button" type="button" disabled={otp.join("").length !== otpCodeLength || !verificationId} onClick={() => void verify()} onKeyDown={(event) => onEnter(event, "verify-code")}><ShieldCheck aria-hidden="true" />التحقق من الرمز</button>
         <button className="resend-button" type="button" disabled={wait > 0 || !verificationId} onClick={() => void send()}>{wait > 0 ? `00:${String(wait).padStart(2, "0")}` : "إعادة الإرسال"}</button>
-        <button id="save-customer" className="save-button" type="button" disabled={!saveEnabled} onClick={() => void save()}><Save aria-hidden="true" />{customerId ? "حفظ" : "حفظ الزبون"}</button>
+        <button id="save-customer" className="save-button" type="button" disabled={!saveEnabled || saveUi === "saving"} onClick={() => void save()}><Save aria-hidden="true" />{customerId ? "حفظ" : "حفظ الزبون"}</button>
       </div>
       )}
       </>}

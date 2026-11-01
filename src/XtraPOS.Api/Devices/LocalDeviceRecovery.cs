@@ -55,8 +55,9 @@ public sealed class LocalDeviceRecovery(
         var branch = await SingleBranchAsync(cancellationToken);
         var stations = await StationListAsync(branch.BranchId, cancellationToken);
         var device = await db.Devices
-            .Where(item => item.BranchId == branch.BranchId && item.IsActive && item.RevokedAt == null)
-            .OrderBy(item => item.CreatedAt)
+            .Where(item => item.BranchId == branch.BranchId && item.IsActive)
+            .OrderBy(item => item.RevokedAt)
+            .ThenByDescending(item => item.RegisteredAt)
             .Select(item => new { item.DeviceId, item.DeviceName })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -295,10 +296,12 @@ public sealed class LocalDeviceRecovery(
         CancellationToken cancellationToken)
     {
         var devices = await db.Devices
-            .Where(item => item.BranchId == branchId && item.IsActive && item.RevokedAt == null)
+            .Where(item => item.BranchId == branchId && item.IsActive)
             .ToListAsync(cancellationToken);
-        var existing = devices.FirstOrDefault(item => item.DeviceName == deviceName) ?? (devices.Count == 1 ? devices[0] : null);
-        if (devices.Count > 1 && existing is null)
+        var active = devices.Where(item => item.RevokedAt == null).ToList();
+        var pool = active.Count > 0 ? active : devices;
+        var existing = pool.FirstOrDefault(item => item.DeviceName == deviceName) ?? (pool.Count == 1 ? pool[0] : null);
+        if (pool.Count > 1 && existing is null)
         {
             throw new SetupRejectedException("يوجد أكثر من جهاز على هذا الفرع. أدخل اسم الجهاز المسجل لإعادة ربطه.");
         }

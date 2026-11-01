@@ -44,8 +44,8 @@ describe("customers menu", () => {
     render(
       <div className="app">
         <header className="topbar">
-          <p className="topbar-title">نقاط البيع</p>
-          <div id="pos-topbar-slot" />
+          <h1 className="topbar-title"><span id="app-title-slot" /></h1>
+          <div id="app-back-slot" />
         </header>
         <HomeScreen session={session} user={user} pending={false} onLogout={onLogout} onReset={() => undefined} />
       </div>,
@@ -78,7 +78,7 @@ describe("customers menu", () => {
     const clerk = { ...user, permissions: ["Customers.View", "Customers.Create"] };
     render(
       <div className="app">
-        <header className="topbar"><div id="pos-topbar-slot" /></header>
+        <header className="topbar"><h1 className="topbar-title"><span id="app-title-slot" /></h1><div id="app-back-slot" /></header>
         <HomeScreen session={session} user={clerk} pending={false} onLogout={() => undefined} onReset={() => undefined} />
       </div>,
     );

@@ -1,3 +1,5 @@
+import { Home, UserRound } from "lucide-react";
+import { CentralLinkBadge } from "./components/CentralLinkBadge";
 import { useEffect, useRef, useState } from "react";
 import {
   createBranch,
@@ -18,7 +20,6 @@ import { PasswordChangeScreen } from "./components/PasswordChangeScreen";
 import { SetupChoiceScreen } from "./components/SetupChoiceScreen";
 import { SetupProgressScreen } from "./components/SetupProgressScreen";
 import { SetupWizard } from "./components/SetupWizard";
-import { SyncStatusBadge } from "./components/SyncStatusBadge";
 import { StatusScreen } from "./components/StatusScreen";
 import { UnregisteredDeviceScreen } from "./components/UnregisteredDeviceScreen";
 import { asDeviceSession } from "./storage/deviceSession";
@@ -110,6 +111,7 @@ export default function App() {
   const [draft, setDraft] = useState<BranchSetupInput>(emptyBranchSetup);
   const setupAuthorization = useRef("");
   const onboardingAuthorization = useRef(readOnboardingAuthorization());
+  const organizationReady = useRef(false);
   const runId = useRef(0);
 
   useEffect(() => {
@@ -143,7 +145,15 @@ export default function App() {
         setPhase({ kind: "error", message: "تعذر قراءة إعداد هذا الجهاز. أعد المحاولة، أو استخدم إعادة التهيئة لإعادة التسجيل دون حذف بيانات الفرع." });
         return;
       }
-      if (status.status === "NotConfigured" || stored.kind === "none") {
+
+      const ready = status.status === "Configured" || status.status === "ConfiguredButAdminMissing";
+      organizationReady.current = ready;
+      if (stored.kind === "none") {
+        setPhase(ready ? { kind: "unregistered", intent: "join" } : { kind: "choice" });
+        return;
+      }
+
+      if (status.status === "NotConfigured") {
         setPhase({ kind: "choice" });
         return;
       }
@@ -227,6 +237,12 @@ export default function App() {
       }
 
       const message = error instanceof SetupClientError ? error.message : "تعذر إكمال الإعداد.";
+      if (message.includes("الإعداد الأول اكتمل")) {
+        organizationReady.current = true;
+        setPhase({ kind: "unregistered", intent: "join" });
+        return;
+      }
+
       setPhase((current) =>
         current.kind === "progress"
           ? { ...current, running: false, error: message, steps: markActiveAsError(current.steps), existingBranch: null }
@@ -365,7 +381,7 @@ export default function App() {
   }
 
   async function submitLogout() {
-    if (phase.kind !== "home" || phase.pending) {
+    if ((phase.kind !== "home" && phase.kind !== "passwordChange") || phase.pending) {
       return;
     }
 
@@ -380,17 +396,49 @@ export default function App() {
   }
 
   const title = phase.kind === "login" || phase.kind === "home" ? "نقاط البيع" : "الإعداد";
+  const authenticated = phase.kind === "home" || phase.kind === "passwordChange";
+  const sessionUser = authenticated ? phase.user : null;
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">إكسترا</span>
+          <span className="brand-ar">
+            إكسترا
+            <svg className="brand-wave" viewBox="0 0 86 10" aria-hidden="true">
+              <path d="M2 7 C 16 1, 28 1, 42 6 S 70 11, 84 3" />
+            </svg>
+          </span>
+          <span className="brand-en">XtraPOS</span>
         </div>
-        <div id="pos-topbar-slot" className="pos-topbar-slot" />
-        <SyncStatusBadge />
-        <p className="topbar-title">{title}</p>
+        {sessionUser ? (
+          <>
+            <span className="topbar-rule" aria-hidden="true" />
+            <div className="topbar-identity">
+              <span className="topbar-avatar" aria-hidden="true"><UserRound /></span>
+              <span className="topbar-who">
+                <strong>{sessionUser.displayName}</strong>
+                <small>{sessionUser.businessDisplayName || sessionUser.businessName} - {sessionUser.branchName}</small>
+              </span>
+            </div>
+            <span className="topbar-rule" aria-hidden="true" />
+          </>
+        ) : null}
+        <h1 className="topbar-title">
+          <span id="app-title-slot" />
+          <span className="topbar-title-fallback">{title}</span>
+        </h1>
+        {authenticated ? (
+          <>
+            <span className="topbar-rule" aria-hidden="true" />
+            <CentralLinkBadge />
+            <div className="topbar-actions">
+              <button className="topbar-pill" type="button" onClick={() => window.dispatchEvent(new Event("xtrapos-home"))}><Home aria-hidden="true" />الرئيسية</button>
+              <div id="app-back-slot" />
+              <button className="topbar-logout" type="button" onClick={() => void submitLogout()} disabled={phase.pending}>تسجيل خروج</button>
+            </div>
+          </>
+        ) : <div id="app-back-slot" />}
       </header>
       <main className="workspace">
         {phase.kind === "loading" ? <StatusScreen title="XtraPOS" message="جاري التحقق من الإعداد" /> : null}
@@ -413,6 +461,11 @@ export default function App() {
         {phase.kind === "choice" ? (
           <SetupChoiceScreen
             onIndependent={() => {
+              if (organizationReady.current) {
+                setPhase({ kind: "unregistered", intent: "join" });
+                return;
+              }
+
               setDraft({ ...emptyBranchSetup, deviceRole: "MainBranch", roleLocked: true });
               setPhase({ kind: "wizard" });
             }}
@@ -437,6 +490,7 @@ export default function App() {
             onRetry={() => void startSetup(draft)}
             onEdit={() => setPhase({ kind: "wizard" })}
             onRefresh={() => void refresh()}
+            onRelink={() => setPhase({ kind: "unregistered", intent: "join" })}
           />
         ) : null}
         {phase.kind === "unregistered" ? (
@@ -480,9 +534,15 @@ export default function App() {
             user={phase.user}
             pending={phase.pending}
             onLogout={() => void submitLogout()}
-            onReset={() => {
-              clearPersistedDevice();
-              setPhase({ kind: "choice" });
+            onReset={(freshSetup) => {
+              if (freshSetup) {
+                organizationReady.current = false;
+                setDraft(emptyBranchSetup);
+                setPhase({ kind: "choice" });
+                return;
+              }
+
+              void refresh();
             }}
           />
         ) : null}

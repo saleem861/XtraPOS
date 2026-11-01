@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -71,10 +72,9 @@ builder.Services.AddScoped<IPhoneVerificationProvider>(services =>
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddSingleton<ILegacyEmployeeSource, SqlLegacyEmployeeSource>();
 builder.Services.AddScoped<LegacyUserImporter>();
-var dataProtectionKeys = new DirectoryInfo(Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-    "XtraPOS",
-    "data-protection-keys"));
+var dataProtectionKeys = new DirectoryInfo(string.IsNullOrWhiteSpace(builder.Configuration["DataProtection:KeyPath"])
+    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "XtraPOS", "data-protection-keys")
+    : builder.Configuration["DataProtection:KeyPath"]!);
 Directory.CreateDirectory(dataProtectionKeys.FullName);
 var userKeyRing = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -92,9 +92,12 @@ if (Directory.Exists(userKeyRing))
     }
 }
 
+var applicationName = builder.Configuration["DataProtection:ApplicationName"];
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(dataProtectionKeys)
-    .SetApplicationName(@"C:\Users\Saleem Jayousi\OneDrive\Projects\XtraPOS\src\XtraPOS.Api");
+    .SetApplicationName(string.IsNullOrWhiteSpace(applicationName)
+        ? @"C:\Users\Saleem Jayousi\OneDrive\Projects\XtraPOS\src\XtraPOS.Api"
+        : applicationName);
 builder.Services.AddSingleton<CentralMigrationRunner>();
 builder.Services.AddScoped<CentralDatabaseService>();
 builder.Services.AddScoped<CentralSetupExecutor>();
@@ -659,6 +662,17 @@ if (args.Any(arg => string.Equals(arg, "import-legacy-items", StringComparison.O
 }
 
 var app = builder.Build();
+
+if (app.Environment.IsStaging())
+{
+    var forwarded = new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    };
+    forwarded.KnownNetworks.Clear();
+    forwarded.KnownProxies.Clear();
+    app.UseForwardedHeaders(forwarded);
+}
 
 app.Use(async (context, next) =>
 {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { blank } from "../catalog/format";
 import type { ItemActivity, ItemCatalogClient, ItemListItem, ItemQuery, ItemSort } from "../catalog/types";
+import { OperationProgress } from "./OperationProgress";
 import { ScreenHeader } from "./ScreenHeader";
 import { ItemDetailScreen } from "./ItemDetailScreen";
 
@@ -89,6 +90,7 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
           <select
             aria-label="تصفية الحالة"
             value={activity}
+            disabled={loading}
             onChange={(event) => {
               setActivity(event.target.value as ItemActivity);
               setPage(1);
@@ -104,6 +106,7 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
           <select
             aria-label="الترتيب"
             value={sort}
+            disabled={loading}
             onChange={(event) => {
               setSort(event.target.value as ItemSort);
               setPage(1);
@@ -118,6 +121,7 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
           <select
             aria-label="حجم الصفحة"
             value={pageSize}
+            disabled={loading}
             onChange={(event) => {
               setPageSize(Number(event.target.value));
               setPage(1);
@@ -131,7 +135,7 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
         <p className="result-count">{totalCount.toLocaleString("ar-EG")} صنف</p>
       </div>
       {error ? <p className="form-error">{error}</p> : null}
-      {loading ? <p className="catalog-status">جاري التحميل</p> : null}
+      {loading ? <OperationProgress label="جاري تحميل الأصناف" /> : null}
       {!loading && !error && items.length === 0 ? <p className="catalog-status">لا توجد أصناف مطابقة للبحث</p> : null}
       <div className="item-table-wrap">
         <table className="data-table item-table">
@@ -188,11 +192,11 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
         ))}
       </div>
       <div className="pager">
-        <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1}>
+        <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={loading || page <= 1}>
           السابق
         </button>
         <span>صفحة {page} من {pageCount}</span>
-        <button type="button" onClick={() => setPage((current) => current + 1)} disabled={page >= pageCount}>
+        <button type="button" onClick={() => setPage((current) => current + 1)} disabled={loading || page >= pageCount}>
           التالي
         </button>
       </div>

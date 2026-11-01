@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApplicationRoot } from "./ApplicationRoot";
 import { isSetupPreviewEnabled, SETUP_PREVIEW_PATH } from "./setup/setupPreview";
@@ -50,6 +51,22 @@ describe("setup preview route gate", () => {
     expect(fetchMock).toHaveBeenCalled();
     // Background sync status may be requested before setup status.
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/setup/status"))).toBe(true);
+  });
+
+  it("opens a new organization wizard from the main setup screen when nothing is configured", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "NotConfigured" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+
+    render(<ApplicationRoot development pathname="/" />);
+
+    expect(await screen.findByRole("heading", { name: "مرحبًا بك في XtraPOS" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "ربط هذا الجهاز بالفرع الحالي" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /فرع مستقل/ }));
+    await userEvent.click(screen.getByRole("button", { name: "البدء بالإعداد" }));
+    expect(await screen.findByText("هل يتبع إدارة مركزية؟")).toBeTruthy();
+    expect(screen.queryByText("المنظمة موجودة على هذا الجهاز")).toBeNull();
   });
 
   it("does not expose setup-preview in production", async () => {

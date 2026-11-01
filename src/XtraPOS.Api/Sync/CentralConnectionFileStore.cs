@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Hosting;
@@ -62,7 +63,14 @@ public sealed class CentralConnectionFileStore
         string? password = null;
         if (!string.IsNullOrEmpty(document.ProtectedPassword))
         {
-            password = _protector.Unprotect(document.ProtectedPassword);
+            try
+            {
+                password = _protector.Unprotect(document.ProtectedPassword);
+            }
+            catch (CryptographicException)
+            {
+                return null;
+            }
         }
 
         return new SqlEndpointSettings(

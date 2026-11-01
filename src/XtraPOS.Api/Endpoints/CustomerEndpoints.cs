@@ -16,6 +16,7 @@ public static class CustomerEndpoints
         group.MapGet("/{id:guid}", GetAsync);
         group.MapPost("", CreateAsync);
         group.MapPut("/{id:guid}", UpdateAsync);
+        group.MapDelete("/{id:guid}", DeleteAsync);
         group.MapPost("/{id:guid}/activation", ActivationAsync);
         group.MapPost("/phone-verification/send", SendRegistrationAsync);
         group.MapPost("/phone-verification/verify", VerifyRegistrationAsync);
@@ -179,6 +180,31 @@ public static class CustomerEndpoints
         try
         {
             return Results.Ok(await customers.UpdateAsync(caller.UserId, id, request, cancellationToken));
+        }
+        catch (CustomerMasterException exception)
+        {
+            return Fail(exception);
+        }
+    }
+
+    private static async Task<IResult> DeleteAsync(
+        HttpContext http,
+        AuthService auth,
+        PermissionService permissions,
+        CustomerMasterService customers,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var caller = await RequireAsync(http, auth, permissions, PermissionCodes.CustomersManage, cancellationToken);
+        if (caller.Result is not null)
+        {
+            return caller.Result;
+        }
+
+        try
+        {
+            await customers.DeleteAsync(id, cancellationToken);
+            return Results.Ok(new { status = "Deleted" });
         }
         catch (CustomerMasterException exception)
         {

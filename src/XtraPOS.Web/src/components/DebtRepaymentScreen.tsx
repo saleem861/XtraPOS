@@ -4,6 +4,7 @@ import { deviceHeaders } from "../api/client";
 import { invoiceLabel, previewAllocation, type AllocationLine, type DebtInvoice } from "../credit/debtAccount";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { DebtReversalScreen } from "./DebtReversalScreen";
+import { ScreenHeader } from "./ScreenHeader";
 import { NumericEditModal } from "./NumericEditModal";
 import type { DeviceSession } from "../types/setup";
 import type { DebtCustomer } from "./DebtAccountScreen";
@@ -128,7 +129,7 @@ export function DebtRepaymentScreen({ session, customer, branchName, cashierName
       if (payload.state === "Completed") {
         setBalanceAtCollection(preview.remaining);
         sessionStorage.removeItem(operationKey(customer.customerId));
-        setMessage("تم تسديد الدين.");
+        setMessage("تم تسديد المبلغ بنجاح");
         const summary = await fetch(`/api/pos/credit-collections/customers/${customer.customerId}/summary`, { headers: deviceHeaders(session) });
         if (summary.ok) setOutstanding((await summary.json()).outstanding);
         const status = await fetch(`/api/pos/credit-collections/${operationId}`, { headers: deviceHeaders(session) });
@@ -149,7 +150,7 @@ export function DebtRepaymentScreen({ session, customer, branchName, cashierName
     const payload = await response.json() as { centrallyConfirmed?: boolean; reconciliationRequired?: boolean };
     if (payload.centrallyConfirmed) {
       setState("Completed");
-      setMessage("تم تسديد الدين.");
+      setMessage("تم تسديد المبلغ بنجاح");
       sessionStorage.removeItem(operationKey(customer.customerId));
     } else if (payload.reconciliationRequired) {
       setState("ReconciliationRequired");
@@ -159,7 +160,8 @@ export function DebtRepaymentScreen({ session, customer, branchName, cashierName
   const locked = state === "PendingCentral" || state === "ReconciliationRequired" || state === "Completed";
   return (
     <section className="new-customer" dir="rtl" aria-label="تسديد دين">
-      <header className="new-customer-bar">
+      <ScreenHeader title="تسديد دين" onBack={onBack} />
+      <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <h2>تسديد دين</h2>
         <button type="button" className="new-customer-back" onClick={onBack}><ArrowLeft aria-hidden="true" />رجوع</button>

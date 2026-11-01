@@ -54,6 +54,7 @@ describe("new customer form", () => {
     expect(canSaveCustomer({ ...base, verifiedDestination: "+972592594707", name: "اسم جديد" })).toBe(true);
     expect(canSaveCustomer({ ...base, originalDestination: "+972592594707" })).toBe(true);
     expect(canSaveCustomer({ ...base, originalDestination: "+972592594707", whatsAppLocal: "599111222" })).toBe(false);
+    expect(canSaveCustomer({ ...base, passkeyVerified: true })).toBe(true);
   });
 
   it("falls back only between +972 and +970 and not when WhatsApp is unconfigured", () => {

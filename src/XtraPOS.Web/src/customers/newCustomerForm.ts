@@ -130,14 +130,35 @@ export function canSaveCustomer(input: {
   name: string;
   classificationId: string;
   priceTypeId: string;
+  passkeyVerified?: boolean;
 }): boolean {
   const destination = destinationE164(input.countryCode, input.whatsAppLocal);
   const unchanged = input.originalDestination != null && input.originalDestination === destination;
   const verified = Boolean(input.verifiedDestination) && input.verifiedDestination === destination;
   return Boolean(
-    (unchanged || verified)
+    (unchanged || verified || input.passkeyVerified)
     && input.name?.trim()
     && input.classificationId
     && input.priceTypeId,
   );
+}
+
+export function customerSaveConfirmed(
+  sent: { name: string; notes?: string; variableValueDiscountPercent?: number; priceTypeId?: string },
+  saved: { name?: string | null; notes?: string | null; variableValueDiscountPercent?: number | string | null; priceTypeId?: string | null; priceCode?: string | null },
+  selectedPriceCode?: string | null,
+): boolean {
+  if ((saved.name ?? "").trim() !== sent.name.trim()) return false;
+  if (saved.notes != null && saved.notes.trim() !== (sent.notes ?? "").trim()) return false;
+  if (saved.notes === null && (sent.notes ?? "").trim() !== "") return false;
+  if (saved.variableValueDiscountPercent != null && saved.variableValueDiscountPercent !== "") {
+    const discount = Number(saved.variableValueDiscountPercent);
+    if (!Number.isFinite(discount) || Math.abs(discount - (sent.variableValueDiscountPercent ?? 0)) > 0.0001) return false;
+  }
+  if (saved.priceTypeId && sent.priceTypeId && saved.priceTypeId !== sent.priceTypeId) {
+    const sameCode = Boolean(selectedPriceCode) && saved.priceCode != null && saved.priceCode.localeCompare(selectedPriceCode ?? "", undefined, { sensitivity: "accent" }) === 0;
+    if (!sameCode) return false;
+  }
+  if (selectedPriceCode && saved.priceCode && saved.priceCode.localeCompare(selectedPriceCode, undefined, { sensitivity: "accent" }) !== 0) return false;
+  return true;
 }

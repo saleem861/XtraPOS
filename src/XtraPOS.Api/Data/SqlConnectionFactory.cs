@@ -250,6 +250,31 @@ public sealed class SqlConnectionFactory
         SqlConnection.ClearAllPools();
     }
 
+    public async Task DropConfiguredInstallationAsync(CancellationToken cancellationToken)
+    {
+        if (!XtraPOS.Api.Devices.ProtectedDatabasePolicy.AllowsInstallationReset(_databaseName))
+        {
+            throw new InvalidOperationException("Refusing to drop a protected or shared database.");
+        }
+
+        var databaseName = RequireBranchName();
+        SqlConnection.ClearAllPools();
+        await using var connection = new SqlConnection(CreateMasterConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            $"""
+            IF DB_ID(N'{databaseName}') IS NOT NULL
+            BEGIN
+                ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                DROP DATABASE [{databaseName}];
+            END
+            """,
+            connection);
+        command.CommandTimeout = 60;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        SqlConnection.ClearAllPools();
+    }
+
     private async Task<DatabaseState> WaitUntilOnlineAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 20; attempt++)

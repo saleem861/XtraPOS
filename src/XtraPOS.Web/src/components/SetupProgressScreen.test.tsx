@@ -22,6 +22,17 @@ it.each([false, true])("opens an existing branch without offering deletion (lega
   expect(onRetry).not.toHaveBeenCalled();
 });
 
+it("sends a finished organization to device linking", async () => {
+  const onRelink = vi.fn();
+  render(<SetupProgressScreen steps={steps} running={false}
+    error="الإعداد الأول اكتمل. لا يمكن إنشاء المنظمة مرة أخرى."
+    existingBranch={null} onRefresh={vi.fn()} onRetry={vi.fn()} onEdit={vi.fn()} onRelink={onRelink} />);
+
+  expect(screen.queryByRole("button", { name: "إعادة المحاولة" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "ربط هذا الجهاز" }));
+  expect(onRelink).toHaveBeenCalledOnce();
+});
+
 it("allows retrying an ordinary setup failure", async () => {
   const onRetry = vi.fn();
   render(<SetupProgressScreen steps={steps} running={false} error="تعذر الاتصال"

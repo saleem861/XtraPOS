@@ -103,7 +103,7 @@ export function PasskeyPhonePage({ pathname }: { pathname: string }) {
       {view ? <p>الهاتف: {view.maskedPhone}</p> : null}
       <p>{left > 0 ? `ينتهي خلال ${left} ثانية` : "انتهت صلاحية الطلب"}</p>
       {message ? <p className="status-error">{message}</p> : null}
-      {enroll ? <label><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />أوافق على تفعيل Passkey لهذا الحساب بعد موافقة الكاشير</label> : null}
+      {enroll ? <label><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />أوافق على حفظ Passkey لهذا الحساب</label> : null}
       <button type="button" disabled={left <= 0 || (enroll && !agreed)} onClick={() => void activate()}>{enroll ? "إنشاء Passkey" : "تأكيد بهاتفي"}</button>
     </main>
   );
