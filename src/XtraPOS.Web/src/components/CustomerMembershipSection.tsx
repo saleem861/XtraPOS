@@ -13,7 +13,7 @@ interface MembershipConfig {
   appleLoginEnabled?: boolean;
 }
 
-export function CustomerMembershipSection({ customerId, canUnlink }: { customerId: string; canUnlink: boolean }) {
+export function CustomerMembershipSection({ customerId, canUnlink, pendingEnrollment = false, onBeforeEnroll }: { customerId: string; canUnlink: boolean; pendingEnrollment?: boolean; onBeforeEnroll?: () => void }) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [config, setConfig] = useState<MembershipConfig | null>(null);
   const [open, setOpen] = useState(false);
@@ -58,11 +58,15 @@ export function CustomerMembershipSection({ customerId, canUnlink }: { customerI
   }
 
   if (!customerId) {
+    const google = Boolean(config?.googleLoginEnabled);
+    const apple = Boolean(config?.appleLoginEnabled);
     return (
       <section className="membership-compact" aria-label="العضوية الذكية">
         <strong>العضوية الذكية</strong>
-        <span>غير مرتبطة</span>
-        <p>احفظ الزبون أولاً لتفعيل العضوية</p>
+        <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
+        {pendingEnrollment ? <p>تم التحقق. اضغط حفظ لإنشاء الزبون وربط العضوية.</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
+        {!pendingEnrollment && google ? <a href="/api/membership/auth/google/start" onClick={() => onBeforeEnroll?.()}>تسجيل العضوية — Google</a> : null}
+        {!pendingEnrollment && apple ? <a href="/api/membership/auth/apple/start" onClick={() => onBeforeEnroll?.()}>تسجيل العضوية — Apple</a> : null}
       </section>
     );
   }

@@ -1,3 +1,4 @@
+using XtraPOS.Api.Customers;
 using XtraPOS.Api.Membership;
 using XtraPOS.Api.Security;
 
@@ -21,6 +22,8 @@ public static class MembershipEndpoints
         app.MapGet("/api/membership/auth/apple/start", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => StartAsync(http, auth, "Apple", cancellationToken));
         app.MapPost("/api/membership/auth/apple/callback", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => CallbackAsync(http, auth, "Apple", cancellationToken));
         app.MapPost("/api/membership/enrollment/link", LinkAsync);
+        app.MapPost("/api/membership/enrollment/prove", ProveAsync);
+        app.MapPost("/api/membership/enrollment/commit", CommitAsync);
 
         app.MapGet("/api/membership/verify/{token}", (string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken) =>
         {
@@ -99,7 +102,45 @@ public static class MembershipEndpoints
                 http.Response.Cookies.Append(MembershipService.SessionCookie, result.SessionSecret, SessionCookie(http));
                 return Results.Redirect("/membership/ready");
             }
+            if (result.Code == "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" && Guid.TryParse(result.ReturnPath, out var attemptId))
+            {
+                return Results.Redirect($"/membership/ready?pending={attemptId}");
+            }
             return Results.Json(new { code = result.Code ?? "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" }, statusCode: StatusCodes.Status409Conflict);
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static async Task<IResult> ProveAsync(MembershipAuthService auth, MembershipProveRequest? request, CancellationToken cancellationToken)
+    {
+        if (request is null || request.AttemptId == Guid.Empty || request.VerificationId == Guid.Empty) return Results.BadRequest(new { code = "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" });
+        try
+        {
+            await auth.ProveOwnershipAsync(request.AttemptId, request.VerificationId, request.Destination, request.Otp, cancellationToken);
+            return Results.Ok(new { pending = true, linked = false });
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status409Conflict);
+        }
+        catch (CustomerMasterException)
+        {
+            return Results.Json(new { code = "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static async Task<IResult> CommitAsync(HttpContext http, AuthService authService, MembershipAuthService auth, MembershipCommitRequest? request, CancellationToken cancellationToken)
+    {
+        var current = await authService.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        if (request is null || request.AttemptId == Guid.Empty || request.CustomerId == Guid.Empty) return Results.BadRequest(new { code = "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" });
+        try
+        {
+            await auth.CommitNewCustomerAsync(request.AttemptId, request.CustomerId, cancellationToken);
+            return Results.Ok(new { linked = true });
         }
         catch (MembershipException exception)
         {
@@ -244,6 +285,20 @@ public static class MembershipEndpoints
     private sealed class MembershipSaleCancelRequest
     {
         public Guid SaleContextId { get; set; }
+    }
+
+    private sealed class MembershipProveRequest
+    {
+        public Guid AttemptId { get; set; }
+        public Guid VerificationId { get; set; }
+        public string? Destination { get; set; }
+        public string? Otp { get; set; }
+    }
+
+    private sealed class MembershipCommitRequest
+    {
+        public Guid AttemptId { get; set; }
+        public Guid CustomerId { get; set; }
     }
 
     private sealed class MembershipLinkRequest

@@ -76,6 +76,19 @@ public sealed class MembershipIdTokenValidator : IMembershipIdTokenValidator
     }
 }
 
+public static class MembershipEnrollmentRules
+{
+    public static string? CommitBlock(bool ownershipVerified, DateTime expiresAtUtc, DateTime nowUtc, Guid? linkedCustomerId, Guid requestedCustomerId, bool consumed)
+    {
+        if (consumed && linkedCustomerId == requestedCustomerId) return null;
+        if (consumed) return "MEMBERSHIP_PROVIDER_CONFLICT";
+        if (!ownershipVerified) return "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED";
+        if (nowUtc >= expiresAtUtc) return "MEMBERSHIP_ENROLLMENT_EXPIRED";
+        if (linkedCustomerId is Guid owner && owner != requestedCustomerId) return "MEMBERSHIP_PROVIDER_CONFLICT";
+        return null;
+    }
+}
+
 public static class MembershipLinkPolicy
 {
     public static string? Decide(Guid? existingCustomerId, Guid requestedCustomerId, bool ownershipProved)

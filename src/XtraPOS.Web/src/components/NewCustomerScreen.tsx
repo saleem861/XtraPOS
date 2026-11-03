@@ -6,6 +6,7 @@ import { createItemClient } from "../api/items";
 import { createPricingClient } from "../api/pricing";
 import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
 import { ScreenHeader } from "./ScreenHeader";
+import { clearNewCustomerDraft, pendingEnrollmentKey, readNewCustomerDraft, writeNewCustomerDraft } from "../membership/newCustomerDraft";
 import { CustomerMembershipSection } from "./CustomerMembershipSection";
 import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
 import { FullKeyboard } from "./FullKeyboard";
@@ -130,6 +131,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [specialsOpen, setSpecialsOpen] = useState(false);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
   const [savedCustomerId, setSavedCustomerId] = useState(customerId);
+  const [pendingEnrollment, setPendingEnrollment] = useState("");
   const [creditEnabled, setCreditEnabled] = useState(false);
   const [creditLimit, setCreditLimit] = useState("0");
   const [paymentTermDays, setPaymentTermDays] = useState("30");
@@ -139,6 +141,22 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [creditAvailable, setCreditAvailable] = useState(!customerId);
   const [creditNotice, setCreditNotice] = useState("");
   const [creditAvailableAmount, setCreditAvailableAmount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (customerId) return;
+    const draft = readNewCustomerDraft();
+    const pending = sessionStorage.getItem(pendingEnrollmentKey) ?? "";
+    if (pending) setPendingEnrollment(pending);
+    if (!draft) return;
+    setCustomerNumber(draft.customerNumber);
+    setName(draft.name);
+    setWhatsAppLocal(draft.whatsAppLocal);
+    setCountryCode(draft.countryCode);
+    setClassificationId(draft.classificationId);
+    setPriceTypeId(draft.priceTypeId);
+    setDiscount(draft.discount);
+    setNotes(draft.notes);
+  }, [customerId]);
 
   useEffect(() => {
     if (desktopKeyboard || !window.visualViewport) return undefined;
@@ -334,6 +352,20 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     if (!verificationId || !destination) return;
     try {
       await customers.verifyRegistration(verificationId, destination, otp.join(""));
+      const pending = sessionStorage.getItem(pendingEnrollmentKey);
+      if (pending) {
+        const proved = await fetch("/api/membership/enrollment/prove", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attemptId: pending, verificationId, destination, otp: otp.join("") }),
+        });
+        if (!proved.ok) {
+          setMessage("تم التحقق من الهاتف، وتعذر تثبيت تسجيل العضوية.");
+          return;
+        }
+        setPendingEnrollment(pending);
+      }
       setVerifiedDestination(destination);
       setMessage("تم التحقق من رقم الهاتف بنجاح");
     } catch (error) {
@@ -431,6 +463,22 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       const sent = body();
       const saved = await customers.saveCustomer(sent, savedCustomerId);
       setSavedCustomerId(saved.customerId);
+      const pending = sessionStorage.getItem(pendingEnrollmentKey);
+      if (!customerId && pending) {
+        const committed = await fetch("/api/membership/enrollment/commit", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
+        });
+        if (!committed.ok) {
+          setSaveUi("idle");
+          setMessage("تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.");
+          return;
+        }
+        clearNewCustomerDraft();
+        setPendingEnrollment("");
+      }
       const selectedPriceCode = priceTypes.find((price) => price.priceTypeId === sent.priceTypeId)?.priceCode ?? null;
       if (customerId && !customerSaveConfirmed(sent, saved, selectedPriceCode)) {
         setSaveUi("idle");
@@ -611,7 +659,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} /> : null}
+      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
       {!readOnly && (permissions.includes("Customers.Manage") || permissions.includes("System.Administer")) ? (
         <details className="customer-advanced">
           <summary>خيارات متقدمة</summary>

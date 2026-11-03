@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import App from "./App";
 import { MembershipDisplayPage } from "./components/MembershipDisplayPage";
+import { MembershipReadyPage } from "./components/MembershipReadyPage";
 import { MembershipPhonePage } from "./components/MembershipPhonePage";
 import { PasskeyPhonePage } from "./components/PasskeyPhonePage";
 import { isSetupPreviewEnabled } from "./setup/setupPreview";
@@ -23,7 +24,7 @@ export function ApplicationRoot({
   if (pathname === "/membership/display" || pathname === "/membership/ready") {
     return pathname === "/membership/display"
       ? <MembershipDisplayPage counterId={new URLSearchParams(window.location.search).get("counter") ?? undefined} />
-      : <section className="card" dir="rtl"><h1>تم حفظ العضوية</h1><p>اكتمل ربط الحساب وإنشاء الجلسة. لا حاجة للعودة إلى حفظ الزبون.</p></section>;
+      : <MembershipReadyPage />;
   }
 
   if (pathname.startsWith("/passkey/enroll/") || pathname.startsWith("/passkey/verify/")) {

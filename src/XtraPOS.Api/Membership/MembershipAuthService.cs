@@ -116,7 +116,96 @@ public sealed class MembershipAuthService(
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return new MembershipAuthResult(null, "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED", null);
+        return new MembershipAuthResult(null, "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED", attempt.Id.ToString());
+    }
+
+    public async Task ProveOwnershipAsync(Guid attemptId, Guid verificationId, string? destination, string? otp, CancellationToken cancellationToken)
+    {
+        await phones.VerifyRegistrationAsync(verificationId, destination, otp, cancellationToken);
+        await using var connection = await membership.OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.MembershipAuthAttempts
+            SET OwnershipVerifiedAt = SYSUTCDATETIME(), ExpiresAt = DATEADD(minute, 15, SYSUTCDATETIME())
+            WHERE AttemptID = @id AND Status = N'Authenticated' AND CustomerID IS NULL AND ProviderSubject IS NOT NULL AND ExpiresAt > SYSUTCDATETIME();
+            """, connection);
+        command.Parameters.AddWithValue("@id", attemptId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_ENROLLMENT_EXPIRED");
+    }
+
+    public async Task CommitNewCustomerAsync(Guid attemptId, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var connection = await membership.OpenCentralAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        string? provider = null;
+        string? subject = null;
+        DateTime expires = DateTime.MinValue;
+        DateTime? proved = null;
+        string status = "";
+        Guid? attemptCustomer = null;
+        await using (var read = new SqlCommand(
+            """
+            SELECT Provider, ProviderSubject, ExpiresAt, OwnershipVerifiedAt, Status, CustomerID
+            FROM dbo.MembershipAuthAttempts WHERE AttemptID = @id;
+            """, connection, transaction))
+        {
+            read.Parameters.AddWithValue("@id", attemptId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) throw new MembershipException("MEMBERSHIP_PROVIDER_STATE");
+            provider = reader.GetString(0);
+            subject = reader.IsDBNull(1) ? null : reader.GetString(1);
+            expires = DateTime.SpecifyKind(reader.GetDateTime(2), DateTimeKind.Utc);
+            proved = reader.IsDBNull(3) ? null : reader.GetDateTime(3);
+            status = reader.GetString(4);
+            attemptCustomer = reader.IsDBNull(5) ? null : reader.GetGuid(5);
+        }
+        Guid? owner = null;
+        await using (var existing = new SqlCommand(
+            "SELECT CustomerID FROM dbo.CustomerMembershipIdentities WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Active';", connection, transaction))
+        {
+            existing.Parameters.AddWithValue("@provider", provider);
+            existing.Parameters.AddWithValue("@subject", subject ?? "");
+            var value = await existing.ExecuteScalarAsync(cancellationToken);
+            if (value is Guid id) owner = id;
+        }
+        var block = MembershipEnrollmentRules.CommitBlock(proved is not null, expires, DateTime.UtcNow, owner ?? attemptCustomer, customerId, status == "Consumed");
+        if (block is not null) throw new MembershipException(block);
+        if (status == "Consumed")
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return;
+        }
+        var business = await CustomerBusinessAsync(connection, transaction, customerId, cancellationToken);
+        var identity = Guid.NewGuid();
+        await using (var insert = new SqlCommand(
+            """
+            INSERT INTO dbo.CustomerMembershipIdentities
+                (IdentityID, BusinessID, CustomerID, Provider, ProviderSubject, LinkedAt, LastAuthenticatedAt, Status, CreatedAt, UpdatedAt)
+            VALUES
+                (@id, @business, @customer, @provider, @subject, SYSUTCDATETIME(), SYSUTCDATETIME(), N'Active', SYSUTCDATETIME(), SYSUTCDATETIME());
+            """, connection, transaction))
+        {
+            insert.Parameters.AddWithValue("@id", identity);
+            insert.Parameters.AddWithValue("@business", business);
+            insert.Parameters.AddWithValue("@customer", customerId);
+            insert.Parameters.AddWithValue("@provider", provider);
+            insert.Parameters.AddWithValue("@subject", subject);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var done = new SqlCommand(
+            """
+            UPDATE dbo.MembershipAuthAttempts
+            SET Status = N'Consumed', CustomerID = @customer, BusinessID = @business
+            WHERE AttemptID = @id AND Status = N'Authenticated' AND CustomerID IS NULL AND OwnershipVerifiedAt IS NOT NULL;
+            """, connection, transaction))
+        {
+            done.Parameters.AddWithValue("@customer", customerId);
+            done.Parameters.AddWithValue("@business", business);
+            done.Parameters.AddWithValue("@id", attemptId);
+            if (await done.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_PROVIDER_STATE");
+        }
+        await membership.CreateSessionAsync(connection, transaction, business, customerId, identity, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<string> LinkAsync(Guid attemptId, Guid customerId, Guid verificationId, string? otp, CancellationToken cancellationToken)
