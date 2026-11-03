@@ -21,7 +21,14 @@ done < <(find "$root" -type f \( \
   -name 'staging.env' -o -name 'staging.env.local' -o \
   -name '*.pfx' -o -name '*.p12' -o -name '*.pem' -o \
   -name 'key-*.xml' -o \
-  -name 'id_rsa' -o -name 'id_ed25519' -o -name '*.ppk' \
+  -name 'id_rsa' -o -name 'id_ed25519' -o -name '*.ppk' -o \
+  -name 'central-connection.json' -o \
+  -name 'device-databases.json' -o \
+  -name 'sync-status.json' -o \
+  -name 'branch-sql-secrets.json' -o \
+  -name 'installation-configured' -o \
+  -name 'setup-authorization.token' -o \
+  -name 'onboarding-authorization.token' \
   \) -print0)
 
 if grep -R -l -E -e 'SqlServer__Password=[^[:space:]]+' -e 'MSSQL_SA_PASSWORD=[^[:space:]]+' -e 'STAGING_SSH_KEY=[^[:space:]]+' "$root" >/dev/null; then
@@ -30,7 +37,7 @@ if grep -R -l -E -e 'SqlServer__Password=[^[:space:]]+' -e 'MSSQL_SA_PASSWORD=[^
 fi
 
 if [[ "$forbidden" -ne 0 ]]; then
-  echo "::error::Release scan failed. The artifact must not contain appsettings, environment files, keys, or credential assignments."
+  echo "::error::Release scan failed. The artifact must not contain appsettings, environment files, keys, runtime connection or state files, or credential assignments."
   exit 1
 fi
 
@@ -39,7 +46,16 @@ if [[ ! -f "$root/release.json" || ! -f "$root/web/release.json" ]]; then
   exit 1
 fi
 
-python3 - "$root/release.json" "$root/web/release.json" <<'PY'
+if command -v python3 >/dev/null 2>&1; then
+  python_bin="python3"
+elif command -v python >/dev/null 2>&1; then
+  python_bin="python"
+else
+  echo "::error::Python is required to scan the release. Neither python3 nor python is available."
+  exit 1
+fi
+
+"$python_bin" - "$root/release.json" "$root/web/release.json" <<'PY'
 import json, pathlib, sys
 root, web = (json.loads(pathlib.Path(path).read_text()) for path in sys.argv[1:])
 if root != web:

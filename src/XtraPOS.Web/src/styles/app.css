@@ -5005,6 +5005,7 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   background: #fff;
   box-shadow: 0 4px 18px rgba(16, 44, 84, 0.08);
   min-inline-size: 0;
+  overflow: visible;
 }
 
 .new-customer-card > fieldset.customer-identity {
@@ -5117,6 +5118,14 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 8px 24px rgba(16, 44, 84, 0.14);
+}
+
+.nc-combo-empty {
+  display: block;
+  padding: 10px 12px;
+  color: #6d7f95;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .nc-combo-menu button {
@@ -5259,6 +5268,79 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   align-items: center;
   gap: 12px;
   margin: 0 14px;
+}
+
+.membership-compact {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 14px 0;
+  padding: 8px 12px;
+  border: 1px solid #d5e1ee;
+  border-radius: 10px;
+  background: #fff;
+  color: #12324d;
+}
+
+.membership-compact strong {
+  font-size: 15px;
+}
+
+.membership-compact span,
+.membership-compact em {
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.membership-compact.is-linked span {
+  color: #0d7a45;
+}
+
+.membership-compact p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.membership-compact button,
+.membership-compact a {
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #0c2340;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 36px;
+  text-decoration: none;
+}
+
+.membership-compact-actions {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.membership-compact-actions p {
+  flex: 1 0 100%;
+}
+
+.customer-advanced {
+  flex: 0 0 auto;
+  margin: 8px 14px 0;
+}
+
+.customer-advanced summary {
+  cursor: pointer;
+  color: #35516f;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .passkey-qr-notice {

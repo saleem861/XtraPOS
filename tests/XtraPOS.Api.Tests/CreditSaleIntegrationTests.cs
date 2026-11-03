@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Configuration;
@@ -251,7 +253,7 @@ public sealed class CreditSaleIntegrationTests
     {
         var connections = new SqlConnectionFactory(Options.Create(new SqlServerOptions { Server = "localhost", Database = BranchName, ConnectTimeoutSeconds = 15 }));
         var protection = new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider();
-        var endpoints = new XtraPOS.Api.Sync.SyncEndpointStore(connections, protection, new XtraPOS.Api.Sync.CentralConnectionFileStore(protection, Path.GetTempPath()));
+        var endpoints = new XtraPOS.Api.Sync.SyncEndpointStore(connections, protection, new XtraPOS.Api.Sync.CentralConnectionFileStore(protection, Path.GetTempPath()), new CreditTestHost());
         var pricing = new XtraPOS.Api.Catalog.PricingResolver(connections, endpoints);
         var variable = new XtraPOS.Api.Catalog.VariableValuePricingResolver(connections, endpoints);
         var stock = new XtraPOS.Api.Catalog.StockPostingService(connections);
@@ -259,6 +261,14 @@ public sealed class CreditSaleIntegrationTests
         var database = new BranchDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<BranchDbContext>().UseSqlServer(Connection(BranchName)).Options);
         var checkout = new XtraPOS.Api.Sales.CheckoutService(connections, pricing, variable, stock, payments, new XtraPOS.Api.Security.PermissionService(database));
         return new CreditSaleCoordinator(new CreditReservationService(), new CreditSaleDocumentWriter(checkout));
+    }
+
+    private sealed class CreditTestHost : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = Environments.Production;
+        public string ApplicationName { get; set; } = "XtraPOS.Tests";
+        public string ContentRootPath { get; set; } = Path.GetTempPath();
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     private sealed record Seed(Guid BusinessId, Guid BranchId, Guid StationId, Guid DeviceId, Guid CashSessionId, Guid ActorUserId, Guid UnauthorizedUserId, Guid CustomerId, Guid PartialCustomerId, Guid BlockedCustomerId, Guid ItemId);

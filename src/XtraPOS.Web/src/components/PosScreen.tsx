@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { MembershipQr } from "./MembershipQr";
 import {
   Archive,
   ArrowDown,
@@ -45,12 +46,12 @@ import { createHeldSaleClient, HeldSaleClientError } from "../api/heldSales";
 import { createItemClient } from "../api/items";
 import { createCustomerClient, type CustomerListItem } from "../api/customers";
 import { NewCustomerScreen } from "./NewCustomerScreen";
-import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
 import { ScreenHeader } from "./ScreenHeader";
 import { CreditSaleScreen } from "./CreditSaleScreen";
 import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
 import { deviceHeaders } from "../api/client";
+import { membershipPricingCustomer } from "../membership/membershipPricing";
 import { FullKeyboard } from "./FullKeyboard";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
@@ -218,8 +219,10 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [customerSelected, setCustomerSelected] = useState(-1);
   const [customerSort, setCustomerSort] = useState<{ column: CustomerSortColumn; direction: "asc" | "desc" } | null>(null);
   const [saleCustomer, setSaleCustomer] = useState<CustomerListItem | null>(null);
-  const [passkeyVerify, setPasskeyVerify] = useState(false);
-  const [passkeyNotice, setPasskeyNotice] = useState<"" | "success" | "failure">("");
+  const [membershipOpen, setMembershipOpen] = useState(false);
+  const [membershipVerifiedFor, setMembershipVerifiedFor] = useState<string | null>(null);
+  const [membershipRestrict, setMembershipRestrict] = useState(false);
+  const [membershipMessage, setMembershipMessage] = useState("");
   const [regularPricing, setRegularPricing] = useState(false);
   const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -354,6 +357,15 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       if (!regularPricingRef.current) setSaleCustomer(null);
       return;
     }
+    if (membershipRestrict && membershipVerifiedFor !== cart.customerId) {
+      regularPricingRef.current = true;
+      setRegularPricing(true);
+      if (saleCustomer?.customerId !== cart.customerId) {
+        void customers.get(cart.customerId).then((customer) => { if (customer) setSaleCustomer(customer); });
+      }
+      void changeCustomer(null);
+      return;
+    }
     if (saleCustomer?.customerId === cart.customerId) return;
     regularPricingRef.current = false;
     setRegularPricing(false);
@@ -364,7 +376,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [cart?.customerId, customers, saleCustomer?.customerId]);
+  }, [cart?.customerId, customers, saleCustomer?.customerId, membershipRestrict, membershipVerifiedFor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -692,21 +704,43 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     }
   }
 
+  function cancelMembershipSale(saleContextId: string | undefined) {
+    if (!saleContextId) return;
+    void fetch("/api/pos/membership-verifications/cancel-sale", {
+      method: "POST",
+      headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
+      body: JSON.stringify({ saleContextId }),
+    }).catch(() => undefined);
+  }
+
   function chooseCustomer(customer: CustomerListItem) {
     regularPricingRef.current = false;
     setRegularPricing(false);
-    setPasskeyNotice("");
+    setMembershipOpen(false);
+    setMembershipVerifiedFor(null);
+    setMembershipMessage("");
     setSaleCustomer(customer);
     setCustomerOpen(false);
-    void changeCustomer(customer.customerId);
+    cancelMembershipSale(cart?.cartId);
+    const pricingId = membershipPricingCustomer(membershipRestrict, false, customer.customerId);
+    if (!pricingId) {
+      regularPricingRef.current = true;
+      setRegularPricing(true);
+      void changeCustomer(null);
+      return;
+    }
+    void changeCustomer(pricingId);
   }
 
   function useWalkInCustomer() {
     regularPricingRef.current = false;
     setRegularPricing(false);
-    setPasskeyNotice("");
+    setMembershipOpen(false);
+    setMembershipVerifiedFor(null);
+    setMembershipMessage("");
     setSaleCustomer(null);
     setCustomerOpen(false);
+    cancelMembershipSale(cart?.cartId);
     void changeCustomer(null);
   }
 
@@ -779,6 +813,10 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   async function restoreHeld(saleId: string) {
     if (!cart || heldRestoring) return;
     setHeldRestoring(true);
+    cancelMembershipSale(cart.cartId);
+    setMembershipOpen(false);
+    setMembershipVerifiedFor(null);
+    setMembershipMessage("");
     try {
       const detail = await heldSales.get(saleId);
       await persist(cartFromHeldSale(scope, detail));
@@ -846,11 +884,14 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         try { await heldSales.release(heldId); } catch { setMessage("تم البيع، وتعذر إغلاق المسودة المحفوظة."); }
       }
       const next = createCart(scope);
+      cancelMembershipSale(cart.cartId);
       await persist(next);
       setSaleCustomer(null);
       regularPricingRef.current = false;
       setRegularPricing(false);
-      setPasskeyNotice("");
+      setMembershipOpen(false);
+      setMembershipVerifiedFor(null);
+      setMembershipMessage("");
       setCompletedShare({ saleId: completed.saleId, phone });
       setReceipt(completed);
       setPaying(false);
@@ -1061,14 +1102,33 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <div className="pos-original-total"><span><Coins className="pos-pro-icon" aria-hidden="true" />المجموع قبل الخصم</span><strong>{formatPosMoney(originalCartTotal(cart))}</strong></div>
         <div><button type="button" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
         <div><button type="button" onClick={openCustomerSearch}><span>اسم الزبون</span><strong title={saleCustomer?.name ?? "زبون عادي"}>{saleCustomer?.name ?? (cart.customerId ? "—" : "زبون عادي")}</strong></button></div>
-        {saleCustomer ? <div><button type="button" onClick={() => { setPasskeyNotice(""); setPasskeyVerify(true); }}><ShieldCheck className="pos-pro-icon" aria-hidden="true" />التحقق من الزبون</button></div> : null}
+        {saleCustomer ? <div><button type="button" onClick={() => { setMembershipMessage(""); setMembershipOpen(true); }}><ShieldCheck className="pos-pro-icon" aria-hidden="true" />التحقق من العضوية</button></div> : null}
         <div><span>نوع الزبون</span><strong>{regularPricing ? "عادي" : saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
+        {saleCustomer && cart ? <MembershipQr session={session} customerId={saleCustomer.customerId} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict) => {
+          if (phase === "Config") {
+            setMembershipRestrict(restrict);
+            return;
+          }
+          if (phase === "Verified") {
+            setMembershipVerifiedFor(saleCustomer.customerId);
+            setMembershipMessage("تم التحقق من العضوية");
+            regularPricingRef.current = false;
+            setRegularPricing(false);
+            void changeCustomer(membershipPricingCustomer(true, true, saleCustomer.customerId));
+            return;
+          }
+          setMembershipVerifiedFor(null);
+          if (!restrict) return;
+          regularPricingRef.current = true;
+          setRegularPricing(true);
+          void changeCustomer(null);
+        }} /> : null}
         <div><span><Tag className="pos-pro-icon" aria-hidden="true" />التسعيرة</span><strong dir="ltr">{regularPricing ? "Price0" : saleCustomer?.priceCode || (cart.customerId ? (priceTier || "—") : "Price0")}</strong></div>
         <div><span><Store className="pos-pro-icon" aria-hidden="true" />النقطة</span><strong title={session.stationName}>{session.stationName || "—"}</strong></div>
         <div><span><UserRound className="pos-pro-icon" aria-hidden="true" />اسم الموظف</span><strong title={user.displayName}>{user.displayName}</strong></div>
         <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{regularPricing || !saleCustomer ? "0" : saleCustomer.variableValueDiscountPercent}</strong></div>
       </div>
-      {passkeyNotice ? <p className={passkeyNotice === "success" ? "status-ok passkey-result" : "status-error passkey-result"} role="status">{passkeyNotice === "success" ? passkeyVerifiedMessage : passkeyFailedMessage}</p> : null}
+      {membershipMessage ? <p className="status-ok passkey-result" role="status">{membershipMessage}</p> : null}
       <div className="pos-summary">
         <div>
           <div className="pos-total-label"><Coins className="pos-pro-icon" aria-hidden="true" />المجموع</div>
@@ -1199,28 +1259,6 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         </section>
       </aside>
       </div>
-      {passkeyVerify && saleCustomer ? (
-        <PasskeyQrPanel
-          session={session}
-          customerId={saleCustomer.customerId}
-          customerSaved
-          purpose="verification"
-          canReplace={false}
-          autoStart
-          onVerified={() => {
-            setPasskeyVerify(false);
-            setPasskeyNotice("success");
-          }}
-          onFailed={() => {
-            regularPricingRef.current = true;
-            setRegularPricing(true);
-            setPasskeyVerify(false);
-            setPasskeyNotice("failure");
-            void changeCustomer(null);
-          }}
-          onClose={() => setPasskeyVerify(false)}
-        />
-      ) : null}
       {printSheet ? (
         <InvoicePreview
           document={printSheet}

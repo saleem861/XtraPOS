@@ -19,6 +19,11 @@ public sealed class DeviceSetupPolicyTests
         Assert.NotNull(ProtectedDatabasePolicy.RefuseDrop("المقاطعة", true, true, false));
         Assert.NotNull(ProtectedDatabasePolicy.RefuseDrop("XtraPOS_Branch_Test", false, true, false));
         Assert.Null(ProtectedDatabasePolicy.RefuseDrop("XtraPOS_Local_Device", true, true, false));
+        Assert.False(ProtectedDatabasePolicy.AllowsInstallationReset("XtraPOS_Central"));
+        Assert.False(ProtectedDatabasePolicy.AllowsInstallationReset("المقاطعة"));
+        Assert.False(ProtectedDatabasePolicy.AllowsInstallationReset("XtraPOS_Branch"));
+        Assert.False(ProtectedDatabasePolicy.AllowsInstallationReset(""));
+        Assert.True(ProtectedDatabasePolicy.AllowsInstallationReset("XtraPOS_Branch_01"));
     }
 
     [Fact]

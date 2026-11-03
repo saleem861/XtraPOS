@@ -36,13 +36,13 @@ public static class CustomerEndpoints
         CustomerMasterService customers,
         CancellationToken cancellationToken)
     {
-        var caller = await RequireAsync(http, auth, permissions, PermissionCodes.CustomersView, cancellationToken);
+        var caller = await RequireAnyAsync(http, auth, permissions, [PermissionCodes.CustomersView, PermissionCodes.CustomersCreate, PermissionCodes.CustomersManage], cancellationToken);
         if (caller.Result is not null)
         {
             return caller.Result;
         }
 
-        return Results.Ok(await customers.ListClassificationsAsync(cancellationToken));
+        return Results.Ok(await customers.ListClassificationsAsync(await auth.GetDeviceBusinessIdAsync(http, cancellationToken), cancellationToken));
     }
 
     private static async Task<IResult> PriceTypesAsync(
@@ -52,7 +52,7 @@ public static class CustomerEndpoints
         CustomerMasterService customers,
         CancellationToken cancellationToken)
     {
-        var caller = await RequireAsync(http, auth, permissions, PermissionCodes.CustomersView, cancellationToken);
+        var caller = await RequireAnyAsync(http, auth, permissions, [PermissionCodes.CustomersView, PermissionCodes.CustomersCreate, PermissionCodes.CustomersManage], cancellationToken);
         if (caller.Result is not null)
         {
             return caller.Result;

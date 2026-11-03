@@ -70,13 +70,13 @@ public sealed class CustomerMasterService(
         }
     }
 
-    public async Task<CustomerClassificationPage> ListClassificationsAsync(CancellationToken cancellationToken)
+    public async Task<CustomerClassificationPage> ListClassificationsAsync(Guid? deviceBusinessId, CancellationToken cancellationToken)
     {
         var central = await LinkedCentralAsync(cancellationToken);
         var connectionString = central?.BuildConnectionString(central.DatabaseName) ?? connections.CreateBranchConnectionString();
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var businessId = await BusinessIdAsync(connection, null, cancellationToken);
+        var businessId = deviceBusinessId ?? await BusinessIdAsync(connection, null, cancellationToken);
         var rows = new List<CustomerClassificationRecord>();
         await using var command = new SqlCommand(
             """
@@ -1395,15 +1395,18 @@ public sealed class CustomerMasterService(
         }
 
         var endpoint = await endpoints.GetAsync(DatabaseRole.Central, cancellationToken);
-        if (endpoint is null || !string.Equals(endpoint.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
         var settings = await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
         if (settings is null || !string.Equals(settings.DatabaseRole, DatabaseRole.Central, StringComparison.Ordinal))
         {
             return null;
+        }
+
+        if (endpoint is null || !string.Equals(endpoint.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(settings.Password))
+            {
+                return null;
+            }
         }
 
         return settings;

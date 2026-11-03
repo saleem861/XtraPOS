@@ -42,7 +42,7 @@ describe("إضافة زبون جديد", () => {
     }));
     render(<NewCustomerScreen session={session} onBack={() => undefined} onSaved={(id) => saved.push(id)} />);
     expect((await screen.findByRole("button", { name: "حفظ الزبون" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: "توليد Passkey" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "تشخيص Passkey" })).toBeNull();
     fireEvent.change(screen.getByLabelText("رقم الزبون"), { target: { value: "0592594707" } });
     expect((screen.getByLabelText("رقم الهاتف للتحقق") as HTMLInputElement).value).toBe("592594707");
     fireEvent.change(screen.getByLabelText("اسم الزبون"), { target: { value: "سليم" } });
@@ -114,7 +114,7 @@ describe("إضافة زبون جديد", () => {
     const notes = await screen.findByLabelText("ملاحظات");
     expect(notes.closest(".is-second")?.lastElementChild?.contains(notes)).toBe(true);
     expect(screen.getAllByLabelText(/رمز /)).toHaveLength(4);
-    expect(screen.getByRole("button", { name: "توليد Passkey" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "تشخيص Passkey" })).toBeNull();
     expect(screen.queryByLabelText("لوحة المفاتيح")).toBeNull();
     expect(screen.getByText("لا توجد أسعار استثنائية لهذا الزبون")).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();

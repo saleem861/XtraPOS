@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Configuration;
 
@@ -8,11 +9,13 @@ namespace XtraPOS.Api.Data;
 public sealed class SqlConnectionFactory
 {
     private readonly SqlServerOptions _options;
+    private readonly IHostEnvironment? _environment;
     private readonly string _databaseName;
 
-    public SqlConnectionFactory(IOptions<SqlServerOptions> options)
+    public SqlConnectionFactory(IOptions<SqlServerOptions> options, IHostEnvironment? environment = null)
     {
         _options = options.Value;
+        _environment = environment;
         _databaseName = _options.Database?.Trim() ?? "";
     }
 
@@ -21,6 +24,13 @@ public sealed class SqlConnectionFactory
         if (!BranchDatabase.IsAllowedName(_databaseName))
         {
             problem = "اسم قاعدة بيانات الفرع غير مسموح.";
+            return false;
+        }
+
+        if (_environment?.IsStaging() == true
+            && !string.Equals(_databaseName, StagingSqlDefaults.BranchDatabaseName, StringComparison.Ordinal))
+        {
+            problem = "قاعدة الفرع في بيئة الاختبار يجب أن تكون XtraPOS_Branch_Test_Staging.";
             return false;
         }
 
@@ -34,13 +44,13 @@ public sealed class SqlConnectionFactory
         var hasPassword = !string.IsNullOrWhiteSpace(_options.Password);
         if (hasUser != hasPassword)
         {
-            problem = "إعداد الاتصال بخادم البيانات غير مكتمل.";
+            problem = "اسم مستخدم SQL وكلمة المرور يجب أن يُضبطا معاً أو يُتركا فارغين.";
             return false;
         }
 
         if (_options.ConnectTimeoutSeconds is < 1 or > 120)
         {
-            problem = "إعداد الاتصال بخادم البيانات غير مكتمل.";
+            problem = "مهلة الاتصال يجب أن تكون بين 1 و 120 ثانية.";
             return false;
         }
 
@@ -324,9 +334,9 @@ public sealed class SqlConnectionFactory
 
     private string CreateConnectionString(string catalog)
     {
-        if (!IsSafeConfiguration(out _))
+        if (!IsSafeConfiguration(out var problem))
         {
-            throw new InvalidOperationException("SQL Server configuration is not safe to use.");
+            throw new InvalidOperationException($"SQL Server configuration is not safe to use: {problem}");
         }
 
         if (catalog != "master" && !CanOpen(catalog))

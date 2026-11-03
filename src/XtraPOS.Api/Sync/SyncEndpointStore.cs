@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
+using XtraPOS.Api.Configuration;
 using XtraPOS.Api.Data;
 
 namespace XtraPOS.Api.Sync;
@@ -18,7 +20,7 @@ public sealed record SyncEndpointView(
     DateTime? LastSuccessfulSyncAt,
     string? LastError);
 
-public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataProtectionProvider protection, CentralConnectionFileStore centralFile)
+public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataProtectionProvider protection, CentralConnectionFileStore centralFile, IHostEnvironment environment)
 {
     private const string CredentialPurpose = "XtraPOS.SqlCredentials";
     private readonly IDataProtector _protector = protection.CreateProtector(CredentialPurpose);
@@ -147,7 +149,8 @@ public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataPro
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
-            return null;
+            var savedOnly = await centralFile.ReadAsync(cancellationToken);
+            return SavedCentralAllowed(savedOnly, null) ? savedOnly : null;
         }
 
         string? password = null;
@@ -169,15 +172,32 @@ public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataPro
             }
             catch (System.Security.Cryptography.CryptographicException) when (string.Equals(role, DatabaseRole.Central, StringComparison.Ordinal))
             {
-                var saved = await centralFile.ReadAsync(cancellationToken);
-                if (saved?.Password is null)
-                {
-                    throw;
-                }
+                password = null;
+            }
+        }
 
-                password = saved.Password;
-                await reader.CloseAsync();
-                await RewriteProtectedPasswordAsync(connection, role, password, cancellationToken);
+        if (string.Equals(role, DatabaseRole.Central, StringComparison.Ordinal) && environment.IsStaging())
+        {
+            var saved = await centralFile.ReadAsync(cancellationToken);
+            if (SavedCentralAllowed(saved, null))
+            {
+                return saved;
+            }
+        }
+
+        if (string.Equals(role, DatabaseRole.Central, StringComparison.Ordinal))
+        {
+            var saved = await centralFile.ReadAsync(cancellationToken);
+            if (SavedCentralAllowed(saved, database))
+            {
+                password = saved!.Password;
+                server = saved.Server;
+                instance = saved.InstanceName;
+                port = saved.Port;
+                username = saved.Username;
+                authentication = saved.AuthenticationType;
+                encrypt = saved.Encrypt;
+                trust = saved.TrustServerCertificate;
             }
         }
 
@@ -203,5 +223,22 @@ public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataPro
         update.Parameters.AddWithValue("@password", _protector.Protect(password));
         update.Parameters.AddWithValue("@role", role);
         await update.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private bool SavedCentralAllowed(SqlEndpointSettings? saved, string? endpointDatabase)
+    {
+        if (saved?.Password is null || !string.Equals(saved.DatabaseRole, DatabaseRole.Central, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (environment.IsStaging())
+        {
+            return string.Equals(saved.DatabaseName, StagingSqlDefaults.CentralDatabaseName, StringComparison.OrdinalIgnoreCase)
+                && (endpointDatabase is null || string.Equals(endpointDatabase, saved.DatabaseName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return endpointDatabase is not null
+            && string.Equals(saved.DatabaseName, endpointDatabase, StringComparison.OrdinalIgnoreCase);
     }
 }

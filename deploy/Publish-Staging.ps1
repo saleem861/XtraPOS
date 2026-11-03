@@ -36,6 +36,8 @@ Copy-Item (Join-Path $root "src\XtraPOS.Web\dist\*") $webOut -Recurse -Force
 
 dotnet publish (Join-Path $root "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release -o $apiOut --no-self-contained
 if ($LASTEXITCODE -ne 0) { throw "API publish failed." }
+. (Join-Path $PSScriptRoot "Remove-StagingRuntimeFiles.ps1")
+Remove-StagingRuntimeFiles -ReleaseRoot $release
 
 if ($IncludeApiTests) {
     dotnet test (Join-Path $root "tests\XtraPOS.Api.Tests\XtraPOS.Api.Tests.csproj") -c Release --filter "FullyQualifiedName~CustomerMasterTests"

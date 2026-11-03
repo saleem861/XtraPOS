@@ -337,11 +337,11 @@ public static class ApiEndpoints
                     {
                         var builder = new SqlConnectionStringBuilder(settings.BuildConnectionString(settings.DatabaseName))
                         {
-                            ConnectTimeout = 3,
+                            ConnectTimeout = 15,
                         };
                         await using var connection = new SqlConnection(builder.ConnectionString);
                         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+                        timeout.CancelAfter(TimeSpan.FromSeconds(20));
                         await connection.OpenAsync(timeout.Token);
                         await using var ping = new SqlCommand("SELECT 1;", connection) { CommandTimeout = 3 };
                         await ping.ExecuteScalarAsync(timeout.Token);

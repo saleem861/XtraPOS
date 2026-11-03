@@ -1,4 +1,12 @@
 import { useEffect, useState } from "react";
+import {
+  classifyPasskeyError,
+  formatPasskeyDiagnostic,
+  inspectPhonePasskeyCapability,
+  phonePasskeyCreation,
+  readPasskeyEnvironment,
+  type PasskeyStage,
+} from "../passkey/phonePasskey";
 
 type View = {
   customerName: string;
@@ -16,6 +24,8 @@ export function PasskeyPhonePage({ pathname }: { pathname: string }) {
   const [message, setMessage] = useState("");
   const [left, setLeft] = useState(0);
   const [agreed, setAgreed] = useState(false);
+  const [prepared, setPrepared] = useState<{ challenge?: string; rpId?: string; userHandle?: string; credentials?: string[]; message?: string } | null>(null);
+  const [blocked, setBlocked] = useState(false);
 
   useEffect(() => {
     void fetch(`/api/passkey/${token}`).then(async (response) => {
@@ -34,65 +44,97 @@ export function PasskeyPhonePage({ pathname }: { pathname: string }) {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void inspectPhonePasskeyCapability(readPasskeyEnvironment()).then((failure) => {
+      if (cancelled || !failure) return;
+      setBlocked(true);
+      setMessage(formatPasskeyDiagnostic(failure));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!view || (enroll && !agreed)) return undefined;
+    let cancelled = false;
+    setPrepared(null);
+    void fetch(enroll ? `/api/passkey/${token}/registration/options` : `/api/passkey/${token}/assertion/options`, { method: "POST", headers: { Origin: location.origin } })
+      .then(async (response) => {
+        const options = await response.json() as { message?: string; challenge?: string; rpId?: string; userHandle?: string; credentials?: string[] };
+        if (cancelled) return;
+        if (!response.ok || !options.challenge || !options.rpId) {
+          const stage: PasskeyStage = enroll ? "registration-options" : "assertion-options";
+          setMessage(`${options.message ?? "تعذر بدء Passkey."} [${stage} / HTTP ${response.status}]`);
+          return;
+        }
+        setPrepared(options);
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(formatPasskeyDiagnostic(classifyPasskeyError(error, enroll ? "registration-options" : "assertion-options")));
+      });
+    return () => { cancelled = true; };
+  }, [agreed, enroll, token, view]);
+
   async function activate() {
-    if (!agreed || !view) return;
-    setMessage("");
-    const optionsResponse = await fetch(enroll ? `/api/passkey/${token}/registration/options` : `/api/passkey/${token}/assertion/options`, { method: "POST", headers: { Origin: location.origin } });
-    const options = await optionsResponse.json() as { message?: string; challenge?: string; rpId?: string; userHandle?: string; credentials?: string[] };
-    if (!optionsResponse.ok || !options.challenge || !options.rpId) {
-      setMessage(options.message ?? "تعذر بدء Passkey.");
+    const challengeText = prepared?.challenge;
+    const rpId = prepared?.rpId;
+    if (!view || blocked || (enroll && !agreed) || !challengeText || !rpId) return;
+    const capability = await inspectPhonePasskeyCapability(readPasskeyEnvironment());
+    if (capability) {
+      setBlocked(true);
+      setMessage(formatPasskeyDiagnostic(capability));
       return;
     }
-    const challenge = decode(options.challenge);
+    setMessage("");
+    const stage: PasskeyStage = enroll ? "credentials.create" : "credentials.get";
     try {
-      if (enroll) {
-        const credential = await navigator.credentials.create({
+      const challenge = decode(challengeText);
+      const credential = enroll
+        ? await navigator.credentials.create({
+          publicKey: phonePasskeyCreation({
+            challenge,
+            rpId,
+            userId: decode(prepared?.userHandle ?? ""),
+            userName: view.maskedPhone,
+            displayName: view.customerName,
+          }),
+        }) as PublicKeyCredential | null
+        : await navigator.credentials.get({
           publicKey: {
             challenge,
-            rp: { name: "XtraPOS", id: options.rpId },
-            user: { id: decode(options.userHandle ?? ""), name: view.maskedPhone, displayName: view.customerName },
-            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-            authenticatorSelection: { residentKey: "required", userVerification: "required" },
-            timeout: 60000,
-            attestation: "none",
-          },
-        }) as PublicKeyCredential | null;
-        const response = credential?.response as AuthenticatorAttestationResponse | undefined;
-        if (!credential || !response) return;
-        const saved = await fetch(`/api/passkey/${token}/registration`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Origin: location.origin },
-          body: JSON.stringify({ clientDataJSON: encode(response.clientDataJSON), attestationObject: encode(response.attestationObject) }),
-        });
-        const body = await saved.json() as { message?: string };
-        setMessage(saved.ok ? "تم تفعيل Passkey لهذا الحساب." : body.message ?? "فشل التحقق.");
-      } else {
-        const credential = await navigator.credentials.get({
-          publicKey: {
-            challenge,
-            rpId: options.rpId,
-            allowCredentials: (options.credentials ?? []).map((id) => ({ type: "public-key" as const, id: decode(id) })),
+            rpId,
+            allowCredentials: (prepared?.credentials ?? []).map((id) => ({ type: "public-key" as const, id: decode(id) })),
             userVerification: "required",
             timeout: 60000,
           },
         }) as PublicKeyCredential | null;
-        const response = credential?.response as AuthenticatorAssertionResponse | undefined;
-        if (!credential || !response) return;
-        const saved = await fetch(`/api/passkey/${token}/assertion`, {
+      const response = credential?.response;
+      if (!credential || !response) return;
+      try {
+        const saved = await fetch(enroll ? `/api/passkey/${token}/registration` : `/api/passkey/${token}/assertion`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Origin: location.origin },
-          body: JSON.stringify({
-            credentialId: encode(credential.rawId),
-            clientDataJSON: encode(response.clientDataJSON),
-            authenticatorData: encode(response.authenticatorData),
-            signature: encode(response.signature),
-          }),
+          body: JSON.stringify(enroll
+            ? {
+              clientDataJSON: encode((response as AuthenticatorAttestationResponse).clientDataJSON),
+              attestationObject: encode((response as AuthenticatorAttestationResponse).attestationObject),
+            }
+            : {
+              credentialId: encode(credential.rawId),
+              clientDataJSON: encode((response as AuthenticatorAssertionResponse).clientDataJSON),
+              authenticatorData: encode((response as AuthenticatorAssertionResponse).authenticatorData),
+              signature: encode((response as AuthenticatorAssertionResponse).signature),
+            }),
         });
         const body = await saved.json() as { message?: string };
-        setMessage(saved.ok ? "تم التحقق بنجاح." : body.message ?? "فشل التحقق.");
+        setMessage(saved.ok
+          ? (enroll ? "تم تفعيل Passkey لهذا الحساب." : "تم التحقق بنجاح.")
+          : `${body.message ?? "فشل التحقق."} [submission / HTTP ${saved.status}]`);
+      } catch (error) {
+        setMessage(formatPasskeyDiagnostic(classifyPasskeyError(error, "submission")));
       }
-    } catch {
-      setMessage("فشل التحقق على هذا الجهاز.");
+    } catch (error) {
+      setMessage(formatPasskeyDiagnostic(classifyPasskeyError(error, stage)));
     }
   }
 
@@ -104,7 +146,7 @@ export function PasskeyPhonePage({ pathname }: { pathname: string }) {
       <p>{left > 0 ? `ينتهي خلال ${left} ثانية` : "انتهت صلاحية الطلب"}</p>
       {message ? <p className="status-error">{message}</p> : null}
       {enroll ? <label><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />أوافق على حفظ Passkey لهذا الحساب</label> : null}
-      <button type="button" disabled={left <= 0 || (enroll && !agreed)} onClick={() => void activate()}>{enroll ? "إنشاء Passkey" : "تأكيد بهاتفي"}</button>
+      <button type="button" disabled={blocked || left <= 0 || (enroll && !agreed) || !prepared?.challenge} onClick={() => void activate()}>{enroll ? "إنشاء Passkey" : "تأكيد بهاتفي"}</button>
     </main>
   );
 }

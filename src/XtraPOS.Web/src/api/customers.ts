@@ -128,13 +128,21 @@ export function createCustomerClient(session: DeviceSession) {
     async classifications(): Promise<{ customerClassificationId: string; name: string }[]> {
       const response = await fetch("/api/customers/classifications", { headers: deviceHeaders(session) });
       if (!response.ok) throw new SetupClientError("تعذر تحميل أنواع الزبائن.");
-      const body = await response.json() as { classifications?: { customerClassificationId: string; name: string }[] };
-      return body.classifications ?? [];
+      const body = await response.json() as { classifications?: Record<string, unknown>[]; Classifications?: Record<string, unknown>[] };
+      return (body.classifications ?? body.Classifications ?? []).map((row) => ({
+        customerClassificationId: String(row.customerClassificationId ?? row.CustomerClassificationId ?? ""),
+        name: String(row.name ?? row.Name ?? ""),
+      })).filter((row) => row.customerClassificationId && row.name);
     },
     async priceTypes(): Promise<{ priceTypeId: string; priceCode: string; priceName: string }[]> {
       const response = await fetch("/api/customers/price-types", { headers: deviceHeaders(session) });
       if (!response.ok) throw new SetupClientError("تعذر تحميل التسعيرات.");
-      return await response.json() as { priceTypeId: string; priceCode: string; priceName: string }[];
+      const body = await response.json() as Record<string, unknown>[];
+      return body.map((row) => ({
+        priceTypeId: String(row.priceTypeId ?? row.PriceTypeId ?? ""),
+        priceCode: String(row.priceCode ?? row.PriceCode ?? ""),
+        priceName: String(row.priceName ?? row.PriceName ?? ""),
+      })).filter((row) => row.priceTypeId && row.priceCode);
     },
     async callingCodes(): Promise<{ code: string; name: string }[]> {
       const response = await fetch("/api/customers/calling-codes", { headers: deviceHeaders(session) });

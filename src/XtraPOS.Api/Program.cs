@@ -14,6 +14,7 @@ using XtraPOS.Api.Data.Migrations;
 using XtraPOS.Api.Devices;
 using XtraPOS.Api.Endpoints;
 using XtraPOS.Api.Import;
+using XtraPOS.Api.Membership;
 using XtraPOS.Api.Sales;
 using XtraPOS.Api.Security;
 using XtraPOS.Api.Setup;
@@ -28,6 +29,15 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
+
+if (builder.Environment.IsStaging())
+{
+    var stagingSql = StagingSqlDefaults.MissingValues(builder.Configuration["SqlServer:Database"]);
+    if (stagingSql.Count > 0)
+    {
+        builder.Configuration.AddInMemoryCollection(stagingSql);
+    }
+}
 
 builder.Services.Configure<SqlServerOptions>(builder.Configuration.GetSection(SqlServerOptions.SectionName));
 builder.Services.Configure<LoginProtectionOptions>(builder.Configuration.GetSection(LoginProtectionOptions.SectionName));
@@ -52,12 +62,18 @@ builder.Services.AddScoped<BranchDatabaseProvisioner>();
 builder.Services.AddScoped<NewTestBranchService>();
 builder.Services.AddScoped<PermissionService>();
 builder.Services.AddScoped<UserAdministrationService>();
+builder.Services.Configure<MembershipOptions>(builder.Configuration.GetSection(MembershipOptions.SectionName));
+builder.Services.AddScoped<MembershipService>();
+builder.Services.AddScoped<MembershipCodeExchange>();
+builder.Services.AddScoped<IMembershipIdTokenValidator, MembershipIdTokenValidator>();
+builder.Services.AddScoped<MembershipAuthService>();
 builder.Services.AddScoped<CustomerMasterService>();
 builder.Services.AddScoped<CustomerPasskeyService>();
 builder.Services.AddScoped<PhoneVerificationService>();
 builder.Services.AddScoped<CustomerItemSpecialPriceService>();
 builder.Services.AddHttpClient("WhatsApp");
 builder.Services.AddHttpClient("TwilioVerify");
+builder.Services.AddHttpClient("MembershipOidc");
 builder.Services.AddSingleton<IWhatsAppVerificationProvider>(services =>
     string.IsNullOrWhiteSpace(services.GetRequiredService<IConfiguration>()["WhatsApp:AccessToken"])
         ? new UnconfiguredWhatsAppProvider()
@@ -83,7 +99,7 @@ var userKeyRing = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "ASP.NET",
     "DataProtection-Keys");
-if (Directory.Exists(userKeyRing))
+if (!builder.Environment.IsStaging() && Directory.Exists(userKeyRing))
 {
     foreach (var keyFile in Directory.GetFiles(userKeyRing, "key-*.xml"))
     {
@@ -208,6 +224,87 @@ if (DevelopmentDatabaseReset.IsRequested(args))
     return;
 }
 
+if (args.Any(arg => string.Equals(arg, "--write-staging-central-connection", StringComparison.Ordinal)))
+{
+    if (!builder.Environment.IsStaging())
+    {
+        Console.WriteLine("Staging central connection can be written only when ASPNETCORE_ENVIRONMENT is Staging.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var confirmedStagingCentral = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
+    if (!string.Equals(confirmedStagingCentral, StagingSqlDefaults.CentralDatabaseName, StringComparison.Ordinal))
+    {
+        Console.WriteLine($"This command requires --confirm-database {StagingSqlDefaults.CentralDatabaseName}.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    static string? Option(string[] source, string name)
+    {
+        for (var index = 0; index < source.Length - 1; index++)
+        {
+            if (string.Equals(source[index], name, StringComparison.Ordinal))
+            {
+                return source[index + 1];
+            }
+        }
+
+        return null;
+    }
+
+    var centralServer = Option(args, "--server")?.Trim();
+    var centralUser = Option(args, "--username")?.Trim();
+    var centralPortText = Option(args, "--port")?.Trim();
+    if (string.IsNullOrWhiteSpace(centralServer)
+        || string.IsNullOrWhiteSpace(centralUser)
+        || !int.TryParse(centralPortText, out var centralPort)
+        || centralPort is < 1 or > 65535
+        || centralServer.Contains("XtraPOS_Central", StringComparison.OrdinalIgnoreCase)
+        || centralUser.Contains("XtraPOS_Central", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.WriteLine("Required arguments: --server, --port, and --username. The password is read from stdin and is not printed.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    var centralPassword = Console.IsInputRedirected ? Console.In.ReadLine() : null;
+    if (string.IsNullOrWhiteSpace(centralPassword))
+    {
+        Console.WriteLine("A password was not provided on stdin.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    using var stagingCentralHost = builder.Build();
+    var stagingContentRoot = stagingCentralHost.Services.GetRequiredService<IHostEnvironment>().ContentRootPath;
+    var stagingAppData = Path.GetFullPath(Path.Combine(stagingContentRoot, "App_Data"));
+    if (!stagingAppData.StartsWith("/opt/xtrapos-staging/", StringComparison.Ordinal))
+    {
+        Console.WriteLine("Refusing to write a central connection outside /opt/xtrapos-staging.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    await stagingCentralHost.Services.GetRequiredService<CentralConnectionFileStore>().SaveAsync(
+        new SqlEndpointSettings(
+            DatabaseRole.Central,
+            SqlEndpointSettings.Remote,
+            centralServer,
+            null,
+            centralPort,
+            StagingSqlDefaults.CentralDatabaseName,
+            SqlEndpointSettings.SqlLogin,
+            centralUser,
+            centralPassword.Trim(),
+            true,
+            true),
+        CancellationToken.None);
+    Console.WriteLine($"Saved staging central connection for database '{confirmedStagingCentral}'.");
+    return;
+}
+
 if (args.Any(arg => string.Equals(arg, "--apply-central-migrations", StringComparison.Ordinal)))
 {
     var confirmedCentral = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
@@ -222,14 +319,19 @@ if (args.Any(arg => string.Equals(arg, "--apply-central-migrations", StringCompa
             .ReadSettingsAsync(DatabaseRole.Central, CancellationToken.None);
     }
 
+    var stagingCentralRejected = builder.Environment.IsStaging()
+        && !string.Equals(confirmedCentral, StagingSqlDefaults.CentralDatabaseName, StringComparison.Ordinal);
     if (savedCentral is null
         || string.IsNullOrWhiteSpace(confirmedCentral)
         || !string.Equals(confirmedCentral, savedCentral.DatabaseName, StringComparison.Ordinal)
-        || !CentralDatabase.IsAllowedName(confirmedCentral))
+        || !CentralDatabase.IsAllowedName(confirmedCentral)
+        || stagingCentralRejected)
     {
         Console.WriteLine(savedCentral is null
             ? "Central migration could not read the saved central connection."
-            : $"Central migration requires --confirm-database with the exact saved central database name '{savedCentral.DatabaseName}'.");
+            : stagingCentralRejected
+                ? $"Staging central migration requires --confirm-database {StagingSqlDefaults.CentralDatabaseName}."
+                : $"Central migration requires --confirm-database with the exact saved central database name '{savedCentral.DatabaseName}'.");
         Environment.ExitCode = 1;
         return;
     }
@@ -745,6 +847,7 @@ app.MapDeviceEndpoints();
 app.MapAuthEndpoints();
 app.MapUserEndpoints();
 app.MapCustomerEndpoints();
+app.MapMembershipEndpoints();
 app.MapCustomerPasskeyEndpoints();
 app.MapItemEndpoints();
 app.MapPricingEndpoints();

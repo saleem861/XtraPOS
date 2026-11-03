@@ -37,6 +37,18 @@ public sealed class CentralMigrationRunner
     public const string ReceivableSaleNumberMigrationName = "Receivable sale number";
     public const string CentralPosMigrationId = "015_CentralPosAndBranchSql";
     public const string CentralPosMigrationName = "Central POS registry and branch SQL endpoints";
+    public const string CustomerReferenceMigrationId = "016_CustomerReferenceData";
+    public const string CustomerReferenceMigrationName = "Customer reference data";
+    public const string CustomerReferenceRetryMigrationId = "017_CustomerReferenceDataRetry";
+    public const string CustomerReferenceRetryMigrationName = "Customer reference data retry";
+    public const string StagingBusinessReferenceMigrationId = "018_StagingSmokerWorldReference";
+    public const string StagingBusinessReferenceMigrationName = "Staging Smoker World customer reference";
+    public const string SmartMembershipMigrationId = "019_SmartMembership";
+    public const string SmartMembershipMigrationName = "Smart membership";
+    public const string MembershipAuthMigrationId = "020_MembershipAuthAttempts";
+    public const string MembershipAuthMigrationName = "Membership auth attempts";
+    public const string CustomerReferenceForBusinessMigrationId = "021_CustomerReferenceForExistingBusiness";
+    public const string CustomerReferenceForBusinessMigrationName = "Customer reference for existing businesses";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -55,6 +67,12 @@ public sealed class CentralMigrationRunner
         (ReceivableSaleNumberMigrationId, ReceivableSaleNumberMigrationName, "XtraPOS.Api.Data.Central.Migrations.013_ReceivableSaleNumber.sql"),
         (CreditReversalMigrationId, CreditReversalMigrationName, "XtraPOS.Api.Data.Central.Migrations.014_CreditReversals.sql"),
         (CentralPosMigrationId, CentralPosMigrationName, "XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql"),
+        (CustomerReferenceMigrationId, CustomerReferenceMigrationName, "XtraPOS.Api.Data.Central.Migrations.016_CustomerReferenceData.sql"),
+        (CustomerReferenceRetryMigrationId, CustomerReferenceRetryMigrationName, "XtraPOS.Api.Data.Central.Migrations.017_CustomerReferenceDataRetry.sql"),
+        (StagingBusinessReferenceMigrationId, StagingBusinessReferenceMigrationName, "XtraPOS.Api.Data.Central.Migrations.018_StagingSmokerWorldReference.sql"),
+        (SmartMembershipMigrationId, SmartMembershipMigrationName, "XtraPOS.Api.Data.Central.Migrations.019_SmartMembership.sql"),
+        (MembershipAuthMigrationId, MembershipAuthMigrationName, "XtraPOS.Api.Data.Central.Migrations.020_MembershipAuthAttempts.sql"),
+        (CustomerReferenceForBusinessMigrationId, CustomerReferenceForBusinessMigrationName, "XtraPOS.Api.Data.Central.Migrations.021_CustomerReferenceForExistingBusiness.sql"),
     ];
 
     private static readonly string ApplicationVersion =

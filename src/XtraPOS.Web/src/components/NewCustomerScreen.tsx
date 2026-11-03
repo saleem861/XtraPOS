@@ -6,6 +6,7 @@ import { createItemClient } from "../api/items";
 import { createPricingClient } from "../api/pricing";
 import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
 import { ScreenHeader } from "./ScreenHeader";
+import { CustomerMembershipSection } from "./CustomerMembershipSection";
 import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
 import { FullKeyboard } from "./FullKeyboard";
 import {
@@ -72,6 +73,7 @@ function FieldCombo({ id, label, value, placeholder, options, onChange, onKeyDow
       </button>
       {open ? (
         <ul className="nc-combo-menu" role="listbox">
+          {options.length === 0 ? <li><span className="nc-combo-empty">لا توجد خيارات محفوظة</span></li> : null}
           {options.map((option) => (
             <li key={`${option.value}-${option.label}`}>
               <button type="button" role="option" title={option.label} aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }}>{option.label}</button>
@@ -609,8 +611,10 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? (
-        <div className="passkey-qr-row">
+      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} /> : null}
+      {!readOnly && (permissions.includes("Customers.Manage") || permissions.includes("System.Administer")) ? (
+        <details className="customer-advanced">
+          <summary>خيارات متقدمة</summary>
           <button id="passkey-qr" className="passkey-qr-button" type="button" onClick={() => {
             if (!name.trim() || !destination) {
               setMessage("أدخل اسم الزبون ورقم الهاتف قبل توليد Passkey.");
@@ -619,7 +623,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
             setMessage("");
             setPasskeyNotice("");
             setPasskeyOpen(true);
-          }}><QrCode aria-hidden="true" />توليد Passkey</button>
+          }}><QrCode aria-hidden="true" />تشخيص Passkey</button>
           {passkeyOpen ? (
             <PasskeyQrPanel
               session={session}
@@ -647,7 +651,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           ) : null}
           {passkeyNotice === "success" ? <p className="new-customer-success" role="status">{passkeyVerifiedMessage}</p> : null}
           {passkeyNotice === "failure" ? <p className="status-error" role="alert">{passkeyFailedMessage}</p> : null}
-        </div>
+        </details>
       ) : null}
       {readOnly ? null : (
       <div className="new-customer-actions">

@@ -71,6 +71,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string DeviceConfigurationMigrationName = "POS device configurations";
     public const string CustomerPasskeyDraftMigrationId = "033_CustomerPasskeyDraft";
     public const string CustomerPasskeyDraftMigrationName = "Customer passkey draft";
+    public const string CustomerReferenceMigrationId = "034_CustomerReferenceData";
+    public const string CustomerReferenceMigrationName = "Customer reference data";
+    public const string CustomerReferenceRetryMigrationId = "035_CustomerReferenceDataRetry";
+    public const string CustomerReferenceRetryMigrationName = "Customer reference data retry";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -213,6 +217,14 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             CustomerPasskeyDraftMigrationId,
             CustomerPasskeyDraftMigrationName,
             "XtraPOS.Api.Data.Migrations.033_CustomerPasskeyDraft.sql"),
+        new(
+            CustomerReferenceMigrationId,
+            CustomerReferenceMigrationName,
+            "XtraPOS.Api.Data.Migrations.034_CustomerReferenceData.sql"),
+        new(
+            CustomerReferenceRetryMigrationId,
+            CustomerReferenceRetryMigrationName,
+            "XtraPOS.Api.Data.Migrations.035_CustomerReferenceDataRetry.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

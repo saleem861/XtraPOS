@@ -187,6 +187,12 @@ public sealed class AuthService(
         return LoginResult.Ok(await BuildProfileAsync(user, device, cancellationToken));
     }
 
+    public async Task<Guid?> GetDeviceBusinessIdAsync(HttpContext http, CancellationToken cancellationToken)
+    {
+        var session = await RequireSessionAsync(http, cancellationToken);
+        return session?.Device.Branch?.BusinessId;
+    }
+
     public async Task<CurrentUserResponse?> GetCurrentAsync(HttpContext http, CancellationToken cancellationToken)
     {
         var session = await RequireSessionAsync(http, cancellationToken);

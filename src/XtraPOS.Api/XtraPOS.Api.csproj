@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.31" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.2.1" />
     <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="8.0.31" />
     <PackageReference Include="System.Formats.Cbor" Version="8.0.0" />
   </ItemGroup>
@@ -170,8 +171,32 @@
     <EmbeddedResource Include="Data\Migrations\033_CustomerPasskeyDraft.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.033_CustomerPasskeyDraft.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\034_CustomerReferenceData.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.034_CustomerReferenceData.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\035_CustomerReferenceDataRetry.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.035_CustomerReferenceDataRetry.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\016_CustomerReferenceData.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.016_CustomerReferenceData.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\017_CustomerReferenceDataRetry.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.017_CustomerReferenceDataRetry.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\018_StagingSmokerWorldReference.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.018_StagingSmokerWorldReference.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\019_SmartMembership.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.019_SmartMembership.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\020_MembershipAuthAttempts.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.020_MembershipAuthAttempts.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\021_CustomerReferenceForExistingBusiness.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.021_CustomerReferenceForExistingBusiness.sql</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

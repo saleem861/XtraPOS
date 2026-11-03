@@ -138,11 +138,14 @@ public static class UserAdministrationLiveCommand
                 await CountRowsAsync(connection, "dbo.Permissions", null, null, cancellationToken),
                 await CountRowsAsync(connection, "dbo.DatabaseSchemaHistory", null, null, cancellationToken),
                 await CountDuplicateEmployeesAsync(connection, cancellationToken),
+                await CountRowsAsync(connection, "dbo.CustomerClassifications", "BusinessID", "BusinessID = '422cda3a-498b-4eae-9eda-1db23e399ae1'", cancellationToken),
+                await CountRowsAsync(connection, "dbo.PriceTypes", "IsActive", "IsActive = 1", cancellationToken),
+                await CountRowsAsync(connection, "dbo.CustomerClassifications", "BusinessID", "BusinessID = '422cda3a-498b-4eae-9eda-1db23e399ae1' AND Name IN (SELECT Name FROM dbo.CustomerClassifications WHERE BusinessID = '422cda3a-498b-4eae-9eda-1db23e399ae1' GROUP BY Name HAVING COUNT(*) > 1)", cancellationToken),
             };
 
         await output.WriteLineAsync(branchOperations
             ? $"{label} Items={values[0]} Units={values[1]} Inventory={values[2]} Balances={values[3]} Movements={values[4]} Overrides={values[5]} Users={values[6]} Permissions={values[7]} Migrations={values[8]} DuplicateEmployees={values[9]}"
-            : $"{label} Businesses={values[0]} Branches={values[1]} Items={values[2]} Units={values[3]} Prices={values[4]} Users={values[5]} Permissions={values[6]} Migrations={values[7]} DuplicateEmployees={values[8]}");
+            : $"{label} Businesses={values[0]} Branches={values[1]} Items={values[2]} Units={values[3]} Prices={values[4]} Users={values[5]} Permissions={values[6]} Migrations={values[7]} DuplicateEmployees={values[8]} SmokerClassifications={values[9]} ActivePriceCodes={values[10]} DuplicateClassificationGroups={values[11]}");
     }
 
     private static async Task<int> CountRowsAsync(

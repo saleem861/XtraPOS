@@ -226,6 +226,32 @@ public sealed class LocalDeviceRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task Recovery_ReusesTheRevokedDeviceAfterReset()
+    {
+        await ResetSchemaAsync();
+        var factory = new XtraPosWebFactory(DatabaseName);
+        try
+        {
+            var seeded = await SeedAdminAsync(factory, includeStation: true, includeDevice: true);
+            await ExecuteAsync("UPDATE dbo.Devices SET RevokedAt = SYSUTCDATETIME();");
+
+            using var client = factory.CreateClient();
+            var response = await client.PostAsJsonAsync("/api/setup/recover-main-device", Request(seeded.StationId, "صندوق 1", Password));
+            var body = await response.Content.ReadFromJsonAsync<RecoveryDevice>();
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(seeded.DeviceId, body!.DeviceId);
+            Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM dbo.Devices;"));
+            Assert.Equal(1, await CountAsync("SELECT CASE WHEN RevokedAt IS NULL THEN 1 ELSE 0 END FROM dbo.Devices;"));
+        }
+        finally
+        {
+            await factory.DisposeAsync();
+            SqlConnection.ClearAllPools();
+            await DropAsync();
+        }
+    }
+
     private static async Task<HttpResponseMessage> ChangePasswordAsync(
         HttpClient client,
         RecoveryDevice device,

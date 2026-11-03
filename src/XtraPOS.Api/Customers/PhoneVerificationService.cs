@@ -180,6 +180,9 @@ public sealed class PhoneVerificationService(
     public Task VerifyAsync(Guid customerId, Guid verificationId, string? otp, CancellationToken cancellationToken) =>
         VerifyAsync(verificationId, customerId, requiredDestination: null, otp, cancellationToken);
 
+    public Task VerifyCustomerAsync(Guid verificationId, Guid customerId, string? otp, CancellationToken cancellationToken)
+        => VerifyAsync(verificationId, customerId, null, otp, cancellationToken);
+
     private async Task VerifyAsync(Guid verificationId, Guid? customerId, string? requiredDestination, string? otp, CancellationToken cancellationToken)
     {
         var code = PhoneNormalizer.Normalize(otp);
