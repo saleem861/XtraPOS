@@ -288,7 +288,8 @@ public sealed class SalePostingService(
                 StockOwnerQuantity, ReferenceItemID, ReferenceItemNumberSnapshot, ReferenceItemNameSnapshot,
                 EnteredScaleValue, ReferenceBasePrice, ReferencePriceSource, WeightKg, WeightGrams,
                 VariableValueDiscountPercent, RawDiscountedValue, FinalSellingPrice, RoundingPolicy,
-                ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource
+                ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource,
+                ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode
             )
             VALUES
             (
@@ -298,7 +299,8 @@ public sealed class SalePostingService(
                 CONVERT(decimal(38, 28), @ownerQuantity), @reference, @referenceNumber, @referenceName,
                 @entered, @basePrice, @baseSource, CONVERT(decimal(38, 28), @weightKg), CONVERT(decimal(38, 28), @weightGrams),
                 @discount, @raw, @final, @rounding,
-                @projected, @unitCost, @lineCost, @costSource
+                @projected, @unitCost, @lineCost, @costSource,
+                @resolvedUnit, @resolvedSource, @overrideMode
             );
             """,
             connection,
@@ -337,6 +339,9 @@ public sealed class SalePostingService(
         AddNullableMoney(command, "@unitCost", line.UnitCost);
         AddNullableMoney(command, "@lineCost", line.LineCost);
         command.Parameters.AddWithValue("@costSource", (object?)line.CostSource ?? DBNull.Value);
+        AddMoney(command, "@resolvedUnit", line.UnitPrice);
+        command.Parameters.AddWithValue("@resolvedSource", line.PriceSource);
+        command.Parameters.AddWithValue("@overrideMode", PriceOverrideModes.None);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

@@ -74,16 +74,18 @@ public static class TestDatabase
 public sealed class XtraPosWebFactory : WebApplicationFactory<Program>
 {
     private readonly string _databaseName;
+    private readonly string? _contentRoot;
 
-    public XtraPosWebFactory(string? databaseName = null)
+    public XtraPosWebFactory(string? databaseName = null, string? contentRoot = null)
     {
         _databaseName = databaseName ?? TestDatabase.Name;
+        _contentRoot = contentRoot;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         var databaseName = TestDatabase.Require(_databaseName);
-        builder.UseContentRoot(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "XtraPOS.Api")));
+        builder.UseContentRoot(_contentRoot ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "XtraPOS.Api")));
         builder.ConfigureAppConfiguration((_, config) =>
         {
             config.AddInMemoryCollection(new Dictionary<string, string?>

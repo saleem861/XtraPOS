@@ -8,6 +8,7 @@ namespace XtraPOS.Api.Tests;
 public sealed class BranchApiFixture : IAsyncLifetime
 {
     private const string Password = "Admin1234";
+    private string? _contentRoot;
 
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public Guid DeviceId { get; private set; }
@@ -17,7 +18,14 @@ public sealed class BranchApiFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         await DropAsync();
-        Factory = new XtraPosWebFactory();
+        _contentRoot = Directory.CreateTempSubdirectory("xtrapos-branch-fixture-").FullName;
+        var apiRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "XtraPOS.Api"));
+        foreach (var name in new[] { "appsettings.json", "appsettings.Development.json" })
+        {
+            var source = Path.Combine(apiRoot, name);
+            if (File.Exists(source)) File.Copy(source, Path.Combine(_contentRoot, name));
+        }
+        Factory = new XtraPosWebFactory(contentRoot: _contentRoot);
         using var client = Factory.CreateClient();
         var response = await client.PostAsJsonAsync("/api/setup/create-branch", new
         {
@@ -73,6 +81,7 @@ public sealed class BranchApiFixture : IAsyncLifetime
     public Task DisposeAsync()
     {
         Factory.Dispose();
+        if (_contentRoot is not null && Directory.Exists(_contentRoot)) Directory.Delete(_contentRoot, true);
         return DropAsync();
     }
 
