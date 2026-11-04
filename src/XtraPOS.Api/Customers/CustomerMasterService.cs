@@ -440,6 +440,7 @@ public sealed class CustomerMasterService(
         catch (SqlException exception) when (exception.Number == 547)
         {
             logger.LogWarning(exception, "Customer save was rejected by SQL {SqlNumber}.", exception.Number);
+            DiagnosticLog.Write(environment, "customer-save", "sql-547 " + exception.Message);
             throw new CustomerMasterException(ConstraintMessage(exception));
         }
         catch (SqlException exception)
@@ -860,8 +861,45 @@ public sealed class CustomerMasterService(
         if (await ActorExistsAsync(connection, transaction, actorUserId, cancellationToken)) return;
         await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
         await branch.OpenAsync(cancellationToken);
-        if (await ActorExistsAsync(branch, null, actorUserId, cancellationToken)) return;
-        throw new CustomerMasterException("حسابك غير موجود في جهة حفظ الزبائن.", StatusCodes.Status503ServiceUnavailable);
+        await using var read = new SqlCommand(
+            """
+            SELECT Username, NormalizedUsername, DisplayName, FullName, EmployeeNumber, PasswordHash, IsActive, MustChangePassword
+            FROM dbo.Users WHERE UserID = @id AND IsActive = 1;
+            """, branch);
+        read.Parameters.AddWithValue("@id", actorUserId);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new CustomerMasterException("حسابك غير موجود في جهة حفظ الزبائن.", StatusCodes.Status503ServiceUnavailable);
+        }
+        var username = reader.GetString(0);
+        var normalized = reader.GetString(1);
+        var display = reader.GetString(2);
+        var fullName = reader.IsDBNull(3) ? null : reader.GetString(3);
+        var employee = reader.IsDBNull(4) ? null : reader.GetString(4);
+        var passwordHash = reader.GetString(5);
+        var active = reader.GetBoolean(6);
+        var mustChange = reader.GetBoolean(7);
+        await reader.CloseAsync();
+        await using var insert = Command(
+            connection,
+            transaction,
+            """
+            INSERT INTO dbo.Users
+                (UserID, Username, NormalizedUsername, DisplayName, FullName, EmployeeNumber, PasswordHash, IsActive, MustChangePassword, CreatedAt)
+            VALUES
+                (@id, @username, @normalized, @display, @fullName, @employee, @hash, @active, @mustChange, SYSUTCDATETIME());
+            """);
+        insert.Parameters.AddWithValue("@id", actorUserId);
+        insert.Parameters.AddWithValue("@username", username);
+        insert.Parameters.AddWithValue("@normalized", normalized);
+        insert.Parameters.AddWithValue("@display", display);
+        insert.Parameters.AddWithValue("@fullName", (object?)fullName ?? DBNull.Value);
+        insert.Parameters.AddWithValue("@employee", (object?)employee ?? DBNull.Value);
+        insert.Parameters.AddWithValue("@hash", passwordHash);
+        insert.Parameters.AddWithValue("@active", active);
+        insert.Parameters.AddWithValue("@mustChange", mustChange);
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<bool> ActorExistsAsync(SqlConnection connection, SqlTransaction? transaction, Guid actorUserId, CancellationToken cancellationToken)
