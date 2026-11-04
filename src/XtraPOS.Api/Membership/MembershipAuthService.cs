@@ -15,14 +15,16 @@ public sealed class MembershipAuthService(
     MembershipCodeExchange exchange,
     IOptions<MembershipOptions> options)
 {
-    public async Task<MembershipAuthStart> BeginAsync(string provider, string redirectUri, CancellationToken cancellationToken)
+    public async Task<MembershipAuthStart> BeginAsync(string provider, string redirectUri, CancellationToken cancellationToken, string? enrollmentToken = null)
     {
         var settings = options.Value;
         var clientId = provider == "Apple" ? settings.AppleClientId : settings.GoogleClientId;
         var enabled = provider == "Apple" ? settings.AppleLoginEnabled : settings.GoogleLoginEnabled;
         if (!enabled || string.IsNullOrWhiteSpace(clientId)) throw new MembershipException("BLOCKED_EXTERNAL_CONFIG");
         var (verifier, challenge) = MembershipPkce.Create();
-        var state = MembershipTokens.CreateOpaqueToken();
+        var state = string.IsNullOrWhiteSpace(enrollmentToken)
+            ? MembershipTokens.CreateOpaqueToken()
+            : enrollmentToken + "." + MembershipTokens.CreateOpaqueToken();
         var nonce = MembershipTokens.CreateOpaqueToken();
         await using var connection = await membership.OpenCentralAsync(cancellationToken);
         await using var command = new SqlCommand(
@@ -106,6 +108,23 @@ public sealed class MembershipAuthService(
             consume.Parameters.AddWithValue("@subject", claims.Subject);
             consume.Parameters.AddWithValue("@id", attempt.Id);
             if (await consume.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_PROVIDER_STATE");
+        }
+
+        var dot = state.IndexOf('.');
+        if (dot > 0)
+        {
+            await using var enroll = new SqlCommand(
+                """
+                UPDATE dbo.MembershipEnrollmentRequests
+                SET Provider = @provider, ProviderSubject = @subject, ProviderEmail = @email, ProviderAccountDisplay = @display
+                WHERE TokenHash = @hash AND Status = N'Pending' AND ExpiresAt > SYSUTCDATETIME();
+                """, connection, transaction);
+            enroll.Parameters.AddWithValue("@provider", provider);
+            enroll.Parameters.AddWithValue("@subject", claims.Subject);
+            enroll.Parameters.AddWithValue("@email", (object?)claims.Email ?? DBNull.Value);
+            enroll.Parameters.AddWithValue("@display", (object?)claims.Email ?? claims.Subject);
+            enroll.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(state[..dot]);
+            await enroll.ExecuteNonQueryAsync(cancellationToken);
         }
 
         if (linkedCustomer is Guid customer && linkedBusiness is Guid business && identityId is Guid identity)

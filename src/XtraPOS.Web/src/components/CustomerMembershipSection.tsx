@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
+import { pendingEnrollmentKey } from "../membership/newCustomerDraft";
 import type { DeviceSession } from "../types/setup";
 
 interface Summary {
@@ -11,7 +12,7 @@ interface Summary {
   lastVerifiedAtUtc?: string | null;
 }
 
-export function CustomerMembershipSection({ session, customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onException }: {
+export function CustomerMembershipSection({ session, customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onPending, onException }: {
   session: DeviceSession;
   customerId: string;
   canUnlink: boolean;
@@ -19,6 +20,7 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
   canApproveException?: boolean;
   pendingEnrollment?: boolean;
   onBeforeEnroll?: () => void;
+  onPending?: (attemptId: string) => void;
   onException?: (enabled: boolean) => void;
 }) {
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -27,12 +29,14 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
   const [exceptionPending, setExceptionPending] = useState(false);
   const [withoutMembership, setWithoutMembership] = useState(false);
   const [qrImage, setQrImage] = useState("");
+  const [qrToken, setQrToken] = useState("");
   const [qrError, setQrError] = useState("");
 
   async function startQr() {
     onBeforeEnroll?.();
     setQrError("");
     setQrImage("");
+    setQrToken("");
     const response = await fetch("/api/membership/enrollment-qr", {
       method: "POST",
       credentials: "same-origin",
@@ -48,8 +52,30 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
     }
     traceUi("customer", "enrollment-qr", "created");
     const url = `${window.location.origin}/membership/enroll/${body.token}`;
+    setQrToken(body.token);
     setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
   }
+
+  useEffect(() => {
+    if (!qrToken) return undefined;
+    let stop = false;
+    const timer = window.setInterval(() => {
+      void fetch(`/api/membership/enrollment-qr/${encodeURIComponent(qrToken)}`, { credentials: "same-origin", headers: deviceHeaders(session) }).then(async (response) => {
+        if (!response.ok || stop) return;
+        const body = await response.json() as { status?: string; display?: string; attemptId?: string };
+        if (body.status === "Ready" && body.attemptId) {
+          stop = true;
+          sessionStorage.setItem(pendingEnrollmentKey, body.attemptId);
+          onPending?.(body.attemptId);
+          setNotice(body.display ? `تم التعرف على الحساب ${body.display}. اضغط حفظ لربط العضوية.` : "تم التعرف على الحساب. اضغط حفظ لربط العضوية.");
+          setQrImage("");
+          setQrToken("");
+          traceUi("customer", "enrollment-qr", "ready");
+        }
+      }).catch(() => undefined);
+    }, 1000);
+    return () => { stop = true; window.clearInterval(timer); };
+  }, [qrToken, session, onPending]);
 
   useEffect(() => {
     if (!customerId) return;
@@ -90,6 +116,19 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
     }).catch(() => undefined);
   }, [customerId]);
 
+  const dialog = qrImage ? (
+    <div className="membership-dialog-backdrop" role="presentation">
+      <div className="membership-dialog" role="dialog" aria-label="رمز العضوية">
+        <h2>امسح رمز العضوية</h2>
+        <img src={qrImage} alt="رمز تسجيل العضوية" width={220} height={220} />
+        <div>
+          <button type="button" onClick={() => void startQr()}>إعادة التوليد</button>
+          <button type="button" onClick={() => { setQrImage(""); setQrToken(""); }}>إغلاق</button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   if (!customerId) {
     return (
       <section className="membership-compact" aria-label="العضوية الذكية">
@@ -97,9 +136,10 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
         <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
         {pendingEnrollment ? <p>تم التحقق. اضغط حفظ لإنشاء الزبون وربط العضوية.</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
         {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
-        {qrImage ? <img src={qrImage} alt="رمز تسجيل العضوية" width={220} height={220} /> : null}
         {qrError ? <p role="status">{qrError}</p> : null}
+        {notice ? <p role="status">{notice}</p> : null}
         {canExcept ? <label><input type="checkbox" checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /> تسجيل الزبون بدون تعريف إلكتروني</label> : null}
+        {dialog}
       </section>
     );
   }
@@ -113,7 +153,6 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
       <span>{linked ? "مرتبطة" : "غير مرتبطة"}</span>
       {linked ? providers.map((provider) => <em key={provider}>{provider}</em>) : null}
       <button type="button" onClick={() => void startQr()}>{linked ? "تعديل العضوية الذكية" : "تسجيل العضوية"}</button>
-      {qrImage ? <img src={qrImage} alt="رمز تسجيل العضوية" width={220} height={220} /> : null}
       {qrError ? <p role="status">{qrError}</p> : null}
       {linked ? <button type="button" onClick={() => setOpen((value) => !value)}>إدارة العضوية</button> : null}
       {open && linked ? (
@@ -127,6 +166,7 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
       {exceptionPending ? <p>مسجّل باستثناء بانتظار موافقة المدير العام.</p> : null}
       {exceptionPending && canApproveException ? <button type="button" onClick={() => void fetch(`/api/customers/${customerId}/membership/exception/approve`, { method: "POST", credentials: "same-origin", headers: deviceHeaders(session) }).then((response) => { if (response.ok) setExceptionPending(false); })}>موافقة المدير العام</button> : null}
       {notice ? <p role="status">{notice}</p> : null}
+      {dialog}
     </section>
   );
 }

@@ -271,6 +271,50 @@ public sealed class MembershipService(
         return (token, expires);
     }
 
+    public async Task<(string Status, string? Provider, string? Display, Guid? AttemptId)> ReadEnrollmentQrAsync(string token, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        string? provider = null;
+        string? subject = null;
+        string? display = null;
+        string status = "Pending";
+        DateTime expires = DateTime.UtcNow;
+        await using (var command = new SqlCommand(
+            """
+            SELECT Status, ExpiresAt, Provider, ProviderSubject, ProviderAccountDisplay, ProviderEmail
+            FROM dbo.MembershipEnrollmentRequests
+            WHERE TokenHash = @hash;
+            """, connection))
+        {
+            command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) return ("Missing", null, null, null);
+            status = reader.GetString(0);
+            expires = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
+            provider = reader.IsDBNull(2) ? null : reader.GetString(2);
+            subject = reader.IsDBNull(3) ? null : reader.GetString(3);
+            display = reader.IsDBNull(4) ? null : reader.GetString(4);
+            if (string.IsNullOrWhiteSpace(display) && !reader.IsDBNull(5)) display = reader.GetString(5);
+        }
+        if (status == "Pending" && expires <= DateTime.UtcNow) status = "Expired";
+        if (string.IsNullOrWhiteSpace(subject)) return (status, provider, display, null);
+        Guid? attemptId = null;
+        await using (var attempt = new SqlCommand(
+            """
+            SELECT TOP (1) AttemptID
+            FROM dbo.MembershipAuthAttempts
+            WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Authenticated' AND ExpiresAt > SYSUTCDATETIME()
+            ORDER BY CreatedAt DESC;
+            """, connection))
+        {
+            attempt.Parameters.AddWithValue("@provider", provider ?? "Google");
+            attempt.Parameters.AddWithValue("@subject", subject);
+            var value = await attempt.ExecuteScalarAsync(cancellationToken);
+            if (value is Guid id) attemptId = id;
+        }
+        return (attemptId is null ? status : "Ready", provider, display, attemptId);
+    }
+
     public async Task UnlinkAsync(Guid customerId, CancellationToken cancellationToken)
     {
         var connectionString = await CentralConnectionStringAsync(cancellationToken) ?? throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");

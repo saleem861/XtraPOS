@@ -28,6 +28,7 @@ public static class MembershipEndpoints
         app.MapPost("/api/membership/auth/apple/callback", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => CallbackAsync(http, auth, "Apple", cancellationToken));
         app.MapPost("/api/membership/enrollment/link", LinkAsync);
         app.MapPost("/api/membership/enrollment-qr", CreateEnrollmentQrAsync);
+        app.MapGet("/api/membership/enrollment-qr/{token}", ReadEnrollmentQrAsync);
         app.MapPost("/api/membership/enrollment/prove", ProveAsync);
         app.MapPost("/api/membership/enrollment/commit", CommitAsync);
 
@@ -82,7 +83,8 @@ public static class MembershipEndpoints
     {
         try
         {
-            var start = await auth.BeginAsync(provider, RedirectUri(http, provider), cancellationToken);
+            var enrollment = http.Request.Query["enrollment"].ToString();
+            var start = await auth.BeginAsync(provider, RedirectUri(http, provider), cancellationToken, string.IsNullOrWhiteSpace(enrollment) ? null : enrollment);
             return Results.Redirect(start.AuthorizeUrl);
         }
         catch (MembershipException exception)
@@ -120,6 +122,20 @@ public static class MembershipEndpoints
         catch (MembershipException exception)
         {
             return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static async Task<IResult> ReadEnrollmentQrAsync(string token, HttpContext http, AuthService auth, MembershipService membership, CancellationToken cancellationToken)
+    {
+        if (await auth.GetCurrentAsync(http, cancellationToken) is null) return Results.Unauthorized();
+        try
+        {
+            var read = await membership.ReadEnrollmentQrAsync(token, cancellationToken);
+            return Results.Ok(new { status = read.Status, provider = read.Provider, display = read.Display, attemptId = read.AttemptId });
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code, message = Arabic(exception.Code) }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 

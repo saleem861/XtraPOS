@@ -36,7 +36,7 @@ export function ApplicationRoot({
   }
 
   if (pathname.startsWith("/membership/enroll/")) {
-    return <MembershipEnrollPage />;
+    return <MembershipEnrollPage pathname={pathname} />;
   }
 
   if (pathname.startsWith("/membership/verify/")) {
