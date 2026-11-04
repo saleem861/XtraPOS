@@ -143,7 +143,8 @@ public sealed class CustomerMasterService(
                 await EnsurePriceTypeAsync(connection, transaction, draft.PriceTypeId, cancellationToken);
                 await EnsureClassificationAsync(connection, transaction, businessId, draft.ClassificationId, cancellationToken);
                 await EnsureCustomerNumberAvailableAsync(connection, transaction, businessId, draft.CustomerNumber, cancellationToken);
-                var verifiedPhone = claimedCustomerId is null
+                var membershipVerified = await MembershipAllowsSaveAsync(connection, transaction, request?.MembershipAttemptId, cancellationToken);
+                var verifiedPhone = claimedCustomerId is null && !membershipVerified
                     ? await LockRegistrationAsync(connection, transaction, request, businessId, draft.CustomerNumber, draft.WhatsAppPhoneE164, cancellationToken)
                     : null;
                 await using var command = Command(
@@ -849,14 +850,35 @@ public sealed class CustomerMasterService(
         }
     }
 
-    private static async Task EnsureActorAsync(SqlConnection connection, SqlTransaction transaction, Guid actorUserId, CancellationToken cancellationToken)
+    private async Task EnsureActorAsync(SqlConnection connection, SqlTransaction transaction, Guid actorUserId, CancellationToken cancellationToken)
+    {
+        if (await ActorExistsAsync(connection, transaction, actorUserId, cancellationToken)) return;
+        await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+        await branch.OpenAsync(cancellationToken);
+        if (await ActorExistsAsync(branch, null, actorUserId, cancellationToken)) return;
+        throw new CustomerMasterException("حسابك غير موجود في جهة حفظ الزبائن.", StatusCodes.Status503ServiceUnavailable);
+    }
+
+    private static async Task<bool> ActorExistsAsync(SqlConnection connection, SqlTransaction? transaction, Guid actorUserId, CancellationToken cancellationToken)
     {
         await using var command = Command(connection, transaction, "SELECT COUNT(*) FROM dbo.Users WHERE UserID = @id AND IsActive = 1;");
         command.Parameters.AddWithValue("@id", actorUserId);
-        if ((int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) != 1)
-        {
-            throw new CustomerMasterException("حسابك غير موجود في جهة حفظ الزبائن.", StatusCodes.Status503ServiceUnavailable);
-        }
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
+    }
+
+    private static async Task<bool> MembershipAllowsSaveAsync(SqlConnection connection, SqlTransaction transaction, Guid? attemptId, CancellationToken cancellationToken)
+    {
+        if (attemptId is not Guid id || id == Guid.Empty) return false;
+        await using var command = Command(
+            connection,
+            transaction,
+            """
+            SELECT COUNT(*)
+            FROM dbo.MembershipAuthAttempts
+            WHERE AttemptID = @id AND Status = N'Authenticated' AND ProviderSubject IS NOT NULL AND ExpiresAt > SYSUTCDATETIME();
+            """);
+        command.Parameters.AddWithValue("@id", id);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
     }
 
     private static async Task<CustomerMasterException> MissingOrConflictAsync(

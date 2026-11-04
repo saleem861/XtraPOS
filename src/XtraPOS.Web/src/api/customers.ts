@@ -57,6 +57,7 @@ export interface CustomerWriteBody {
   rowVersion?: string;
   verificationId?: string;
   passkeySessionId?: string;
+  membershipAttemptId?: string;
   specialPrices?: { itemNumber: string; minimumQuantity: number; bundlePrice: number }[];
 }
 

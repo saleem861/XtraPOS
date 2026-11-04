@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowLeft, CircleCheck, Pencil, Save, Send, ShieldCheck, Tag } from "lucide-react";
-import { SetupClientError } from "../api/client";
+import { SetupClientError, deviceHeaders } from "../api/client";
 import { createCustomerClient, type CreditPolicy, type CustomerWriteBody, type SpecialPriceRow } from "../api/customers";
 import { createItemClient } from "../api/items";
 import { createPricingClient } from "../api/pricing";
 import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
 import { ScreenHeader } from "./ScreenHeader";
-import { clearNewCustomerDraft, pendingEnrollmentKey, readNewCustomerDraft, writeNewCustomerDraft } from "../membership/newCustomerDraft";
+import { clearNewCustomerDraft, pendingEnrollmentKey, writeNewCustomerDraft } from "../membership/newCustomerDraft";
 import { CustomerMembershipSection } from "./CustomerMembershipSection";
 import { FullKeyboard } from "./FullKeyboard";
 import {
@@ -142,22 +142,9 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
 
   useEffect(() => {
     if (customerId) return;
-    const pending = sessionStorage.getItem(pendingEnrollmentKey) ?? "";
-    if (!pending) {
-      clearNewCustomerDraft();
-      return;
-    }
-    setPendingEnrollment(pending);
-    const draft = readNewCustomerDraft();
-    if (!draft) return;
-    setCustomerNumber(draft.customerNumber);
-    setName(draft.name);
-    setWhatsAppLocal(draft.whatsAppLocal);
-    setCountryCode(draft.countryCode);
-    setClassificationId(draft.classificationId);
-    setPriceTypeId(draft.priceTypeId);
-    setDiscount(draft.discount);
-    setNotes(draft.notes);
+    clearNewCustomerDraft();
+    setPendingEnrollment("");
+    setMembershipDisplay("");
   }, [customerId]);
 
   useEffect(() => {
@@ -316,6 +303,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       verificationId: verificationId ?? undefined,
       variableValueDiscountPercent: Number.isFinite(parsed) ? parsed : undefined,
       passkeySessionId: !customerId && passkeyVerified ? passkeySessionId ?? undefined : undefined,
+      membershipAttemptId: !customerId && pendingEnrollment ? pendingEnrollment : undefined,
       specialPrices: customerId ? undefined : specials.filter((row) => row.isActive).map((row) => ({
         itemNumber: row.itemNumber,
         minimumQuantity: row.minimumQuantity,
@@ -469,7 +457,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         const committed = await fetch("/api/membership/enrollment/commit", {
           method: "POST",
           credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
+          headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
           body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
         });
         if (!committed.ok) {
@@ -587,6 +575,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           <label><span>رقم الزبون <i>*</i></span><input id="customer-number" aria-label="رقم الزبون" inputMode="tel" value={customerNumber} onChange={(event) => changeCustomerNumber(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-number")} /></label>
           <label><span>اسم الزبون <i>*</i></span><input id="customer-name" aria-label="اسم الزبون" value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-name")} /></label>
           <label><span>رقم الهاتف للتحقق <i>*</i></span><input id="customer-phone" aria-label="رقم الهاتف للتحقق" inputMode="tel" value={whatsAppLocal} onChange={(event) => changeWhatsApp(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-phone")} /></label>
+          <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={membershipDisplay} /></label>
           <label className="new-customer-country"><span>مقدمة الدولة</span>
             <FieldCombo id="customer-country" label="مقدمة الدولة" value={countryCode} placeholder="اختر" options={codes.map((country) => ({ value: country.code, label: countryOptionLabel(country) }))} onChange={(code) => { setCountryCode(code); setVerifiedDestination(null); }} onKeyDown={(event) => onEnter(event, "customer-country")} />
           </label>
@@ -656,14 +645,13 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
             <div className="customer-save-card" role="dialog" aria-modal="true" aria-label={customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}>
               <CircleCheck size={64} aria-hidden="true" />
               <p>{customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}</p>
-              <button type="button" onClick={() => setSaveUi("idle")}>موافق</button>
+              <button type="button" onClick={() => { setSaveUi("idle"); if (!customerId) { clearNewCustomerDraft(); setName(""); setWhatsAppLocal(""); setCustomerNumber(""); setNotes(""); setDiscount(""); setClassificationId(""); setPriceTypeId(""); setPendingEnrollment(""); setMembershipDisplay(""); setVerifiedDestination(null); } }}>موافق</button>
             </div>
           </div>
         ) : null}
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {membershipDisplay ? <label>مفتاح التعريف<input readOnly value={membershipDisplay} /></label> : null}
       {!readOnly ? <CustomerMembershipSection session={session} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
