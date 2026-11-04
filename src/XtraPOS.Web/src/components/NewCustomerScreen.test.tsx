@@ -85,6 +85,10 @@ describe("إضافة زبون جديد", () => {
     fireEvent.click(screen.getByRole("button", { name: "التحقق من الرمز" }));
     expect((await screen.findByRole("button", { name: "حفظ الزبون" }) as HTMLButtonElement).disabled).toBe(false);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "حفظ الزبون" })); });
+    expect(await screen.findByRole("dialog", { name: "تم حفظ الزبون بنجاح" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "إغلاق" })).toBeTruthy();
+    expect(saved).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "إغلاق" }));
     expect(saved).toEqual(["customer-1"]);
     const saveCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => String(call[0]).endsWith("/api/customers") && call[1]?.method === "POST");
     const payload = JSON.parse(String(saveCall?.[1].body));
@@ -158,9 +162,11 @@ describe("إضافة زبون جديد", () => {
     expect((save as HTMLButtonElement).disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("اسم الزبون"), { target: { value: "سليم أحمد" } });
     await act(async () => { fireEvent.click(save); });
-    expect(saved).toEqual(["customer-1"]);
     expect(await screen.findByRole("dialog", { name: "تم حفظ تعديلات الزبون بنجاح" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "موافق" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "إغلاق" })).toBeTruthy();
+    expect(saved).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "إغلاق" }));
+    expect(saved).toEqual(["customer-1"]);
     const update = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[1]?.method === "PUT");
     expect(String(update?.[0])).toBe("/api/customers/customer-1");
     expect(JSON.parse(String(update?.[1].body))).toMatchObject({ name: "سليم أحمد", customerClassificationId: "class", priceTypeId: "price" });
@@ -183,7 +189,7 @@ describe("إضافة زبون جديد", () => {
     fireEvent.change(screen.getByLabelText("ملاحظات"), { target: { value: "ملاحظة محفوظة" } });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "حفظ" })); });
     expect(await screen.findByRole("dialog", { name: "تم حفظ تعديلات الزبون بنجاح" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "موافق" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "إغلاق" })).toBeTruthy();
     const update = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => call[1]?.method === "PUT");
     expect(JSON.parse(String(update?.[1].body))).toMatchObject({ priceTypeId: "central-price", notes: "ملاحظة محفوظة", variableValueDiscountPercent: 10 });
   });

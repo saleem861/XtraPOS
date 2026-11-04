@@ -224,6 +224,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [membershipRestrict, setMembershipRestrict] = useState(false);
   const [membershipMessage, setMembershipMessage] = useState("");
   const membershipHadCustomer = useRef(false);
+  const membershipSettled = useRef(false);
   const [regularPricing, setRegularPricing] = useState(false);
   const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -714,16 +715,27 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     }).catch(() => undefined);
   }
 
-  function chooseCustomer(customer: CustomerListItem) {
+  function failMembershipScan() {
+    setMembershipVerifiedFor(null);
+    if (!membershipHadCustomer.current) {
+      setMembershipMessage("");
+      return;
+    }
+    regularPricingRef.current = true;
+    setRegularPricing(true);
+    void changeCustomer(null);
+  }
+
+  function chooseCustomer(customer: CustomerListItem, preserveMessage = false, verified = false) {
     regularPricingRef.current = false;
     setRegularPricing(false);
     setMembershipOpen(false);
-    setMembershipVerifiedFor(null);
-    setMembershipMessage("");
+    setMembershipVerifiedFor(verified ? customer.customerId : null);
+    if (!preserveMessage) setMembershipMessage("");
     setSaleCustomer(customer);
     setCustomerOpen(false);
     cancelMembershipSale(cart?.cartId);
-    const pricingId = membershipPricingCustomer(membershipRestrict, false, customer.customerId);
+    const pricingId = membershipPricingCustomer(membershipRestrict, verified, customer.customerId);
     if (!pricingId) {
       regularPricingRef.current = true;
       setRegularPricing(true);
@@ -1109,31 +1121,30 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <div><span><UserRound className="pos-pro-icon" aria-hidden="true" />اسم الموظف</span><strong title={user.displayName}>{user.displayName}</strong></div>
         <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{regularPricing || !saleCustomer ? "0" : saleCustomer.variableValueDiscountPercent}</strong></div>
       </div>
-      {cart && membershipOpen ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict, recognizedCustomerId) => {
+      {cart && membershipOpen ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onDismiss={() => { setMembershipOpen(false); if (!membershipSettled.current) failMembershipScan(); }} onPhase={(phase, restrict, recognizedCustomerId) => {
         if (phase === "Config") {
           setMembershipRestrict(restrict);
           return;
         }
         if (phase === "Verified") {
-          if (!membershipHadCustomer.current && recognizedCustomerId) {
-            void customers.get(recognizedCustomerId).then((customer) => { if (customer) chooseCustomer(customer); });
-          }
-          setMembershipVerifiedFor(recognizedCustomerId || saleCustomer?.customerId || null);
+          membershipSettled.current = true;
+          const recognized = recognizedCustomerId && recognizedCustomerId !== "00000000-0000-0000-0000-000000000000" ? recognizedCustomerId : "";
+          setMembershipVerifiedFor(recognized || saleCustomer?.customerId || null);
           setMembershipMessage("تم التحقق من العضوية");
+          setMembershipOpen(false);
+          if (!membershipHadCustomer.current && recognized) {
+            void customers.get(recognized).then((customer) => { if (customer) chooseCustomer(customer, true, true); });
+            return;
+          }
           if (membershipHadCustomer.current) return;
           regularPricingRef.current = false;
           setRegularPricing(false);
           return;
         }
         if (phase !== "Expired" && phase !== "Rejected" && phase !== "Cancelled") return;
-        setMembershipVerifiedFor(null);
-        if (!membershipHadCustomer.current) {
-          setMembershipMessage("");
-          return;
-        }
-        regularPricingRef.current = true;
-        setRegularPricing(true);
-        void changeCustomer(null);
+        if (membershipSettled.current) return;
+        membershipSettled.current = true;
+        failMembershipScan();
       }} /> : null}
       {membershipMessage ? <p className="status-ok passkey-result" role="status">{membershipMessage}</p> : null}
       <div className="pos-summary">
@@ -1232,7 +1243,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <section className="pos-side-card">
           <h3>إجراءات سريعة</h3>
           <div className="pos-quick-grid">
-            <button type="button" title="رمز العضوية" onClick={() => { membershipHadCustomer.current = Boolean(saleCustomer); setMembershipMessage(""); setMembershipOpen(true); }}><QrCode aria-hidden="true" /><span>رمز العضوية</span></button>
+            <button type="button" title="رمز العضوية" onClick={() => { membershipHadCustomer.current = Boolean(saleCustomer); membershipSettled.current = false; setMembershipMessage(""); setMembershipOpen(true); }}><QrCode aria-hidden="true" /><span>رمز العضوية</span></button>
             <button type="button" title="حفظ الطلب الحالي" onClick={() => void saveHeldInvoice()}><Save aria-hidden="true" /><span>حفظ</span></button>
             <button type="button" title="طباعة ومشاركة" onClick={openInvoicePreview}><Printer aria-hidden="true" /><span>طباعة ومشاركة</span></button>
             <button type="button" title="المحفوظات" onClick={() => setHeldOpen(true)}><Archive aria-hidden="true" /><span>المحفوظات</span></button>

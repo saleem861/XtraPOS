@@ -13,14 +13,15 @@ interface Created {
 
 export const membershipDisplayChannel = "xtrapos-membership-display";
 
-export function MembershipQr({ session, customerId, saleContextId, active, onPhase }: {
+export function MembershipQr({ session, customerId, saleContextId, active, onPhase, onDismiss }: {
   session: DeviceSession;
   customerId: string;
   saleContextId: string;
   active: boolean;
   onPhase?: (status: string, restrictPrices: boolean, customerId?: string) => void;
+  onDismiss?: () => void;
 }) {
-  const [enabled, setEnabled] = useState(false);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const [restrict, setRestrict] = useState(false);
   const [created, setCreated] = useState<Created | null>(null);
   const [image, setImage] = useState("");
@@ -28,6 +29,7 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
   const [status, setStatus] = useState("Pending");
   const [seconds, setSeconds] = useState(60);
   const [displayReady, setDisplayReady] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const onPhaseRef = useRef(onPhase);
   onPhaseRef.current = onPhase;
 
@@ -64,7 +66,7 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
     void fetch("/api/pos/membership-verifications", {
       method: "POST",
       headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
-      body: JSON.stringify({ customerId, saleContextId }),
+      body: JSON.stringify({ customerId: customerId || null, saleContextId }),
     }).then(async (response) => {
       const body = await response.json().catch(() => ({})) as Created & { message?: string };
       if (!response.ok || stop) {
@@ -86,7 +88,7 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
         void fetch(`/api/pos/membership-verifications/${requestId}/cancel`, { method: "POST", headers: deviceHeaders(session) });
       }
     };
-  }, [enabled, active, customerId, saleContextId, session]);
+  }, [enabled, active, customerId, saleContextId, session, attempt]);
 
   useEffect(() => {
     if (!created || status !== "Pending") return undefined;
@@ -116,19 +118,25 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
   }, [created, url, status, customerId, saleContextId]);
 
   if (!active) return null;
-  if (!enabled) return <p className="pos-meta">التحقق من العضوية غير مفعّل على هذا الخادم.</p>;
-  if (error) return <p className="status-error">{error}</p>;
-  if (!created || !image) return <p className="pos-meta">جاري إنشاء رمز العضوية…</p>;
   const verified = status === "Verified";
+  const title = verified ? "تم التحقق من العضوية" : "امسح رمز العضوية";
   return (
-    <div className="membership-qr" dir="rtl" aria-label="التحقق من العضوية">
-      <strong>{verified ? "تم التحقق من العضوية" : "امسح رمز العضوية"}</strong>
-      {status === "Pending" ? <img src={image} alt="رمز العضوية" width={220} height={220} /> : null}
-      {status === "Pending" ? <p>{seconds} ث</p> : null}
-      {status === "Pending" && !displayReady ? <p dir="ltr">{url}</p> : null}
-      {status === "Pending" && displayReady ? <p>الرمز ظاهر على شاشة الزبون.</p> : null}
-      {status === "Expired" ? <p>انتهت صلاحية الرمز. اطلب رمزًا جديدًا من الكاشير.</p> : null}
-      {status === "Rejected" ? <p>تعذر التحقق من العضوية.</p> : null}
+    <div className="membership-dialog-backdrop" role="presentation">
+      <div className="membership-dialog" role="dialog" aria-modal="true" aria-label="رمز العضوية">
+        <h2>{title}</h2>
+        {enabled === false ? <p>التحقق من العضوية غير مفعّل على هذا الخادم.</p> : null}
+        {enabled !== false && error ? <p className="status-error">{error}</p> : null}
+        {enabled !== false && !error && status === "Pending" && image ? <img src={image} alt="رمز العضوية" width={220} height={220} /> : null}
+        {enabled !== false && !error && status === "Pending" && !image ? <p>جاري إنشاء رمز العضوية…</p> : null}
+        {enabled !== false && status === "Pending" && created ? <p>{seconds} ث</p> : null}
+        {status === "Pending" && displayReady ? <p>الرمز ظاهر على شاشة الزبون.</p> : null}
+        {status === "Expired" ? <p>انتهت صلاحية الرمز. اطلب رمزًا جديدًا من الكاشير.</p> : null}
+        {status === "Rejected" ? <p>تعذر التحقق من العضوية.</p> : null}
+        <div>
+          <button type="button" onClick={() => setAttempt((value) => value + 1)}>إعادة التوليد</button>
+          <button type="button" onClick={onDismiss}>إغلاق</button>
+        </div>
+      </div>
     </div>
   );
 }

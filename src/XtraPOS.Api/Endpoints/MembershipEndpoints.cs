@@ -310,12 +310,13 @@ public static class MembershipEndpoints
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
         if (device is null || request is null || request.SaleContextId == Guid.Empty)
         {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", "rejected");
             return Results.Unauthorized();
         }
 
         try
         {
-            var created = await membership.CreateAsync(device.BusinessId, device.BranchId, device.StationId, device.UserId, request.CustomerId, request.SaleContextId, cancellationToken);
+            var created = await membership.CreateAsync(device.BusinessId, device.BranchId, device.StationId, device.UserId, request.CustomerId ?? Guid.Empty, request.SaleContextId, cancellationToken);
             DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", "created");
             return Results.Ok(new { verificationRequestId = created.VerificationRequestId, token = created.Token, expiresAtUtc = created.ExpiresAtUtc, pollingIntervalMs = created.PollingIntervalMs });
         }
@@ -399,7 +400,7 @@ public static class MembershipEndpoints
 
     private sealed class MembershipCreateRequest
     {
-        public Guid CustomerId { get; set; }
+        public Guid? CustomerId { get; set; }
         public Guid SaleContextId { get; set; }
     }
 

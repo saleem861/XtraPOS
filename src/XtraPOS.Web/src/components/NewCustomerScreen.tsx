@@ -494,7 +494,6 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         setRecordVersion(saved.rowVersion || fresh?.rowVersion || "");
       }
       setSaveUi("success");
-      onSaved(saved.customerId);
     } catch (error) {
       setSaveUi("idle");
       setMessage(error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.");
@@ -535,6 +534,25 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       const rest = current.filter((item) => item.itemNumber !== draft.itemNumber);
       return [...rest, draft];
     });
+  }
+
+  function closeSaveSuccess() {
+    const id = savedCustomerId;
+    setSaveUi("idle");
+    if (!customerId) {
+      clearNewCustomerDraft();
+      setName("");
+      setWhatsAppLocal("");
+      setCustomerNumber("");
+      setNotes("");
+      setDiscount("");
+      setClassificationId("");
+      setPriceTypeId("");
+      setPendingEnrollment("");
+      setMembershipDisplay("");
+      setVerifiedDestination(null);
+    }
+    if (id) onSaved(id);
   }
 
   const searchEnter = useRef<() => void>(() => undefined);
@@ -632,19 +650,10 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           <p>{exceptionalPriceSummary(specials)}</p>
         </div>
         )}
-        {message ? <p className="new-customer-message">{message}</p> : null}
+        {message && saveUi !== "success" ? <p className="new-customer-message">{message}</p> : null}
         {saveUi === "saving" ? (
           <div className="customer-save-progress" role="status" aria-label="جاري الحفظ">
             <span className="customer-save-spinner" />
-          </div>
-        ) : null}
-        {saveUi === "success" ? (
-          <div className="customer-save-progress" role="presentation">
-            <div className="customer-save-card" role="dialog" aria-modal="true" aria-label={customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}>
-              <CircleCheck size={64} aria-hidden="true" />
-              <p>{customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}</p>
-              <button type="button" onClick={() => { setSaveUi("idle"); if (!customerId) { clearNewCustomerDraft(); setName(""); setWhatsAppLocal(""); setCustomerNumber(""); setNotes(""); setDiscount(""); setClassificationId(""); setPriceTypeId(""); setPendingEnrollment(""); setMembershipDisplay(""); setVerifiedDestination(null); } }}>موافق</button>
-            </div>
           </div>
         ) : null}
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
@@ -670,6 +679,16 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       </div>
       )}
       </>}
+      {saveUi === "success" ? (
+        <div className="customer-save-progress" role="presentation">
+          <div className="customer-save-card" role="dialog" aria-modal="true" aria-label={customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}>
+            <CircleCheck size={64} aria-hidden="true" />
+            <p>{customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}</p>
+            {message ? <p>{message}</p> : null}
+            <button type="button" onClick={closeSaveSuccess}>إغلاق</button>
+          </div>
+        </div>
+      ) : null}
       {desktopKeyboard ? <FullKeyboard onEnter={() => (specialsOpen ? searchEnter.current() : advance(document.activeElement?.id || ""))} /> : null}
     </section>
   );
