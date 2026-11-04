@@ -21,7 +21,7 @@ export function ApplicationRoot({
   pathname: string;
 }) {
   useEffect(() => {
-    traceUi("page", "open", pathname);
+    if (!pathname.startsWith("/setup-preview")) traceUi("page", "open", pathname);
     const onClick = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target.closest("button, a") : null;
       if (!target) return;
