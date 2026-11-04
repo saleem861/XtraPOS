@@ -71,16 +71,15 @@ public class MembershipRulesTests
     }
 
     [Fact]
-    public void PendingEnrollmentCommitsOnlyAfterProofAndRejectsReuse()
+    public void ReturnedIdentityCommitsWithoutPhoneProofAndRejectsReuse()
     {
         var customer = Guid.NewGuid();
         var now = new DateTime(2026, 11, 3, 0, 0, 0, DateTimeKind.Utc);
-        Assert.Equal("MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED", MembershipEnrollmentRules.CommitBlock(false, now.AddMinutes(10), now, null, customer, false));
-        Assert.Equal("MEMBERSHIP_ENROLLMENT_EXPIRED", MembershipEnrollmentRules.CommitBlock(true, now.AddMinutes(-1), now, null, customer, false));
-        Assert.Null(MembershipEnrollmentRules.CommitBlock(true, now.AddMinutes(10), now, null, customer, false));
-        Assert.Equal("MEMBERSHIP_PROVIDER_CONFLICT", MembershipEnrollmentRules.CommitBlock(true, now.AddMinutes(10), now, Guid.NewGuid(), customer, false));
-        Assert.Null(MembershipEnrollmentRules.CommitBlock(true, now, now, customer, customer, true));
-        Assert.Equal("MEMBERSHIP_PROVIDER_CONFLICT", MembershipEnrollmentRules.CommitBlock(true, now, now, Guid.NewGuid(), customer, true));
+        Assert.Null(MembershipEnrollmentRules.CommitBlock(now.AddMinutes(10), now, null, customer, false));
+        Assert.Equal("MEMBERSHIP_ENROLLMENT_EXPIRED", MembershipEnrollmentRules.CommitBlock(now.AddMinutes(-1), now, null, customer, false));
+        Assert.Equal("MEMBERSHIP_PROVIDER_CONFLICT", MembershipEnrollmentRules.CommitBlock(now.AddMinutes(10), now, Guid.NewGuid(), customer, false));
+        Assert.Null(MembershipEnrollmentRules.CommitBlock(now, now, customer, customer, true));
+        Assert.Equal("MEMBERSHIP_PROVIDER_CONFLICT", MembershipEnrollmentRules.CommitBlock(now, now, Guid.NewGuid(), customer, true));
     }
 
     [Fact]

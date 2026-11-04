@@ -44,7 +44,15 @@ public sealed class MembershipEnrollmentSqlTests
                 """,
                 ("@business", business), ("@customer", customer), ("@other", other), ("@attempt", attempt), ("@duplicate", duplicate), ("@expired", expired), ("@unproved", unproved));
 
-            Assert.Equal(0, await CommitAsync(cs, unproved, customer, business));
+            await ExecuteAsync(cs, """
+                INSERT INTO dbo.MembershipEnrollmentRequests
+                    (EnrollmentID, BusinessID, TokenHash, Status, ExpiresAt, CreatedAt, Provider, ProviderSubject, ProviderEmail, ProviderAccountDisplay)
+                VALUES
+                    (NEWID(), @business, HASHBYTES('SHA2_256', N'enroll-open'), N'Pending', DATEADD(minute, 10, SYSUTCDATETIME()), SYSUTCDATETIME(), N'Google', N'subject-open', N'open@example.com', N'open@example.com');
+                """, ("@business", business));
+            Assert.Equal(1, await CommitAsync(cs, unproved, customer, business));
+            Assert.Equal("open@example.com", await TextAsync(cs, "SELECT ProviderAccountDisplay FROM dbo.CustomerMembershipIdentities WHERE CustomerID = @id;", customer));
+            await ExecuteAsync(cs, "DELETE FROM dbo.CustomerMembershipSessions WHERE CustomerID = @id; DELETE FROM dbo.CustomerMembershipIdentities WHERE CustomerID = @id;", ("@id", customer));
             Assert.Equal(0, await ScalarAsync(cs, "SELECT COUNT(*) FROM dbo.CustomerMembershipIdentities;"));
 
             Assert.Equal(0, await ProveAsync(cs, expired));
@@ -99,25 +107,39 @@ public sealed class MembershipEnrollmentSqlTests
             read.Parameters.AddWithValue("@id", attemptId);
             await using var reader = await read.ExecuteReaderAsync();
             var found = await reader.ReadAsync();
-            var proved = found && !reader.IsDBNull(2) && reader.GetString(3) == "Authenticated";
-            if (proved)
+            var ready = found && !reader.IsDBNull(1) && reader.GetString(3) == "Authenticated";
+            if (ready)
             {
                 provider = reader.GetString(0);
                 subject = reader.GetString(1);
             }
             await reader.CloseAsync();
-            if (!proved)
+            if (!ready)
             {
                 await transaction.RollbackAsync();
                 return 0;
             }
         }
+        string? email = null;
+        string? display = subject;
+        await using (var shown = new SqlCommand("SELECT TOP (1) ProviderEmail, ProviderAccountDisplay FROM dbo.MembershipEnrollmentRequests WHERE Provider = @provider AND ProviderSubject = @subject ORDER BY CreatedAt DESC;", connection, transaction))
+        {
+            shown.Parameters.AddWithValue("@provider", provider);
+            shown.Parameters.AddWithValue("@subject", subject);
+            await using var shownReader = await shown.ExecuteReaderAsync();
+            if (await shownReader.ReadAsync())
+            {
+                email = shownReader.IsDBNull(0) ? null : shownReader.GetString(0);
+                display = shownReader.IsDBNull(1) ? subject : shownReader.GetString(1);
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(email)) display = email;
         var identity = Guid.NewGuid();
         await using (var insert = new SqlCommand("""
             INSERT INTO dbo.CustomerMembershipIdentities
-                (IdentityID, BusinessID, CustomerID, Provider, ProviderSubject, LinkedAt, LastAuthenticatedAt, Status, CreatedAt, UpdatedAt)
+                (IdentityID, BusinessID, CustomerID, Provider, ProviderSubject, ProviderAccountDisplay, ProviderEmail, LinkedAt, LastAuthenticatedAt, Status, CreatedAt, UpdatedAt)
             VALUES
-                (@id, @business, @customer, @provider, @subject, SYSUTCDATETIME(), SYSUTCDATETIME(), N'Active', SYSUTCDATETIME(), SYSUTCDATETIME());
+                (@id, @business, @customer, @provider, @subject, @display, @email, SYSUTCDATETIME(), SYSUTCDATETIME(), N'Active', SYSUTCDATETIME(), SYSUTCDATETIME());
             """, connection, transaction))
         {
             insert.Parameters.AddWithValue("@id", identity);
@@ -125,12 +147,14 @@ public sealed class MembershipEnrollmentSqlTests
             insert.Parameters.AddWithValue("@customer", customerId);
             insert.Parameters.AddWithValue("@provider", provider);
             insert.Parameters.AddWithValue("@subject", subject);
+            insert.Parameters.AddWithValue("@display", display);
+            insert.Parameters.AddWithValue("@email", (object?)email ?? DBNull.Value);
             await insert.ExecuteNonQueryAsync();
         }
         await using var done = new SqlCommand("""
             UPDATE dbo.MembershipAuthAttempts
             SET Status = N'Consumed', CustomerID = @customer, BusinessID = @business
-            WHERE AttemptID = @id AND Status = N'Authenticated' AND CustomerID IS NULL AND OwnershipVerifiedAt IS NOT NULL;
+            WHERE AttemptID = @id AND Status = N'Authenticated' AND CustomerID IS NULL;
             """, connection, transaction);
         done.Parameters.AddWithValue("@customer", customerId);
         done.Parameters.AddWithValue("@business", businessId);

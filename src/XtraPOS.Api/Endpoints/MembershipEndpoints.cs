@@ -204,6 +204,7 @@ public static class MembershipEndpoints
         }
         catch (MembershipException exception)
         {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "customer-identity", exception.Code);
             return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status409Conflict);
         }
     }
