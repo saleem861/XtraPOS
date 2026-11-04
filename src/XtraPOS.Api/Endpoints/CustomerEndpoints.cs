@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Hosting;
 using XtraPOS.Api.Credit;
+using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Customers;
 using XtraPOS.Api.Security;
 
@@ -158,6 +160,7 @@ public static class CustomerEndpoints
         }
         catch (CustomerMasterException exception)
         {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "customer-save", exception.Message);
             return Fail(exception);
         }
     }

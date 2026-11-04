@@ -27,7 +27,7 @@ public static class MembershipPkce
             ["client_id"] = clientId,
             ["redirect_uri"] = redirectUri,
             ["response_type"] = provider == "Apple" ? "code id_token" : "code",
-            ["scope"] = "openid",
+            ["scope"] = "openid email",
             ["state"] = state,
             ["nonce"] = nonce,
             ["code_challenge"] = challenge,

@@ -295,6 +295,7 @@ public sealed class MembershipService(
             subject = reader.IsDBNull(3) ? null : reader.GetString(3);
             display = reader.IsDBNull(4) ? null : reader.GetString(4);
             if (string.IsNullOrWhiteSpace(display) && !reader.IsDBNull(5)) display = reader.GetString(5);
+            if (string.IsNullOrWhiteSpace(display)) display = subject;
         }
         if (status == "Pending" && expires <= DateTime.UtcNow) status = "Expired";
         if (string.IsNullOrWhiteSpace(subject)) return (status, provider, display, null);

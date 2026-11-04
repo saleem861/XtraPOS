@@ -12,9 +12,10 @@ interface Summary {
   lastVerifiedAtUtc?: string | null;
 }
 
-export function CustomerMembershipSection({ session, customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onPending, onException }: {
+export function CustomerMembershipSection({ session, customerId, identityKey = "", canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onPending, onException }: {
   session: DeviceSession;
   customerId: string;
+  identityKey?: string;
   canUnlink: boolean;
   canExcept?: boolean;
   canApproveException?: boolean;
@@ -138,7 +139,10 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
         <strong>العضوية الذكية</strong>
         <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
         {pendingEnrollment ? <p>تم التحقق بنجاح</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
-        {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
+        <div className="membership-register-row">
+          {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
+          <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={identityKey} /></label>
+        </div>
         {qrError ? <p role="status">{qrError}</p> : null}
         {notice ? <p role="status">{notice}</p> : null}
         {canExcept ? <label><input type="checkbox" checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /> تسجيل الزبون بدون تعريف إلكتروني</label> : null}
@@ -155,7 +159,10 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
       <strong>العضوية الذكية</strong>
       <span>{linked ? "مرتبطة" : "غير مرتبطة"}</span>
       {linked ? providers.map((provider) => <em key={provider}>{provider}</em>) : null}
-      <button type="button" onClick={() => void startQr()}>{linked ? "تعديل العضوية الذكية" : "تسجيل العضوية"}</button>
+      <div className="membership-register-row">
+        <button type="button" onClick={() => void startQr()}>{linked ? "تعديل العضوية الذكية" : "تسجيل العضوية"}</button>
+        <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={identityKey} /></label>
+      </div>
       {qrError ? <p role="status">{qrError}</p> : null}
       {linked ? <button type="button" onClick={() => setOpen((value) => !value)}>إدارة العضوية</button> : null}
       {open && linked ? (

@@ -1,8 +1,11 @@
 using System.Data;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
 using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Diagnostics;
+using XtraPOS.Api.Membership;
 using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Customers;
@@ -11,6 +14,8 @@ public sealed class CustomerMasterService(
     SqlConnectionFactory connections,
     SyncEndpointStore endpoints,
     CustomerPasskeyService passkeys,
+    MembershipService membership,
+    IHostEnvironment environment,
     ILogger<CustomerMasterService> logger)
 {
     public const string CentralAuthority = "Central";
@@ -133,6 +138,7 @@ public sealed class CustomerMasterService(
         }
 
         var customerId = claimedCustomerId ?? Guid.NewGuid();
+        var membershipVerified = await MembershipAllowsSaveAsync(request?.MembershipAttemptId, cancellationToken);
         await WriteAsync(
             actorUserId,
             customerId,
@@ -143,7 +149,6 @@ public sealed class CustomerMasterService(
                 await EnsurePriceTypeAsync(connection, transaction, draft.PriceTypeId, cancellationToken);
                 await EnsureClassificationAsync(connection, transaction, businessId, draft.ClassificationId, cancellationToken);
                 await EnsureCustomerNumberAvailableAsync(connection, transaction, businessId, draft.CustomerNumber, cancellationToken);
-                var membershipVerified = await MembershipAllowsSaveAsync(connection, transaction, request?.MembershipAttemptId, cancellationToken);
                 var verifiedPhone = claimedCustomerId is null && !membershipVerified
                     ? await LockRegistrationAsync(connection, transaction, request, businessId, draft.CustomerNumber, draft.WhatsAppPhoneE164, cancellationToken)
                     : null;
@@ -866,19 +871,32 @@ public sealed class CustomerMasterService(
         return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
     }
 
-    private static async Task<bool> MembershipAllowsSaveAsync(SqlConnection connection, SqlTransaction transaction, Guid? attemptId, CancellationToken cancellationToken)
+    private async Task<bool> MembershipAllowsSaveAsync(Guid? attemptId, CancellationToken cancellationToken)
     {
-        if (attemptId is not Guid id || id == Guid.Empty) return false;
-        await using var command = Command(
-            connection,
-            transaction,
-            """
-            SELECT COUNT(*)
-            FROM dbo.MembershipAuthAttempts
-            WHERE AttemptID = @id AND Status = N'Authenticated' AND ProviderSubject IS NOT NULL AND ExpiresAt > SYSUTCDATETIME();
-            """);
-        command.Parameters.AddWithValue("@id", id);
-        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
+        if (attemptId is not Guid id || id == Guid.Empty)
+        {
+            DiagnosticLog.Write(environment, "customer-save", "membership attempt missing");
+            return false;
+        }
+        try
+        {
+            await using var connection = await membership.OpenCentralAsync(cancellationToken);
+            await using var command = new SqlCommand(
+                """
+                SELECT COUNT(*)
+                FROM dbo.MembershipAuthAttempts
+                WHERE AttemptID = @id AND Status = N'Authenticated' AND ProviderSubject IS NOT NULL AND ExpiresAt > SYSUTCDATETIME();
+                """, connection);
+            command.Parameters.AddWithValue("@id", id);
+            var allowed = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
+            DiagnosticLog.Write(environment, "customer-save", allowed ? "membership attempt accepted" : "membership attempt rejected");
+            return allowed;
+        }
+        catch (Exception exception)
+        {
+            DiagnosticLog.Write(environment, "customer-save", "membership lookup " + exception.GetType().Name);
+            return false;
+        }
     }
 
     private static async Task<CustomerMasterException> MissingOrConflictAsync(

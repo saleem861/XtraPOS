@@ -124,8 +124,9 @@ public sealed class MembershipAuthService(
                 """, connection, transaction);
             enroll.Parameters.AddWithValue("@provider", provider);
             enroll.Parameters.AddWithValue("@subject", claims.Subject);
-            enroll.Parameters.AddWithValue("@email", (object?)claims.Email ?? DBNull.Value);
-            enroll.Parameters.AddWithValue("@display", (object?)claims.Email ?? claims.Subject);
+            var email = string.IsNullOrWhiteSpace(claims.Email) ? null : claims.Email;
+            enroll.Parameters.AddWithValue("@email", (object?)email ?? DBNull.Value);
+            enroll.Parameters.AddWithValue("@display", email ?? claims.Subject);
             enroll.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(state[..dot]);
             var linked = await enroll.ExecuteNonQueryAsync(cancellationToken);
             DiagnosticLog.Write(environment, "enrollment-link", linked == 1 ? "linked" : "not-found");

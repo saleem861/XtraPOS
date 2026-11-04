@@ -461,12 +461,11 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
         });
         if (!committed.ok) {
-          setSaveUi("idle");
           setMessage("تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.");
-          return;
+        } else {
+          clearNewCustomerDraft();
+          setPendingEnrollment("");
         }
-        clearNewCustomerDraft();
-        setPendingEnrollment("");
       }
       if (!customerId && skipMembership) {
         await fetch(`/api/customers/${saved.customerId}/membership/exception`, { method: "POST", credentials: "same-origin" });
@@ -575,7 +574,6 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           <label><span>رقم الزبون <i>*</i></span><input id="customer-number" aria-label="رقم الزبون" inputMode="tel" value={customerNumber} onChange={(event) => changeCustomerNumber(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-number")} /></label>
           <label><span>اسم الزبون <i>*</i></span><input id="customer-name" aria-label="اسم الزبون" value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-name")} /></label>
           <label><span>رقم الهاتف للتحقق <i>*</i></span><input id="customer-phone" aria-label="رقم الهاتف للتحقق" inputMode="tel" value={whatsAppLocal} onChange={(event) => changeWhatsApp(event.target.value)} onKeyDown={(event) => onEnter(event, "customer-phone")} /></label>
-          <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={membershipDisplay} /></label>
           <label className="new-customer-country"><span>مقدمة الدولة</span>
             <FieldCombo id="customer-country" label="مقدمة الدولة" value={countryCode} placeholder="اختر" options={codes.map((country) => ({ value: country.code, label: countryOptionLabel(country) }))} onChange={(code) => { setCountryCode(code); setVerifiedDestination(null); }} onKeyDown={(event) => onEnter(event, "customer-country")} />
           </label>
@@ -652,7 +650,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? <CustomerMembershipSection session={session} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
+      {!readOnly ? <CustomerMembershipSection session={session} identityKey={membershipDisplay} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
         <button id="send-code" className="send-button" type="button" onClick={() => void send()} onKeyDown={(event) => onEnter(event, "send-code")}><Send aria-hidden="true" />إرسال رمز التحقق</button>
