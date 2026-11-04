@@ -63,6 +63,16 @@ builder.Services.AddScoped<NewTestBranchService>();
 builder.Services.AddScoped<PermissionService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.Configure<MembershipOptions>(builder.Configuration.GetSection(MembershipOptions.SectionName));
+if (builder.Environment.IsStaging())
+{
+    builder.Services.PostConfigure<MembershipOptions>(options =>
+    {
+        options.Enabled = true;
+        options.GoogleLoginEnabled = true;
+        options.AppleLoginEnabled = false;
+        options.RequireVerificationForSpecialPrices = false;
+    });
+}
 builder.Services.AddScoped<MembershipService>();
 builder.Services.AddScoped<MembershipCodeExchange>();
 builder.Services.AddScoped<IMembershipIdTokenValidator, MembershipIdTokenValidator>();
