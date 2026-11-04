@@ -51,6 +51,8 @@ public sealed class CentralMigrationRunner
     public const string CustomerReferenceForBusinessMigrationName = "Customer reference for existing businesses";
     public const string MembershipPendingEnrollmentMigrationId = "022_MembershipPendingEnrollment";
     public const string MembershipPendingEnrollmentMigrationName = "Membership pending enrollment";
+    public const string MembershipDisplayMigrationId = "023_MembershipDisplayAndException";
+    public const string MembershipDisplayMigrationName = "Membership display and exception";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -76,6 +78,7 @@ public sealed class CentralMigrationRunner
         (MembershipAuthMigrationId, MembershipAuthMigrationName, "XtraPOS.Api.Data.Central.Migrations.020_MembershipAuthAttempts.sql"),
         (CustomerReferenceForBusinessMigrationId, CustomerReferenceForBusinessMigrationName, "XtraPOS.Api.Data.Central.Migrations.021_CustomerReferenceForExistingBusiness.sql"),
         (MembershipPendingEnrollmentMigrationId, MembershipPendingEnrollmentMigrationName, "XtraPOS.Api.Data.Central.Migrations.022_MembershipPendingEnrollment.sql"),
+        (MembershipDisplayMigrationId, MembershipDisplayMigrationName, "XtraPOS.Api.Data.Central.Migrations.023_MembershipDisplayAndException.sql"),
     ];
 
     private static readonly string ApplicationVersion =

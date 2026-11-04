@@ -177,6 +177,9 @@
     <EmbeddedResource Include="Data\Migrations\035_CustomerReferenceDataRetry.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.035_CustomerReferenceDataRetry.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\036_CustomerMembershipException.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.036_CustomerMembershipException.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>
@@ -200,6 +203,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\022_MembershipPendingEnrollment.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.022_MembershipPendingEnrollment.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\023_MembershipDisplayAndException.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.023_MembershipDisplayAndException.sql</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

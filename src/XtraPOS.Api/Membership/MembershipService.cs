@@ -65,7 +65,7 @@ public sealed class MembershipService(
             insert.Parameters.AddWithValue("@business", businessId);
             insert.Parameters.AddWithValue("@branch", branchId);
             insert.Parameters.AddWithValue("@counter", counterId);
-            insert.Parameters.AddWithValue("@customer", customerId);
+            insert.Parameters.AddWithValue("@customer", customerId == Guid.Empty ? DBNull.Value : customerId);
             insert.Parameters.AddWithValue("@cashier", cashierUserId);
             insert.Parameters.AddWithValue("@sale", saleContextId);
             insert.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
@@ -100,7 +100,7 @@ public sealed class MembershipService(
         var status = reader.GetString(0);
         var expires = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
         if (status == "Pending" && expires <= DateTime.UtcNow) status = "Expired";
-        return new MembershipVerificationView(verificationId, status, expires, reader.GetGuid(2), reader.GetGuid(3), reader.GetGuid(4));
+        return new MembershipVerificationView(verificationId, status, expires, reader.IsDBNull(2) ? Guid.Empty : reader.GetGuid(2), reader.GetGuid(3), reader.GetGuid(4));
     }
 
     public async Task CancelAsync(Guid businessId, Guid branchId, Guid counterId, Guid verificationId, CancellationToken cancellationToken)

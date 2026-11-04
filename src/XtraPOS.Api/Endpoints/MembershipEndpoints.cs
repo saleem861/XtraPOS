@@ -1,4 +1,6 @@
+using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Customers;
+using XtraPOS.Api.Data;
 using XtraPOS.Api.Membership;
 using XtraPOS.Api.Security;
 
@@ -67,6 +69,9 @@ public static class MembershipEndpoints
         staff.MapGet("", SummaryAsync);
         staff.MapPost("/revoke-all", RevokeAllAsync);
         staff.MapPost("/unlink", UnlinkAsync);
+        staff.MapGet("/exception", ReadExceptionAsync);
+        staff.MapPost("/exception", MarkExceptionAsync);
+        staff.MapPost("/exception/approve", ApproveExceptionAsync);
     }
 
     private static async Task<IResult> StartAsync(HttpContext http, MembershipAuthService auth, string provider, CancellationToken cancellationToken)
@@ -164,6 +169,66 @@ public static class MembershipEndpoints
         }
     }
 
+    private static async Task<IResult> ReadExceptionAsync(Guid id, HttpContext http, AuthService auth, SqlConnectionFactory connections, CancellationToken cancellationToken)
+    {
+        var current = await auth.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand("SELECT MembershipExceptionAt, MembershipExceptionApprovedAt FROM dbo.Customers WHERE CustomerID = @id;", connection);
+        command.Parameters.AddWithValue("@id", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound();
+        var marked = !reader.IsDBNull(0);
+        var approved = !reader.IsDBNull(1);
+        return Results.Ok(new { pending = marked && !approved });
+    }
+
+    private static async Task<IResult> MarkExceptionAsync(Guid id, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, MembershipService membership, CancellationToken cancellationToken)
+    {
+        var current = await auth.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        var allowed = current.Permissions.Contains(PermissionCodes.SystemAdminister, StringComparer.Ordinal) || await permissions.HasPermissionAsync(current.UserId, PermissionCodes.CustomersManage, cancellationToken);
+        if (!allowed) return Results.Forbid();
+        await WriteExceptionAsync(connections, membership, id, current.UserId, approve: false, cancellationToken);
+        return Results.Ok(new { pending = true });
+    }
+
+    private static async Task<IResult> ApproveExceptionAsync(Guid id, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, MembershipService membership, CancellationToken cancellationToken)
+    {
+        var current = await auth.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        if (!await permissions.HasPermissionAsync(current.UserId, PermissionCodes.SystemAdminister, cancellationToken) && !current.Permissions.Contains(PermissionCodes.SystemAdminister, StringComparer.Ordinal)) return Results.Forbid();
+        await WriteExceptionAsync(connections, membership, id, current.UserId, approve: true, cancellationToken);
+        return Results.Ok(new { pending = false });
+    }
+
+    private static async Task WriteExceptionAsync(SqlConnectionFactory connections, MembershipService membership, Guid customerId, Guid actorId, bool approve, CancellationToken cancellationToken)
+    {
+        var branchSql = approve
+            ? "UPDATE dbo.Customers SET MembershipExceptionApprovedAt = SYSUTCDATETIME(), UpdatedAt = SYSUTCDATETIME() WHERE CustomerID = @id AND MembershipExceptionAt IS NOT NULL;"
+            : "UPDATE dbo.Customers SET MembershipExceptionAt = SYSUTCDATETIME(), MembershipExceptionByUserID = @actor, MembershipExceptionApprovedAt = NULL, UpdatedAt = SYSUTCDATETIME() WHERE CustomerID = @id;";
+        await using (var connection = new SqlConnection(connections.CreateBranchConnectionString()))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqlCommand(branchSql, connection);
+            command.Parameters.AddWithValue("@id", customerId);
+            command.Parameters.AddWithValue("@actor", actorId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        try
+        {
+            await using var central = await membership.OpenCentralAsync(cancellationToken);
+            await using var command = new SqlCommand(branchSql, central);
+            command.Parameters.AddWithValue("@id", customerId);
+            command.Parameters.AddWithValue("@actor", actorId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (MembershipException)
+        {
+        }
+    }
+
     private static string RedirectUri(HttpContext http, string provider)
     {
         var configured = http.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<MembershipOptions>>().Value.PublicOrigin;
@@ -194,7 +259,7 @@ public static class MembershipEndpoints
     private static async Task<IResult> CreateAsync(HttpContext http, AuthService auth, MembershipService membership, MembershipCreateRequest? request, CancellationToken cancellationToken)
     {
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
-        if (device is null || request is null || request.CustomerId == Guid.Empty || request.SaleContextId == Guid.Empty)
+        if (device is null || request is null || request.SaleContextId == Guid.Empty)
         {
             return Results.Unauthorized();
         }

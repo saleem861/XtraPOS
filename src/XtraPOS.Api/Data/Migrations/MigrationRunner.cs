@@ -75,6 +75,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string CustomerReferenceMigrationName = "Customer reference data";
     public const string CustomerReferenceRetryMigrationId = "035_CustomerReferenceDataRetry";
     public const string CustomerReferenceRetryMigrationName = "Customer reference data retry";
+    public const string CustomerMembershipExceptionMigrationId = "036_CustomerMembershipException";
+    public const string CustomerMembershipExceptionMigrationName = "Customer membership exception";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -225,6 +227,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             CustomerReferenceRetryMigrationId,
             CustomerReferenceRetryMigrationName,
             "XtraPOS.Api.Data.Migrations.035_CustomerReferenceDataRetry.sql"),
+        new(
+            CustomerMembershipExceptionMigrationId,
+            CustomerMembershipExceptionMigrationName,
+            "XtraPOS.Api.Data.Migrations.036_CustomerMembershipException.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

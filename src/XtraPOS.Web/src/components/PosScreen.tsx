@@ -17,6 +17,7 @@ import {
   PackageSearch,
   Percent,
   Printer,
+  QrCode,
   ReceiptText,
   RefreshCw,
   Save,
@@ -223,6 +224,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [membershipVerifiedFor, setMembershipVerifiedFor] = useState<string | null>(null);
   const [membershipRestrict, setMembershipRestrict] = useState(false);
   const [membershipMessage, setMembershipMessage] = useState("");
+  const membershipHadCustomer = useRef(false);
   const [regularPricing, setRegularPricing] = useState(false);
   const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -1102,23 +1104,29 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <div className="pos-original-total"><span><Coins className="pos-pro-icon" aria-hidden="true" />المجموع قبل الخصم</span><strong>{formatPosMoney(originalCartTotal(cart))}</strong></div>
         <div><button type="button" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
         <div><button type="button" onClick={openCustomerSearch}><span>اسم الزبون</span><strong title={saleCustomer?.name ?? "زبون عادي"}>{saleCustomer?.name ?? (cart.customerId ? "—" : "زبون عادي")}</strong></button></div>
-        {saleCustomer ? <div><button type="button" onClick={() => { setMembershipMessage(""); setMembershipOpen(true); }}><ShieldCheck className="pos-pro-icon" aria-hidden="true" />التحقق من العضوية</button></div> : null}
         <div><span>نوع الزبون</span><strong>{regularPricing ? "عادي" : saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
-        {saleCustomer && cart ? <MembershipQr session={session} customerId={saleCustomer.customerId} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict) => {
+        {cart ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict, recognizedCustomerId) => {
           if (phase === "Config") {
             setMembershipRestrict(restrict);
             return;
           }
           if (phase === "Verified") {
-            setMembershipVerifiedFor(saleCustomer.customerId);
+            if (!membershipHadCustomer.current && recognizedCustomerId) {
+              void customers.get(recognizedCustomerId).then((customer) => { if (customer) chooseCustomer(customer); });
+            }
+            setMembershipVerifiedFor(recognizedCustomerId || saleCustomer?.customerId || null);
             setMembershipMessage("تم التحقق من العضوية");
+            if (membershipHadCustomer.current) return;
             regularPricingRef.current = false;
             setRegularPricing(false);
-            void changeCustomer(membershipPricingCustomer(true, true, saleCustomer.customerId));
             return;
           }
+          if (phase !== "Expired" && phase !== "Rejected" && phase !== "Cancelled") return;
           setMembershipVerifiedFor(null);
-          if (!restrict) return;
+          if (!membershipHadCustomer.current) {
+            setMembershipMessage("");
+            return;
+          }
           regularPricingRef.current = true;
           setRegularPricing(true);
           void changeCustomer(null);
@@ -1225,6 +1233,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <section className="pos-side-card">
           <h3>إجراءات سريعة</h3>
           <div className="pos-quick-grid">
+            <button type="button" title="رمز العضوية" onClick={() => { membershipHadCustomer.current = Boolean(saleCustomer); setMembershipMessage(""); setMembershipOpen(true); }}><QrCode aria-hidden="true" /><span>رمز العضوية</span></button>
             <button type="button" title="حفظ الطلب الحالي" onClick={() => void saveHeldInvoice()}><Save aria-hidden="true" /><span>حفظ</span></button>
             <button type="button" title="طباعة ومشاركة" onClick={openInvoicePreview}><Printer aria-hidden="true" /><span>طباعة ومشاركة</span></button>
             <button type="button" title="المحفوظات" onClick={() => setHeldOpen(true)}><Archive aria-hidden="true" /><span>المحفوظات</span></button>

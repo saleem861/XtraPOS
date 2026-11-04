@@ -16,7 +16,7 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
   customerId: string;
   saleContextId: string;
   active: boolean;
-  onPhase?: (status: string, restrictPrices: boolean) => void;
+  onPhase?: (status: string, restrictPrices: boolean, customerId?: string) => void;
 }) {
   const [enabled, setEnabled] = useState(false);
   const [restrict, setRestrict] = useState(false);
@@ -82,10 +82,10 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
       void fetch(`/api/pos/membership-verifications/${created.verificationRequestId}`, { headers: deviceHeaders(session) })
         .then(async (response) => {
           if (!response.ok) return;
-          const body = await response.json() as { status?: string };
+          const body = await response.json() as { status?: string; customerId?: string };
           if (body.status && body.status !== "Pending") {
             setStatus(body.status);
-            onPhaseRef.current?.(body.status, restrict);
+            onPhaseRef.current?.(body.status, restrict, body.customerId);
           }
         })
         .catch(() => setStatus("Offline"));

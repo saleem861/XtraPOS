@@ -132,6 +132,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
   const [savedCustomerId, setSavedCustomerId] = useState(customerId);
   const [pendingEnrollment, setPendingEnrollment] = useState("");
+  const [skipMembership, setSkipMembership] = useState(false);
   const [creditEnabled, setCreditEnabled] = useState(false);
   const [creditLimit, setCreditLimit] = useState("0");
   const [paymentTermDays, setPaymentTermDays] = useState("30");
@@ -243,7 +244,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   }, []);
 
   const destination = destinationE164(countryCode, whatsAppLocal);
-  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId, passkeyVerified });
+  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId, passkeyVerified, skipElectronicId: skipMembership });
   const wait = Math.max(0, Math.ceil((resendAt - now) / 1000));
   const orderedTypes = customerTypeOrder
     .map((label) => classifications.find((row) => row.name === label))
@@ -456,7 +457,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       return;
     }
     if (!saveEnabled) return;
-    if (!customerId && !verificationId && !passkeyVerified) return;
+    if (!customerId && !verificationId && !passkeyVerified && !skipMembership) return;
     setSaveUi("saving");
     setMessage("");
     try {
@@ -478,6 +479,9 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         }
         clearNewCustomerDraft();
         setPendingEnrollment("");
+      }
+      if (!customerId && skipMembership) {
+        await fetch(`/api/customers/${saved.customerId}/membership/exception`, { method: "POST", credentials: "same-origin" });
       }
       const selectedPriceCode = priceTypes.find((price) => price.priceTypeId === sent.priceTypeId)?.priceCode ?? null;
       if (customerId && !customerSaveConfirmed(sent, saved, selectedPriceCode)) {
@@ -659,7 +663,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
+      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
       {!readOnly && (permissions.includes("Customers.Manage") || permissions.includes("System.Administer")) ? (
         <details className="customer-advanced">
           <summary>خيارات متقدمة</summary>
