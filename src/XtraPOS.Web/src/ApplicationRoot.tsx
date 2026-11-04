@@ -1,7 +1,9 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
+import { traceUi } from "./diagnostics/trace";
 import App from "./App";
 import { MembershipDisplayPage } from "./components/MembershipDisplayPage";
 import { MembershipEnrollPage } from "./components/MembershipEnrollPage";
+import { MyLogPage } from "./components/MyLogPage";
 import { MembershipReadyPage } from "./components/MembershipReadyPage";
 import { MembershipPhonePage } from "./components/MembershipPhonePage";
 import { PasskeyPhonePage } from "./components/PasskeyPhonePage";
@@ -18,6 +20,21 @@ export function ApplicationRoot({
   development: boolean;
   pathname: string;
 }) {
+  useEffect(() => {
+    traceUi("page", "open", pathname);
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target.closest("button, a") : null;
+      if (!target) return;
+      traceUi("click", target.tagName.toLowerCase(), (target.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80));
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, [pathname]);
+
+  if (pathname === "/myLog") {
+    return <MyLogPage />;
+  }
+
   if (pathname.startsWith("/membership/enroll/")) {
     return <MembershipEnrollPage />;
   }

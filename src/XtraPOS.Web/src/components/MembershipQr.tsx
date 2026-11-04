@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
+import { traceUi } from "../diagnostics/trace";
 import type { DeviceSession } from "../types/setup";
 
 interface Created {
@@ -21,6 +23,8 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
   const [enabled, setEnabled] = useState(false);
   const [restrict, setRestrict] = useState(false);
   const [created, setCreated] = useState<Created | null>(null);
+  const [image, setImage] = useState("");
+  const [error, setError] = useState("");
   const [status, setStatus] = useState("Pending");
   const [seconds, setSeconds] = useState(60);
   const [displayReady, setDisplayReady] = useState(false);
@@ -54,18 +58,28 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
     let stop = false;
     let requestId = "";
     setCreated(null);
+    setImage("");
+    setError("");
     setStatus("Pending");
     void fetch("/api/pos/membership-verifications", {
       method: "POST",
       headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
       body: JSON.stringify({ customerId, saleContextId }),
     }).then(async (response) => {
-      if (!response.ok || stop) return;
-      const body = await response.json() as Created;
+      const body = await response.json().catch(() => ({})) as Created & { message?: string };
+      if (!response.ok || stop) {
+        const message = body.message || "تعذر إنشاء رمز العضوية.";
+        setError(message);
+        traceUi("pos", "membership-qr", message);
+        return;
+      }
       requestId = body.verificationRequestId;
+      const url = `${window.location.origin}/membership/verify/${body.token}`;
+      setImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
       setCreated(body);
       setStatus("Pending");
-    }).catch(() => setStatus("Offline"));
+      traceUi("pos", "membership-qr", "created");
+    }).catch(() => { setStatus("Offline"); setError("تعذر الاتصال بخادم العضوية."); });
     return () => {
       stop = true;
       if (requestId) {
@@ -103,11 +117,13 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
 
   if (!active) return null;
   if (!enabled) return <p className="pos-meta">التحقق من العضوية غير مفعّل على هذا الخادم.</p>;
-  if (!created) return <p className="pos-meta">جاري إنشاء رمز العضوية…</p>;
+  if (error) return <p className="status-error">{error}</p>;
+  if (!created || !image) return <p className="pos-meta">جاري إنشاء رمز العضوية…</p>;
   const verified = status === "Verified";
   return (
     <div className="membership-qr" dir="rtl" aria-label="التحقق من العضوية">
       <strong>{verified ? "تم التحقق من العضوية" : "امسح رمز العضوية"}</strong>
+      {status === "Pending" ? <img src={image} alt="رمز العضوية" width={220} height={220} /> : null}
       {status === "Pending" ? <p>{seconds} ث</p> : null}
       {status === "Pending" && !displayReady ? <p dir="ltr">{url}</p> : null}
       {status === "Pending" && displayReady ? <p>الرمز ظاهر على شاشة الزبون.</p> : null}

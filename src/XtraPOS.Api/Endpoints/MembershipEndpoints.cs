@@ -1,6 +1,9 @@
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using XtraPOS.Api.Customers;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Membership;
 using XtraPOS.Api.Security;
 
@@ -124,16 +127,28 @@ public static class MembershipEndpoints
     {
         var current = await auth.GetCurrentAsync(http, cancellationToken);
         if (current is null) return Results.Unauthorized();
-        var businessId = await auth.GetDeviceBusinessIdAsync(http, cancellationToken);
-        if (businessId is null) return Results.Json(new { code = "MEMBERSHIP_SERVER_UNAVAILABLE" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
+        var businessId = device?.BusinessId ?? await auth.GetDeviceBusinessIdAsync(http, cancellationToken);
+        if (businessId is null || businessId == Guid.Empty)
+        {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "no business id for the signed-in device");
+            return Results.Json(new { code = "MEMBERSHIP_SERVER_UNAVAILABLE", message = "تعذر تحديد نشاط هذا الجهاز." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
         try
         {
             var created = await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, request?.CustomerId is Guid id && id != Guid.Empty ? id : null, cancellationToken);
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "created");
             return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc });
         }
         catch (MembershipException exception)
         {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", exception.Code);
             return Results.Json(new { code = exception.Code, message = Arabic(exception.Code) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        catch (Exception exception)
+        {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", exception.GetType().Name + " " + exception.Message);
+            return Results.Json(new { message = "تعذر توليد رمز العضوية. التفاصيل في سجل التشخيص." }, statusCode: StatusCodes.Status500InternalServerError);
         }
     }
 
@@ -285,11 +300,18 @@ public static class MembershipEndpoints
         try
         {
             var created = await membership.CreateAsync(device.BusinessId, device.BranchId, device.StationId, device.UserId, request.CustomerId, request.SaleContextId, cancellationToken);
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", "created");
             return Results.Ok(new { verificationRequestId = created.VerificationRequestId, token = created.Token, expiresAtUtc = created.ExpiresAtUtc, pollingIntervalMs = created.PollingIntervalMs });
         }
         catch (MembershipException exception)
         {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", exception.Code);
             return Results.Json(new { code = exception.Code, message = Arabic(exception.Code) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        catch (Exception exception)
+        {
+            DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", exception.GetType().Name + " " + exception.Message);
+            return Results.Json(new { message = "تعذر إنشاء رمز العضوية. التفاصيل في سجل التشخيص." }, statusCode: StatusCodes.Status500InternalServerError);
         }
     }
 

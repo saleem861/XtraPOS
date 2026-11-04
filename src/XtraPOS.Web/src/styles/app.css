@@ -5819,3 +5819,6 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   .setup-welcome h1 { font-size: 1.35rem; }
   .setup-choice-card { min-height: 96px; padding: 10px; }
 }
+.membership-qr { display: flex; align-items: center; gap: 16px; margin: 8px 0; padding: 12px; border: 1px solid #dce7ec; border-radius: 12px; background: #fff; }
+.membership-qr img { width: 220px; height: 220px; background: #fff; }
+.my-log, main pre { white-space: pre-wrap; }

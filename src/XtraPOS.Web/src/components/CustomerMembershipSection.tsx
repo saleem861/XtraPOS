@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
+import { traceUi } from "../diagnostics/trace";
 
 interface Summary {
   configured?: boolean;
@@ -37,9 +38,12 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
     });
     const body = await response.json().catch(() => ({})) as { token?: string; message?: string };
     if (!response.ok || !body.token) {
-      setQrError(body.message || "تعذر توليد رمز العضوية.");
+      const message = body.message || "تعذر توليد رمز العضوية.";
+      setQrError(message);
+      traceUi("customer", "enrollment-qr", message);
       return;
     }
+    traceUi("customer", "enrollment-qr", "created");
     const url = `${window.location.origin}/membership/enroll/${body.token}`;
     setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
   }

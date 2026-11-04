@@ -1104,37 +1104,37 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <div><button type="button" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
         <div><button type="button" onClick={openCustomerSearch}><span>اسم الزبون</span><strong title={saleCustomer?.name ?? "زبون عادي"}>{saleCustomer?.name ?? (cart.customerId ? "—" : "زبون عادي")}</strong></button></div>
         <div><span>نوع الزبون</span><strong>{regularPricing ? "عادي" : saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
-        {cart ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict, recognizedCustomerId) => {
-          if (phase === "Config") {
-            setMembershipRestrict(restrict);
-            return;
-          }
-          if (phase === "Verified") {
-            if (!membershipHadCustomer.current && recognizedCustomerId) {
-              void customers.get(recognizedCustomerId).then((customer) => { if (customer) chooseCustomer(customer); });
-            }
-            setMembershipVerifiedFor(recognizedCustomerId || saleCustomer?.customerId || null);
-            setMembershipMessage("تم التحقق من العضوية");
-            if (membershipHadCustomer.current) return;
-            regularPricingRef.current = false;
-            setRegularPricing(false);
-            return;
-          }
-          if (phase !== "Expired" && phase !== "Rejected" && phase !== "Cancelled") return;
-          setMembershipVerifiedFor(null);
-          if (!membershipHadCustomer.current) {
-            setMembershipMessage("");
-            return;
-          }
-          regularPricingRef.current = true;
-          setRegularPricing(true);
-          void changeCustomer(null);
-        }} /> : null}
         <div><span><Tag className="pos-pro-icon" aria-hidden="true" />التسعيرة</span><strong dir="ltr">{regularPricing ? "Price0" : saleCustomer?.priceCode || (cart.customerId ? (priceTier || "—") : "Price0")}</strong></div>
         <div><span><Store className="pos-pro-icon" aria-hidden="true" />النقطة</span><strong title={session.stationName}>{session.stationName || "—"}</strong></div>
         <div><span><UserRound className="pos-pro-icon" aria-hidden="true" />اسم الموظف</span><strong title={user.displayName}>{user.displayName}</strong></div>
         <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{regularPricing || !saleCustomer ? "0" : saleCustomer.variableValueDiscountPercent}</strong></div>
       </div>
+      {cart && membershipOpen ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onPhase={(phase, restrict, recognizedCustomerId) => {
+        if (phase === "Config") {
+          setMembershipRestrict(restrict);
+          return;
+        }
+        if (phase === "Verified") {
+          if (!membershipHadCustomer.current && recognizedCustomerId) {
+            void customers.get(recognizedCustomerId).then((customer) => { if (customer) chooseCustomer(customer); });
+          }
+          setMembershipVerifiedFor(recognizedCustomerId || saleCustomer?.customerId || null);
+          setMembershipMessage("تم التحقق من العضوية");
+          if (membershipHadCustomer.current) return;
+          regularPricingRef.current = false;
+          setRegularPricing(false);
+          return;
+        }
+        if (phase !== "Expired" && phase !== "Rejected" && phase !== "Cancelled") return;
+        setMembershipVerifiedFor(null);
+        if (!membershipHadCustomer.current) {
+          setMembershipMessage("");
+          return;
+        }
+        regularPricingRef.current = true;
+        setRegularPricing(true);
+        void changeCustomer(null);
+      }} /> : null}
       {membershipMessage ? <p className="status-ok passkey-result" role="status">{membershipMessage}</p> : null}
       <div className="pos-summary">
         <div>

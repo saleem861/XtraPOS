@@ -11,6 +11,7 @@ using XtraPOS.Api.Customers;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Data.Central;
 using XtraPOS.Api.Data.Migrations;
+using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Devices;
 using XtraPOS.Api.Endpoints;
 using XtraPOS.Api.Import;
@@ -852,6 +853,36 @@ app.MapPost("/api/local-update", (HttpContext http) =>
     });
     return Results.Ok(new { message = "بدأ التحديث. حدّث الصفحة بعد ثوانٍ." });
 });
+if (app.Environment.IsStaging())
+{
+    app.Use(async (context, next) =>
+    {
+        if (!context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/api/diagnostics"))
+        {
+            await next();
+            return;
+        }
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await next();
+            DiagnosticLog.Write(app.Environment, "api", $"{context.Request.Method} {context.Request.Path} {context.Response.StatusCode} {watch.ElapsedMilliseconds}ms");
+        }
+        catch (Exception exception)
+        {
+            DiagnosticLog.Write(app.Environment, "api-error", $"{context.Request.Method} {context.Request.Path} {exception.GetType().Name} {exception.Message}");
+            throw;
+        }
+    });
+    app.MapGet("/api/diagnostics/log", (IHostEnvironment environment) => Results.Text(DiagnosticLog.Read(environment), "text/plain; charset=utf-8"));
+    app.MapPost("/api/diagnostics/events", async (HttpContext http, IHostEnvironment environment) =>
+    {
+        var entry = await http.Request.ReadFromJsonAsync<DiagnosticEvent>(http.RequestAborted);
+        DiagnosticLog.Write(environment, "ui", $"{entry?.Area} {entry?.Action} {entry?.Detail}");
+        return Results.NoContent();
+    });
+}
+
 app.MapSetupEndpoints();
 app.MapDeviceEndpoints();
 app.MapAuthEndpoints();

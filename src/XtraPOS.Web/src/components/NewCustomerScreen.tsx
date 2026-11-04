@@ -141,9 +141,13 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
 
   useEffect(() => {
     if (customerId) return;
-    const draft = readNewCustomerDraft();
     const pending = sessionStorage.getItem(pendingEnrollmentKey) ?? "";
-    if (pending) setPendingEnrollment(pending);
+    if (!pending) {
+      clearNewCustomerDraft();
+      return;
+    }
+    setPendingEnrollment(pending);
+    const draft = readNewCustomerDraft();
     if (!draft) return;
     setCustomerNumber(draft.customerNumber);
     setName(draft.name);
