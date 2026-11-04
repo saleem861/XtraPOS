@@ -1,7 +1,9 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Customers;
+using XtraPOS.Api.Diagnostics;
 
 namespace XtraPOS.Api.Membership;
 
@@ -13,7 +15,8 @@ public sealed class MembershipAuthService(
     PhoneVerificationService phones,
     IMembershipIdTokenValidator tokens,
     MembershipCodeExchange exchange,
-    IOptions<MembershipOptions> options)
+    IOptions<MembershipOptions> options,
+    IHostEnvironment environment)
 {
     public async Task<MembershipAuthStart> BeginAsync(string provider, string redirectUri, CancellationToken cancellationToken, string? enrollmentToken = null)
     {
@@ -124,7 +127,12 @@ public sealed class MembershipAuthService(
             enroll.Parameters.AddWithValue("@email", (object?)claims.Email ?? DBNull.Value);
             enroll.Parameters.AddWithValue("@display", (object?)claims.Email ?? claims.Subject);
             enroll.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(state[..dot]);
-            await enroll.ExecuteNonQueryAsync(cancellationToken);
+            var linked = await enroll.ExecuteNonQueryAsync(cancellationToken);
+            DiagnosticLog.Write(environment, "enrollment-link", linked == 1 ? "linked" : "not-found");
+        }
+        else
+        {
+            DiagnosticLog.Write(environment, "enrollment-link", "missing-token");
         }
 
         if (linkedCustomer is Guid customer && linkedBusiness is Guid business && identityId is Guid identity)

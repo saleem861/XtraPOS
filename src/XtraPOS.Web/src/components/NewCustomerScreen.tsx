@@ -128,6 +128,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
   const [savedCustomerId, setSavedCustomerId] = useState(customerId);
   const [pendingEnrollment, setPendingEnrollment] = useState("");
+  const [membershipDisplay, setMembershipDisplay] = useState("");
   const [skipMembership, setSkipMembership] = useState(false);
   const [creditEnabled, setCreditEnabled] = useState(false);
   const [creditLimit, setCreditLimit] = useState("0");
@@ -244,7 +245,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   }, []);
 
   const destination = destinationE164(countryCode, whatsAppLocal);
-  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId, passkeyVerified, skipElectronicId: skipMembership });
+  const saveEnabled = !readOnly && canSaveCustomer({ verifiedDestination, originalDestination, countryCode, whatsAppLocal, name, classificationId, priceTypeId, passkeyVerified, skipElectronicId: skipMembership, membershipVerified: Boolean(pendingEnrollment) });
   const wait = Math.max(0, Math.ceil((resendAt - now) / 1000));
   const orderedTypes = customerTypeOrder
     .map((label) => classifications.find((row) => row.name === label))
@@ -456,7 +457,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       return;
     }
     if (!saveEnabled) return;
-    if (!customerId && !verificationId && !passkeyVerified && !skipMembership) return;
+    if (!customerId && !verificationId && !passkeyVerified && !skipMembership && !pendingEnrollment) return;
     setSaveUi("saving");
     setMessage("");
     try {
@@ -662,7 +663,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? <CustomerMembershipSection session={session} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); }} /> : null}
+      {membershipDisplay ? <label>مفتاح التعريف<input readOnly value={membershipDisplay} /></label> : null}
+      {!readOnly ? <CustomerMembershipSection session={session} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
         <button id="send-code" className="send-button" type="button" onClick={() => void send()} onKeyDown={(event) => onEnter(event, "send-code")}><Send aria-hidden="true" />إرسال رمز التحقق</button>

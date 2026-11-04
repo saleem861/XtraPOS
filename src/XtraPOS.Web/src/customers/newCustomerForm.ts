@@ -132,12 +132,13 @@ export function canSaveCustomer(input: {
   priceTypeId: string;
   passkeyVerified?: boolean;
   skipElectronicId?: boolean;
+  membershipVerified?: boolean;
 }): boolean {
   const destination = destinationE164(input.countryCode, input.whatsAppLocal);
   const unchanged = input.originalDestination != null && input.originalDestination === destination;
   const verified = Boolean(input.verifiedDestination) && input.verifiedDestination === destination;
   return Boolean(
-    (unchanged || verified || input.passkeyVerified || input.skipElectronicId)
+    (unchanged || verified || input.passkeyVerified || input.skipElectronicId || input.membershipVerified)
     && input.name?.trim()
     && input.classificationId
     && input.priceTypeId,

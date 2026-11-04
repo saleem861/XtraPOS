@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
@@ -20,7 +20,7 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
   canApproveException?: boolean;
   pendingEnrollment?: boolean;
   onBeforeEnroll?: () => void;
-  onPending?: (attemptId: string) => void;
+  onPending?: (attemptId: string, display: string) => void;
   onException?: (enabled: boolean) => void;
 }) {
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -31,6 +31,8 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
   const [qrImage, setQrImage] = useState("");
   const [qrToken, setQrToken] = useState("");
   const [qrError, setQrError] = useState("");
+  const onPendingRef = useRef(onPending);
+  onPendingRef.current = onPending;
 
   async function startQr() {
     onBeforeEnroll?.();
@@ -58,24 +60,25 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
 
   useEffect(() => {
     if (!qrToken) return undefined;
-    let stop = false;
-    const timer = window.setInterval(() => {
+    let alive = true;
+    const look = () => {
       void fetch(`/api/membership/enrollment-qr/${encodeURIComponent(qrToken)}`, { credentials: "same-origin", headers: deviceHeaders(session) }).then(async (response) => {
-        if (!response.ok || stop) return;
-        const body = await response.json() as { status?: string; display?: string; attemptId?: string };
-        if (body.status === "Ready" && body.attemptId) {
-          stop = true;
-          sessionStorage.setItem(pendingEnrollmentKey, body.attemptId);
-          onPending?.(body.attemptId);
-          setNotice(body.display ? `تم التعرف على الحساب ${body.display}. اضغط حفظ لربط العضوية.` : "تم التعرف على الحساب. اضغط حفظ لربط العضوية.");
-          setQrImage("");
-          setQrToken("");
-          traceUi("customer", "enrollment-qr", "ready");
-        }
+        if (!alive) return;
+        const body = await response.json().catch(() => ({})) as { status?: string; display?: string; attemptId?: string };
+        traceUi("customer", "enrollment-poll", response.ok ? (body.status ?? "unknown") : String(response.status));
+        if (!response.ok || body.status !== "Ready" || !body.attemptId) return;
+        alive = false;
+        sessionStorage.setItem(pendingEnrollmentKey, body.attemptId);
+        onPendingRef.current?.(body.attemptId, body.display ?? "");
+        setNotice("تم التحقق بنجاح");
+        setQrImage("");
+        setQrToken("");
       }).catch(() => undefined);
-    }, 1000);
-    return () => { stop = true; window.clearInterval(timer); };
-  }, [qrToken, session, onPending]);
+    };
+    look();
+    const timer = window.setInterval(look, 1000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [qrToken, session]);
 
   useEffect(() => {
     if (!customerId) return;
@@ -134,7 +137,7 @@ export function CustomerMembershipSection({ session, customerId, canUnlink, canE
       <section className="membership-compact" aria-label="العضوية الذكية">
         <strong>العضوية الذكية</strong>
         <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
-        {pendingEnrollment ? <p>تم التحقق. اضغط حفظ لإنشاء الزبون وربط العضوية.</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
+        {pendingEnrollment ? <p>تم التحقق بنجاح</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
         {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
         {qrError ? <p role="status">{qrError}</p> : null}
         {notice ? <p role="status">{notice}</p> : null}
