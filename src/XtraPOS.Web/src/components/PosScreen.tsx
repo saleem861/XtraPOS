@@ -22,7 +22,6 @@ import {
   RefreshCw,
   Save,
   Search,
-  ShieldCheck,
   ShoppingBag,
   ShoppingCart,
   Store,
