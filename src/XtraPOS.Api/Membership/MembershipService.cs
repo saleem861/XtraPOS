@@ -166,7 +166,8 @@ public sealed class MembershipService(
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var request = await ReadRequestAsync(connection, transaction, token, cancellationToken) ?? throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
         var session = await ReadSessionAsync(connection, transaction, sessionToken, cancellationToken);
-        var active = session is not null && await CustomerActiveAsync(connection, transaction, request.CustomerId, cancellationToken);
+        var boundCustomer = request.CustomerId ?? session?.CustomerId;
+        var active = session is not null && boundCustomer is Guid activeCustomer && await CustomerActiveAsync(connection, transaction, activeCustomer, cancellationToken);
         var facts = new MembershipVerificationFacts(
             options.Value.Enabled,
             session is not null,
@@ -174,7 +175,7 @@ public sealed class MembershipService(
             session is not null && (session.IdleExpiresAt <= DateTime.UtcNow || session.AbsoluteExpiresAt <= DateTime.UtcNow),
             session?.CustomerId,
             session?.BusinessId,
-            request.CustomerId,
+            boundCustomer ?? Guid.Empty,
             request.BusinessId,
             request.BranchId,
             request.CounterId,
@@ -190,7 +191,7 @@ public sealed class MembershipService(
         var code = MembershipRules.RejectionCode(facts);
         if (code is not null)
         {
-            await AuditAsync(connection, transaction, request.BusinessId, "VerificationRejected", request.CustomerId, request.Id, cancellationToken);
+            await AuditAsync(connection, transaction, request.BusinessId, "VerificationRejected", boundCustomer, request.Id, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             throw new MembershipException(code);
         }
@@ -198,10 +199,12 @@ public sealed class MembershipService(
         await using var update = new SqlCommand(
             """
             UPDATE dbo.MembershipVerificationRequests
-            SET Status = N'Verified', VerifiedAt = SYSUTCDATETIME(), ConsumedAt = SYSUTCDATETIME(), VerifiedByMembershipSessionID = @session
+            SET Status = N'Verified', VerifiedAt = SYSUTCDATETIME(), ConsumedAt = SYSUTCDATETIME(), VerifiedByMembershipSessionID = @session,
+                CustomerID = COALESCE(CustomerID, @customer)
             WHERE VerificationRequestID = @id AND Status = N'Pending' AND ExpiresAt > SYSUTCDATETIME();
             """, connection, transaction);
         update.Parameters.AddWithValue("@session", session!.SessionId);
+        update.Parameters.AddWithValue("@customer", (object?)boundCustomer ?? DBNull.Value);
         update.Parameters.AddWithValue("@id", request.Id);
         if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
         {
@@ -209,7 +212,7 @@ public sealed class MembershipService(
             throw new MembershipException("MEMBERSHIP_QR_ALREADY_USED");
         }
 
-        await AuditAsync(connection, transaction, request.BusinessId, "VerificationSucceeded", request.CustomerId, request.Id, cancellationToken);
+        await AuditAsync(connection, transaction, request.BusinessId, "VerificationSucceeded", boundCustomer, request.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -417,7 +420,7 @@ public sealed class MembershipService(
         command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        return new RequestRow(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetGuid(3), reader.GetGuid(4), reader.GetGuid(5), reader.GetString(6), DateTime.SpecifyKind(reader.GetDateTime(7), DateTimeKind.Utc));
+        return new RequestRow(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetGuid(3), reader.IsDBNull(4) ? null : reader.GetGuid(4), reader.GetGuid(5), reader.GetString(6), DateTime.SpecifyKind(reader.GetDateTime(7), DateTimeKind.Utc));
     }
 
     private static async Task<SessionRow?> ReadSessionAsync(SqlConnection connection, SqlTransaction transaction, string? sessionToken, CancellationToken cancellationToken)
@@ -456,6 +459,6 @@ public sealed class MembershipService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private sealed record RequestRow(Guid Id, Guid BusinessId, Guid BranchId, Guid CounterId, Guid CustomerId, Guid SaleContextId, string Status, DateTime ExpiresAt);
+    private sealed record RequestRow(Guid Id, Guid BusinessId, Guid BranchId, Guid CounterId, Guid? CustomerId, Guid SaleContextId, string Status, DateTime ExpiresAt);
     private sealed record SessionRow(Guid SessionId, Guid BusinessId, Guid CustomerId, bool Revoked, DateTime IdleExpiresAt, DateTime AbsoluteExpiresAt);
 }

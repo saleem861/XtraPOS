@@ -84,7 +84,8 @@ public static class MembershipEndpoints
         try
         {
             var enrollment = http.Request.Query["enrollment"].ToString();
-            var start = await auth.BeginAsync(provider, RedirectUri(http, provider), cancellationToken, string.IsNullOrWhiteSpace(enrollment) ? null : enrollment);
+            var returnPath = SafeMembershipReturn(http.Request.Query["return"].ToString());
+            var start = await auth.BeginAsync(provider, RedirectUri(http, provider), cancellationToken, string.IsNullOrWhiteSpace(enrollment) ? null : enrollment, returnPath);
             return Results.Redirect(start.AuthorizeUrl);
         }
         catch (MembershipException exception)
@@ -108,10 +109,15 @@ public static class MembershipEndpoints
         try
         {
             var result = await auth.FinishAsync(provider, code, idToken, state, RedirectUri(http, provider), cancellationToken);
+            var back = ReturnFromState(state);
             if (!string.IsNullOrWhiteSpace(result.SessionSecret))
             {
                 http.Response.Cookies.Append(MembershipService.SessionCookie, result.SessionSecret, SessionCookie(http));
-                return Results.Redirect("/membership/ready");
+                return Results.Redirect(back ?? "/membership/ready");
+            }
+            if (back is not null && result.Code == "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED")
+            {
+                return Results.Redirect(back + "?unlinked=1");
             }
             if (result.Code == "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" && Guid.TryParse(result.ReturnPath, out var attemptId))
             {
@@ -276,6 +282,24 @@ public static class MembershipEndpoints
         catch (MembershipException)
         {
         }
+    }
+
+    private static string? SafeMembershipReturn(string? value)
+    {
+        const string prefix = "/membership/verify/";
+        if (string.IsNullOrWhiteSpace(value) || !value.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        if (value.Contains('?') || value.Contains('#') || value.Contains('\\') || value.Contains("//")) return null;
+        var token = value[prefix.Length..];
+        if (token.Length is < 20 or > 128 || token.Any(item => !char.IsLetterOrDigit(item) && item != '-' && item != '_')) return null;
+        return value;
+    }
+
+    private static string? ReturnFromState(string? state)
+    {
+        if (string.IsNullOrWhiteSpace(state)) return null;
+        var bar = state.IndexOf('|');
+        if (bar < 0 || bar == state.Length - 1) return null;
+        return SafeMembershipReturn(state[(bar + 1)..]);
     }
 
     private static string RedirectUri(HttpContext http, string provider)

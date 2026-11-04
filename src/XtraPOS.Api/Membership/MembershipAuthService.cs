@@ -18,7 +18,7 @@ public sealed class MembershipAuthService(
     IOptions<MembershipOptions> options,
     IHostEnvironment environment)
 {
-    public async Task<MembershipAuthStart> BeginAsync(string provider, string redirectUri, CancellationToken cancellationToken, string? enrollmentToken = null)
+    public async Task<MembershipAuthStart> BeginAsync(string provider, string redirectUri, CancellationToken cancellationToken, string? enrollmentToken = null, string? returnPath = null)
     {
         var settings = options.Value;
         var clientId = provider == "Apple" ? settings.AppleClientId : settings.GoogleClientId;
@@ -28,6 +28,7 @@ public sealed class MembershipAuthService(
         var state = string.IsNullOrWhiteSpace(enrollmentToken)
             ? MembershipTokens.CreateOpaqueToken()
             : enrollmentToken + "." + MembershipTokens.CreateOpaqueToken();
+        if (!string.IsNullOrWhiteSpace(returnPath)) state += "|" + returnPath;
         var nonce = MembershipTokens.CreateOpaqueToken();
         await using var connection = await membership.OpenCentralAsync(cancellationToken);
         await using var command = new SqlCommand(
