@@ -662,7 +662,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
       </div>
-      {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
+      {!readOnly ? <CustomerMembershipSection session={session} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
         <button id="send-code" className="send-button" type="button" onClick={() => void send()} onKeyDown={(event) => onEnter(event, "send-code")}><Send aria-hidden="true" />إرسال رمز التحقق</button>

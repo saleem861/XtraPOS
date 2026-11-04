@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
+import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
+import type { DeviceSession } from "../types/setup";
 
 interface Summary {
   configured?: boolean;
@@ -9,7 +11,8 @@ interface Summary {
   lastVerifiedAtUtc?: string | null;
 }
 
-export function CustomerMembershipSection({ customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onException }: {
+export function CustomerMembershipSection({ session, customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onException }: {
+  session: DeviceSession;
   customerId: string;
   canUnlink: boolean;
   canExcept?: boolean;
@@ -33,7 +36,7 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
     const response = await fetch("/api/membership/enrollment-qr", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
       body: JSON.stringify({ customerId: customerId || null }),
     });
     const body = await response.json().catch(() => ({})) as { token?: string; message?: string };
@@ -51,7 +54,7 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
   useEffect(() => {
     if (!customerId) return;
     let stop = false;
-    void fetch(`/api/customers/${customerId}/membership`, { credentials: "same-origin" }).then(async (response) => {
+    void fetch(`/api/customers/${customerId}/membership`, { credentials: "same-origin", headers: deviceHeaders(session) }).then(async (response) => {
       if (stop) return;
       if (!response.ok) {
         setNotice("تعذر قراءة حالة العضوية.");
@@ -64,23 +67,23 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
   }, [customerId]);
 
   async function revoke() {
-    const response = await fetch(`/api/customers/${customerId}/membership/revoke-all`, { method: "POST", credentials: "same-origin" });
+    const response = await fetch(`/api/customers/${customerId}/membership/revoke-all`, { method: "POST", credentials: "same-origin", headers: deviceHeaders(session) });
     setNotice(response.ok ? "تم إلغاء الجلسات النشطة." : "تعذر إلغاء الجلسات.");
     if (response.ok) {
-      const next = await fetch(`/api/customers/${customerId}/membership`, { credentials: "same-origin" });
+      const next = await fetch(`/api/customers/${customerId}/membership`, { credentials: "same-origin", headers: deviceHeaders(session) });
       if (next.ok) setSummary(await next.json() as Summary);
     }
   }
 
   async function unlink() {
-    const response = await fetch(`/api/customers/${customerId}/membership/unlink`, { method: "POST", credentials: "same-origin" });
+    const response = await fetch(`/api/customers/${customerId}/membership/unlink`, { method: "POST", credentials: "same-origin", headers: deviceHeaders(session) });
     setNotice(response.ok ? "تم إلغاء ربط العضوية." : "تعذر إلغاء الربط.");
     if (response.ok) setSummary({ configured: summary?.configured, activeSessions: 0, providers: [] });
   }
 
   useEffect(() => {
     if (!customerId) return;
-    void fetch(`/api/customers/${customerId}/membership/exception`, { credentials: "same-origin" }).then(async (response) => {
+    void fetch(`/api/customers/${customerId}/membership/exception`, { credentials: "same-origin", headers: deviceHeaders(session) }).then(async (response) => {
       if (!response.ok) return;
       const body = await response.json() as { pending?: boolean };
       setExceptionPending(Boolean(body.pending));
@@ -122,7 +125,7 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
         </div>
       ) : null}
       {exceptionPending ? <p>مسجّل باستثناء بانتظار موافقة المدير العام.</p> : null}
-      {exceptionPending && canApproveException ? <button type="button" onClick={() => void fetch(`/api/customers/${customerId}/membership/exception/approve`, { method: "POST", credentials: "same-origin" }).then((response) => { if (response.ok) setExceptionPending(false); })}>موافقة المدير العام</button> : null}
+      {exceptionPending && canApproveException ? <button type="button" onClick={() => void fetch(`/api/customers/${customerId}/membership/exception/approve`, { method: "POST", credentials: "same-origin", headers: deviceHeaders(session) }).then((response) => { if (response.ok) setExceptionPending(false); })}>موافقة المدير العام</button> : null}
       {notice ? <p role="status">{notice}</p> : null}
     </section>
   );
