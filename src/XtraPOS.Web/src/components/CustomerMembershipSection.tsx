@@ -1,16 +1,11 @@
 import { useEffect, useState } from "react";
+import QRCode from "qrcode";
 
 interface Summary {
   configured?: boolean;
   activeSessions?: number;
   providers?: string[];
   lastVerifiedAtUtc?: string | null;
-}
-
-interface MembershipConfig {
-  enabled?: boolean;
-  googleLoginEnabled?: boolean;
-  appleLoginEnabled?: boolean;
 }
 
 export function CustomerMembershipSection({ customerId, canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onException }: {
@@ -23,19 +18,31 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
   onException?: (enabled: boolean) => void;
 }) {
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [config, setConfig] = useState<MembershipConfig | null>(null);
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [exceptionPending, setExceptionPending] = useState(false);
   const [withoutMembership, setWithoutMembership] = useState(false);
+  const [qrImage, setQrImage] = useState("");
+  const [qrError, setQrError] = useState("");
 
-  useEffect(() => {
-    let stop = false;
-    void fetch("/api/membership/config").then(async (response) => {
-      if (!stop && response.ok) setConfig(await response.json() as MembershipConfig);
-    }).catch(() => undefined);
-    return () => { stop = true; };
-  }, []);
+  async function startQr() {
+    onBeforeEnroll?.();
+    setQrError("");
+    setQrImage("");
+    const response = await fetch("/api/membership/enrollment-qr", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId: customerId || null }),
+    });
+    const body = await response.json().catch(() => ({})) as { token?: string; message?: string };
+    if (!response.ok || !body.token) {
+      setQrError(body.message || "تعذر توليد رمز العضوية.");
+      return;
+    }
+    const url = `${window.location.origin}/membership/enroll/${body.token}`;
+    setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
+  }
 
   useEffect(() => {
     if (!customerId) return;
@@ -77,51 +84,31 @@ export function CustomerMembershipSection({ customerId, canUnlink, canExcept = f
   }, [customerId]);
 
   if (!customerId) {
-    const google = Boolean(config?.googleLoginEnabled);
-    const apple = Boolean(config?.appleLoginEnabled);
     return (
       <section className="membership-compact" aria-label="العضوية الذكية">
         <strong>العضوية الذكية</strong>
         <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
         {pendingEnrollment ? <p>تم التحقق. اضغط حفظ لإنشاء الزبون وربط العضوية.</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
-        {!pendingEnrollment && google ? <a href="/api/membership/auth/google/start" onClick={() => onBeforeEnroll?.()}>تسجيل العضوية — Google</a> : null}
-        {!pendingEnrollment && apple ? <a href="/api/membership/auth/apple/start" onClick={() => onBeforeEnroll?.()}>تسجيل العضوية — Apple</a> : null}
+        {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
+        {qrImage ? <img src={qrImage} alt="رمز تسجيل العضوية" width={220} height={220} /> : null}
+        {qrError ? <p role="status">{qrError}</p> : null}
         {canExcept ? <label><input type="checkbox" checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /> تسجيل الزبون بدون تعريف إلكتروني</label> : null}
-      </section>
-    );
-  }
-
-  const enabled = Boolean(config?.enabled);
-  if (!enabled) {
-    if (!canUnlink) return null;
-    return (
-      <section className="membership-compact" aria-label="العضوية الذكية">
-        <strong>العضوية الذكية</strong>
-        <span>غير مفعّلة</span>
       </section>
     );
   }
 
   const providers = summary?.providers ?? [];
   const linked = providers.length > 0;
-  const google = Boolean(config?.googleLoginEnabled);
-  const apple = Boolean(config?.appleLoginEnabled);
-  const providerReady = google || apple;
 
   return (
     <section className={`membership-compact${linked ? " is-linked" : ""}`} aria-label="العضوية الذكية">
       <strong>العضوية الذكية</strong>
       <span>{linked ? "مرتبطة" : "غير مرتبطة"}</span>
       {linked ? providers.map((provider) => <em key={provider}>{provider}</em>) : null}
+      <button type="button" onClick={() => void startQr()}>{linked ? "تعديل العضوية الذكية" : "تسجيل العضوية"}</button>
+      {qrImage ? <img src={qrImage} alt="رمز تسجيل العضوية" width={220} height={220} /> : null}
+      {qrError ? <p role="status">{qrError}</p> : null}
       {linked ? <button type="button" onClick={() => setOpen((value) => !value)}>إدارة العضوية</button> : null}
-      {!linked && providerReady ? <button type="button" onClick={() => setOpen((value) => !value)}>تسجيل العضوية</button> : null}
-      {!linked && !providerReady ? <p>تسجيل العضوية غير متاح حالياً</p> : null}
-      {open && !linked ? (
-        <div className="membership-compact-actions">
-          {google ? <a href="/api/membership/auth/google/start">Google</a> : null}
-          {apple ? <a href="/api/membership/auth/apple/start">Apple</a> : null}
-        </div>
-      ) : null}
       {open && linked ? (
         <div className="membership-compact-actions">
           <p>الجلسات النشطة: {summary?.activeSessions ?? 0}</p>

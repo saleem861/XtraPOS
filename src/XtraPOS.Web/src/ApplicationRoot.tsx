@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import App from "./App";
 import { MembershipDisplayPage } from "./components/MembershipDisplayPage";
+import { MembershipEnrollPage } from "./components/MembershipEnrollPage";
 import { MembershipReadyPage } from "./components/MembershipReadyPage";
 import { MembershipPhonePage } from "./components/MembershipPhonePage";
 import { PasskeyPhonePage } from "./components/PasskeyPhonePage";
@@ -17,6 +18,10 @@ export function ApplicationRoot({
   development: boolean;
   pathname: string;
 }) {
+  if (pathname.startsWith("/membership/enroll/")) {
+    return <MembershipEnrollPage />;
+  }
+
   if (pathname.startsWith("/membership/verify/")) {
     return <MembershipPhonePage pathname={pathname} />;
   }

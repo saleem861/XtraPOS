@@ -249,6 +249,28 @@ public sealed class MembershipService(
         return new MembershipSummary(options.Value.GoogleLoginEnabled || options.Value.AppleLoginEnabled, count, providers, lastVerified);
     }
 
+    public async Task<(string Token, DateTime ExpiresAtUtc)> CreateEnrollmentQrAsync(Guid businessId, Guid cashierUserId, Guid? customerId, CancellationToken cancellationToken)
+    {
+        if (!options.Value.Enabled) throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
+        var token = MembershipTokens.CreateOpaqueToken();
+        var expires = DateTime.UtcNow.AddSeconds(Math.Clamp(options.Value.QRExpirySeconds, 15, 300));
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            INSERT INTO dbo.MembershipEnrollmentRequests
+                (EnrollmentID, BusinessID, CustomerID, TokenHash, Status, ExpiresAt, CreatedAt, CashierUserID)
+            VALUES
+                (NEWID(), @business, @customer, @hash, N'Pending', @expires, SYSUTCDATETIME(), @cashier);
+            """, connection);
+        command.Parameters.AddWithValue("@business", businessId);
+        command.Parameters.AddWithValue("@customer", (object?)customerId ?? DBNull.Value);
+        command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
+        command.Parameters.AddWithValue("@expires", expires);
+        command.Parameters.AddWithValue("@cashier", cashierUserId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return (token, expires);
+    }
+
     public async Task UnlinkAsync(Guid customerId, CancellationToken cancellationToken)
     {
         var connectionString = await CentralConnectionStringAsync(cancellationToken) ?? throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");

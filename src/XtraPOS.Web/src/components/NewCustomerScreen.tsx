@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, CircleCheck, Pencil, QrCode, Save, Send, ShieldCheck, Tag } from "lucide-react";
+import { ArrowLeft, CircleCheck, Pencil, Save, Send, ShieldCheck, Tag } from "lucide-react";
 import { SetupClientError } from "../api/client";
 import { createCustomerClient, type CreditPolicy, type CustomerWriteBody, type SpecialPriceRow } from "../api/customers";
 import { createItemClient } from "../api/items";
@@ -8,7 +8,6 @@ import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
 import { ScreenHeader } from "./ScreenHeader";
 import { clearNewCustomerDraft, pendingEnrollmentKey, readNewCustomerDraft, writeNewCustomerDraft } from "../membership/newCustomerDraft";
 import { CustomerMembershipSection } from "./CustomerMembershipSection";
-import { PasskeyQrPanel, passkeyFailedMessage, passkeyVerifiedMessage } from "./PasskeyQrPanel";
 import { FullKeyboard } from "./FullKeyboard";
 import {
   alternatePalestinianPrefix,
@@ -122,11 +121,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [now, setNow] = useState(Date.now());
   const [message, setMessage] = useState("");
   const [saveUi, setSaveUi] = useState<"idle" | "saving" | "success">("idle");
-  const [passkeyOpen, setPasskeyOpen] = useState(false);
-  const [passkeyNotice, setPasskeyNotice] = useState<"" | "success" | "failure">("");
   const [passkeyVerified, setPasskeyVerified] = useState(false);
   const [passkeySessionId, setPasskeySessionId] = useState<string | null>(null);
-  const [reservedCustomerId, setReservedCustomerId] = useState<string | null>(null);
   const [specials, setSpecials] = useState<SpecialPriceRow[]>([]);
   const [specialsOpen, setSpecialsOpen] = useState(false);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
@@ -288,7 +284,6 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     setVerifiedDestination(null);
     setPasskeyVerified(false);
     setPasskeySessionId(null);
-    setPasskeyNotice("");
   }
 
   function changeType(id: string) {
@@ -664,47 +659,6 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         </fieldset>
       </div>
       {!readOnly ? <CustomerMembershipSection customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} /> : null}
-      {!readOnly && (permissions.includes("Customers.Manage") || permissions.includes("System.Administer")) ? (
-        <details className="customer-advanced">
-          <summary>خيارات متقدمة</summary>
-          <button id="passkey-qr" className="passkey-qr-button" type="button" onClick={() => {
-            if (!name.trim() || !destination) {
-              setMessage("أدخل اسم الزبون ورقم الهاتف قبل توليد Passkey.");
-              return;
-            }
-            setMessage("");
-            setPasskeyNotice("");
-            setPasskeyOpen(true);
-          }}><QrCode aria-hidden="true" />تشخيص Passkey</button>
-          {passkeyOpen ? (
-            <PasskeyQrPanel
-              session={session}
-              customerId={customerId || savedCustomerId || reservedCustomerId || ""}
-              customerSaved={Boolean(customerId || savedCustomerId)}
-              draft={{ name, phone: destination }}
-              purpose="enrollment"
-              canReplace={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")}
-              autoStart
-              onReserved={setReservedCustomerId}
-              onEnrolled={(id) => {
-                setPasskeySessionId(id);
-                setPasskeyVerified(true);
-                setPasskeyNotice("success");
-                setPasskeyOpen(false);
-              }}
-              onFailed={() => {
-                setPasskeyVerified(false);
-                setPasskeySessionId(null);
-                setPasskeyNotice("failure");
-                setPasskeyOpen(false);
-              }}
-              onClose={() => setPasskeyOpen(false)}
-            />
-          ) : null}
-          {passkeyNotice === "success" ? <p className="new-customer-success" role="status">{passkeyVerifiedMessage}</p> : null}
-          {passkeyNotice === "failure" ? <p className="status-error" role="alert">{passkeyFailedMessage}</p> : null}
-        </details>
-      ) : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
         <button id="send-code" className="send-button" type="button" onClick={() => void send()} onKeyDown={(event) => onEnter(event, "send-code")}><Send aria-hidden="true" />إرسال رمز التحقق</button>

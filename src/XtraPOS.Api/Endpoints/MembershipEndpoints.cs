@@ -24,6 +24,7 @@ public static class MembershipEndpoints
         app.MapGet("/api/membership/auth/apple/start", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => StartAsync(http, auth, "Apple", cancellationToken));
         app.MapPost("/api/membership/auth/apple/callback", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => CallbackAsync(http, auth, "Apple", cancellationToken));
         app.MapPost("/api/membership/enrollment/link", LinkAsync);
+        app.MapPost("/api/membership/enrollment-qr", CreateEnrollmentQrAsync);
         app.MapPost("/api/membership/enrollment/prove", ProveAsync);
         app.MapPost("/api/membership/enrollment/commit", CommitAsync);
 
@@ -116,6 +117,23 @@ public static class MembershipEndpoints
         catch (MembershipException exception)
         {
             return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static async Task<IResult> CreateEnrollmentQrAsync(HttpContext http, AuthService auth, MembershipService membership, EnrollmentQrRequest? request, CancellationToken cancellationToken)
+    {
+        var current = await auth.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        var businessId = await auth.GetDeviceBusinessIdAsync(http, cancellationToken);
+        if (businessId is null) return Results.Json(new { code = "MEMBERSHIP_SERVER_UNAVAILABLE" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        try
+        {
+            var created = await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, request?.CustomerId is Guid id && id != Guid.Empty ? id : null, cancellationToken);
+            return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc });
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code, message = Arabic(exception.Code) }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 
@@ -350,6 +368,11 @@ public static class MembershipEndpoints
     private sealed class MembershipSaleCancelRequest
     {
         public Guid SaleContextId { get; set; }
+    }
+
+    private sealed class EnrollmentQrRequest
+    {
+        public Guid? CustomerId { get; set; }
     }
 
     private sealed class MembershipProveRequest
