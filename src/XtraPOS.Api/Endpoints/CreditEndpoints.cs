@@ -1,3 +1,4 @@
+using System.Globalization;
 using XtraPOS.Api.Credit;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Security;
@@ -47,17 +48,35 @@ public static class CreditEndpoints
         }
 
         var context = actor.Context!;
-        var branchConnection = connections.TryCreateBranchConnectionString();
+        var configuredBranch = connections.TryCreateBranchConnectionString();
         var central = await centralStore.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
-        if (branchConnection is null || central is null)
+        if (configuredBranch is null || central is null)
         {
             return Results.Json(new { state = "Pending", message = "جهة الائتمان المركزية غير متاحة." }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        await using var branch = new Microsoft.Data.SqlClient.SqlConnection(branchConnection);
         await using var centralConnection = new Microsoft.Data.SqlClient.SqlConnection(central.BuildConnectionString(central.DatabaseName));
-        await branch.OpenAsync(cancellationToken);
         await centralConnection.OpenAsync(cancellationToken);
+        await using var opened = new Microsoft.Data.SqlClient.SqlConnection(configuredBranch);
+        await opened.OpenAsync(cancellationToken);
+        Microsoft.Data.SqlClient.SqlConnection branch;
+        if (await CreditOperationalDatabase.HasSalesAsync(opened, cancellationToken))
+        {
+            branch = opened;
+        }
+        else
+        {
+            await opened.DisposeAsync();
+            var routed = await CreditOperationalDatabase.OpenRoutedBranchAsync(connections, centralConnection, context.BranchId, cancellationToken);
+            if (routed is null)
+            {
+                return Results.Json(new { state = "Refused", code = "BRANCH_CONTEXT_MISSING", message = CreditOperationalDatabase.MissingBranchMessage }, statusCode: StatusCodes.Status409Conflict);
+            }
+
+            branch = routed;
+        }
+
+        await using var branchConnection = branch;
         var sale = new CreditSaleRequest(
             operationId,
             request.SaleId ?? Guid.NewGuid(),
@@ -87,7 +106,7 @@ public static class CreditEndpoints
                 line.ExpectedWeightKg,
                 line.ExpectedStockOwnerQuantity)).ToArray());
         var result = await coordinator.StageAsync(centralConnection, branch, sale, true, false, false, null, cancellationToken);
-        return ToResult(result.Outcome, operationId);
+        return ToResult(result, operationId);
     }
 
     private static async Task<IResult> StatusAsync(Guid operationId, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, CreditOutboxProcessor processor, CancellationToken cancellationToken)
@@ -113,9 +132,24 @@ public static class CreditEndpoints
         return Results.Ok(new { operations = await processor.ListUnresolvedAsync(branch, actor.Context!.BranchId, cancellationToken) });
     }
 
-    private static IResult ToResult(CreditSaleOutcome outcome, Guid operationId)
+    private static IResult ToResult(CreditSaleOutcomeResult result, Guid operationId)
     {
-        var body = new { operationId, state = outcome.ToString() };
+        var outcome = result.Outcome;
+        if (outcome == CreditSaleOutcome.Refused && result.MaxDeferred is decimal max)
+        {
+            var amount = max.ToString("0.00", CultureInfo.InvariantCulture);
+            return Results.Json(new
+            {
+                operationId,
+                state = outcome.ToString(),
+                maxDeferredAmount = max,
+                creditLimit = result.CreditLimit,
+                outstanding = result.Outstanding,
+                message = $"القيمة المؤجلة تتجاوز الحد الائتماني المسموح لهذا الزبون. يمكنك تأجيل مبلغ أقصاه {amount} شيكل.",
+            }, statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var body = new { operationId, state = outcome.ToString(), saleId = result.SaleId };
         return outcome switch
         {
             CreditSaleOutcome.Completed => Results.Ok(body),

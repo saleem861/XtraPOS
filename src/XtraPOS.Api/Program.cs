@@ -184,7 +184,10 @@ builder.Services.AddScoped<CreditSaleCoordinator>();
 builder.Services.AddScoped<CreditOutboxProcessor>();
 builder.Services.AddScoped<CreditCollectionService>();
 builder.Services.AddScoped<CreditReversalService>();
+builder.Services.AddScoped<CreditDebtReversalService>();
+builder.Services.AddScoped<CreditHistoryService>();
 builder.Services.AddHostedService<CreditOutboxWorker>();
+builder.Services.AddHostedService<FinancialInboxWorker>();
 builder.Services.AddHostedService<CustomerReplicaSyncWorker>();
 builder.Services.AddHostedService<BranchDatabaseHostedService>();
 builder.Services.AddCors(options =>
@@ -898,6 +901,7 @@ app.MapHeldSaleEndpoints();
 app.MapCreditEndpoints();
 app.MapCreditCollectionEndpoints();
 app.MapCreditReversalEndpoints();
+app.MapCreditHistoryEndpoints();
 app.MapCentralEndpoints();
 
 if (args.Any(arg => string.Equals(arg, "--ensure-customer-replica", StringComparison.Ordinal)))

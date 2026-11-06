@@ -1,10 +1,15 @@
-import { deferredAmount, creditEligible } from "./creditSale";
+import { deferredAmount, splitDeferred, appendDeferred, creditEligible } from "./creditSale";
 import { describe, expect, it } from "vitest";
 
 describe("credit sale amounts", () => {
   it("splits a partial payment and rejects a zero or negative deferral", () => {
     expect(deferredAmount({ invoiceTotal: 600, immediatePayment: 200 })).toEqual({ deferred: 400 });
     expect(deferredAmount({ invoiceTotal: 600, immediatePayment: 0 })).toEqual({ deferred: 600 });
+    expect(splitDeferred(600, 400)).toEqual({ deferred: 400, immediate: 200 });
+    expect("error" in splitDeferred(600, 0)).toBe(true);
+    expect("error" in splitDeferred(600, 700)).toBe(true);
+    expect(appendDeferred("12", "3")).toBe("123");
+    expect(appendDeferred("12.", "5")).toBe("12.5");
     expect("error" in deferredAmount({ invoiceTotal: 600, immediatePayment: 600 })).toBe(true);
     expect("error" in deferredAmount({ invoiceTotal: 600, immediatePayment: 700 })).toBe(true);
   });

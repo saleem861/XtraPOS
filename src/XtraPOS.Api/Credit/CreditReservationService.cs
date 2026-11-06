@@ -3,7 +3,14 @@ using Microsoft.Data.SqlClient;
 
 namespace XtraPOS.Api.Credit;
 
-public sealed record CreditReserveResult(Guid AuthorizationId, string Status, CreditDecision Decision, bool Replay);
+public sealed record CreditReserveResult(
+    Guid AuthorizationId,
+    string Status,
+    CreditDecision Decision,
+    bool Replay,
+    decimal Available = 0m,
+    decimal CreditLimit = 0m,
+    decimal Outstanding = 0m);
 
 public sealed class CreditReservationService
 {
@@ -33,7 +40,10 @@ public sealed class CreditReservationService
         Guid expectedCustomer = default,
         decimal? expectedAmount = null,
         Guid expectedBranch = default,
-        long? sourceSaleNumber = null)
+        long? sourceSaleNumber = null,
+        string? eventPayload = null,
+        int? posNumber = null,
+        Guid businessId = default)
     {
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var existing = new SqlCommand(
@@ -63,6 +73,7 @@ public sealed class CreditReservationService
                     throw new InvalidOperationException("Credit finalization conflicted with an existing ledger entry.");
                 }
 
+                await FinancialEventStore.PublishLedgerAsync(connection, transaction, ledgerIdempotencyKey, eventPayload, posNumber, sourceSaleNumber, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 return;
             }
@@ -124,8 +135,8 @@ public sealed class CreditReservationService
         await using var insertLedger = new SqlCommand(
             """
             INSERT INTO dbo.CustomerCreditLedger
-                (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, SourceSaleID, CreatedBy, IdempotencyKey)
-            VALUES (@id, @customer, @tx, N'CreditSale', @amount, N'ILS', @branch, @sale, @actor, @key);
+                (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, SourceSaleID, CreatedBy, IdempotencyKey, BusinessID, POSNumber, OriginOperationID)
+            VALUES (@id, @customer, @tx, N'CreditSale', @amount, N'ILS', @branch, @sale, @actor, @key, COALESCE(@business, (SELECT BusinessID FROM dbo.Customers WHERE CustomerID = @customer)), @pos, @key);
             """,
             connection,
             transaction);
@@ -137,7 +148,10 @@ public sealed class CreditReservationService
         insertLedger.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         insertLedger.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value = actorUserId;
         insertLedger.Parameters.Add("@key", SqlDbType.NVarChar, 80).Value = ledgerIdempotencyKey;
+        insertLedger.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId == Guid.Empty ? DBNull.Value : businessId;
+        insertLedger.Parameters.Add("@pos", SqlDbType.Int).Value = (object?)posNumber ?? DBNull.Value;
         await insertLedger.ExecuteNonQueryAsync(cancellationToken);
+        await FinancialEventStore.PublishLedgerAsync(connection, transaction, ledgerIdempotencyKey, eventPayload, posNumber, sourceSaleNumber, cancellationToken);
 
         await using var complete = new SqlCommand(
             """
@@ -233,6 +247,7 @@ public sealed class CreditReservationService
         DateTime expiresAtUtc,
         CancellationToken cancellationToken)
     {
+        Guid? rejectedAuthorizationId = null;
         await using (var replay = new SqlCommand(
             """
             SELECT AuthorizationID, Status
@@ -247,10 +262,16 @@ public sealed class CreditReservationService
             if (await reader.ReadAsync(cancellationToken))
             {
                 var stored = reader.GetString(1);
-                var replayDecision = stored is "Authorized" or "Completed" or "Posting"
-                    ? CreditDecision.Approved
-                    : CreditDecision.LimitExceeded;
-                return new CreditReserveResult(reader.GetGuid(0), stored, replayDecision, true);
+                var existingId = reader.GetGuid(0);
+                if (!string.Equals(stored, "Rejected", StringComparison.Ordinal))
+                {
+                    var replayDecision = stored is "Authorized" or "Completed" or "Posting"
+                        ? CreditDecision.Approved
+                        : CreditDecision.LimitExceeded;
+                    return new CreditReserveResult(existingId, stored, replayDecision, true);
+                }
+
+                rejectedAuthorizationId = existingId;
             }
         }
 
@@ -289,25 +310,47 @@ public sealed class CreditReservationService
                   );
             """, customerId, cancellationToken);
         var decision = CreditAvailability.Decide(enabled, status, limit, outstanding, reserved, amount);
-        var authorizationId = Guid.NewGuid();
+        var available = CreditAvailability.Available(limit, outstanding, reserved);
+        var authorizationId = rejectedAuthorizationId ?? Guid.NewGuid();
         var storedStatus = decision == CreditDecision.Approved ? "Authorized" : "Rejected";
-        await using var insert = new SqlCommand(
-            """
-            INSERT INTO dbo.CreditAuthorizations
-                (AuthorizationID, CustomerID, BranchID, RequestedAmount, CurrencyCode, Status, IdempotencyKey, ExpiresAt)
-            VALUES (@id, @customer, @branch, @amount, N'ILS', @status, @key, @expires);
-            """,
-            connection,
-            transaction);
-        insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = authorizationId;
-        insert.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;
-        insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
-        insert.Parameters.Add("@amount", SqlDbType.Decimal).Value = amount;
-        insert.Parameters.Add("@status", SqlDbType.NVarChar, 30).Value = storedStatus;
-        insert.Parameters.Add("@key", SqlDbType.NVarChar, 80).Value = idempotencyKey;
-        insert.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expiresAtUtc;
-        await insert.ExecuteNonQueryAsync(cancellationToken);
-        return new CreditReserveResult(authorizationId, storedStatus, decision, false);
+        if (rejectedAuthorizationId is Guid)
+        {
+            await using var update = new SqlCommand(
+                """
+                UPDATE dbo.CreditAuthorizations
+                SET RequestedAmount = @amount, Status = @status, ExpiresAt = @expires, BranchID = @branch
+                WHERE AuthorizationID = @id AND Status = N'Rejected';
+                """,
+                connection,
+                transaction);
+            update.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = authorizationId;
+            update.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
+            update.Parameters.Add("@amount", SqlDbType.Decimal).Value = amount;
+            update.Parameters.Add("@status", SqlDbType.NVarChar, 30).Value = storedStatus;
+            update.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expiresAtUtc;
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        else
+        {
+            await using var insert = new SqlCommand(
+                """
+                INSERT INTO dbo.CreditAuthorizations
+                    (AuthorizationID, CustomerID, BranchID, RequestedAmount, CurrencyCode, Status, IdempotencyKey, ExpiresAt)
+                VALUES (@id, @customer, @branch, @amount, N'ILS', @status, @key, @expires);
+                """,
+                connection,
+                transaction);
+            insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = authorizationId;
+            insert.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;
+            insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
+            insert.Parameters.Add("@amount", SqlDbType.Decimal).Value = amount;
+            insert.Parameters.Add("@status", SqlDbType.NVarChar, 30).Value = storedStatus;
+            insert.Parameters.Add("@key", SqlDbType.NVarChar, 80).Value = idempotencyKey;
+            insert.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expiresAtUtc;
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return new CreditReserveResult(authorizationId, storedStatus, decision, rejectedAuthorizationId is not null, available, limit, outstanding);
     }
 
     private static async Task<decimal> MoneyAsync(SqlConnection connection, SqlTransaction transaction, string sql, Guid customerId, CancellationToken cancellationToken)

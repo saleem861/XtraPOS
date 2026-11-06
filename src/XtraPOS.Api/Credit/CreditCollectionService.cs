@@ -258,6 +258,7 @@ public sealed class CreditCollectionService
 
             if (intent.Value.Status == "Completed" || await LedgerExistsAsync(central, transaction, operationId, cancellationToken))
             {
+                await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), null, null, null, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 await MarkAsync(branch, operationId, "Completed", null, leaseOwner, cancellationToken);
                 return CreditCollectionOutcome.Completed;
@@ -267,8 +268,8 @@ public sealed class CreditCollectionService
             await using (var ledger = new SqlCommand(
                 """
                 INSERT INTO dbo.CustomerCreditLedger
-                    (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, PaymentID, CreatedBy, IdempotencyKey)
-                VALUES (@entry, @customer, @operation, N'Repayment', @amount, N'ILS', @branch, @operation, @actor, @key);
+                    (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, PaymentID, CreatedBy, IdempotencyKey, OriginOperationID, BusinessID)
+                VALUES (@entry, @customer, @operation, N'Repayment', @amount, N'ILS', @branch, @operation, @actor, @key, @key, (SELECT BusinessID FROM dbo.Customers WHERE CustomerID = @customer));
                 """,
                 central, transaction))
             {
@@ -283,6 +284,8 @@ public sealed class CreditCollectionService
                 ledger.Parameters.Add("@key", SqlDbType.NVarChar, 80).Value = "collection:" + operationId.ToString("N");
                 await ledger.ExecuteNonQueryAsync(cancellationToken);
             }
+
+            await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), null, null, null, cancellationToken);
 
             await using (var apply = new SqlCommand(
                 """

@@ -16,7 +16,13 @@ public enum CreditSaleOutcome
     ReconciliationRequired,
 }
 
-public sealed record CreditSaleOutcomeResult(CreditSaleOutcome Outcome, Guid? SaleId, Guid? AuthorizationId);
+public sealed record CreditSaleOutcomeResult(
+    CreditSaleOutcome Outcome,
+    Guid? SaleId,
+    Guid? AuthorizationId,
+    decimal? MaxDeferred = null,
+    decimal? CreditLimit = null,
+    decimal? Outstanding = null);
 
 public sealed class CreditSaleCoordinator(CreditReservationService credit, CreditSaleDocumentWriter documents)
 {
@@ -96,7 +102,13 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             cancellationToken);
         if (reserved.Decision != CreditDecision.Approved || reserved.Status != "Authorized" && !reserved.Replay)
         {
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, reserved.AuthorizationId);
+            return new CreditSaleOutcomeResult(
+                CreditSaleOutcome.Refused,
+                null,
+                reserved.AuthorizationId,
+                reserved.Decision == CreditDecision.LimitExceeded ? reserved.Available : null,
+                reserved.CreditLimit,
+                reserved.Outstanding);
         }
 
         var saleId = request.SaleId;
@@ -186,6 +198,8 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
 
         try
         {
+            var snapshot = await CreditDocumentSnapshot.ReadAsync(branch, saleId, deferred, cancellationToken);
+            var posNumber = await PosNumberAsync(branch, saleId, cancellationToken);
             await credit.FinalizeAsync(
                 central,
                 authorizationId,
@@ -197,7 +211,10 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
                 customerId,
                 deferred,
                 branchId,
-                await SaleNumberAsync(branch, saleId, cancellationToken));
+                await SaleNumberAsync(branch, saleId, cancellationToken),
+                snapshot,
+                posNumber,
+                await BusinessIdAsync(branch, cancellationToken));
         }
         catch (InvalidOperationException)
         {
@@ -329,6 +346,29 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         command.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is long number ? number : null;
+    }
+
+    private static async Task<int?> PosNumberAsync(SqlConnection branch, Guid saleId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT station.StationNumber
+            FROM dbo.Sales AS sale
+            INNER JOIN dbo.POSStations AS station ON station.StationID = sale.POSStationID
+            WHERE sale.SaleID = @sale;
+            """,
+            branch);
+        command.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is int number ? number : null;
+    }
+
+    private static async Task<Guid> BusinessIdAsync(SqlConnection branch, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            "SELECT TRY_CONVERT(uniqueidentifier, SettingValue) FROM dbo.SystemSettings WHERE SettingKey = N'BusinessID';",
+            branch);
+        return await command.ExecuteScalarAsync(cancellationToken) is Guid business ? business : Guid.Empty;
     }
 
     private static async Task<int> PaymentTermDaysAsync(SqlConnection central, Guid customerId, CancellationToken cancellationToken)

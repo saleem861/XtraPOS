@@ -258,6 +258,7 @@ public sealed class CreditReversalService
             await reader.DisposeAsync();
             if (status == "Completed")
             {
+                await FinancialEventStore.PublishLedgerAsync(central, transaction, "reversal:" + operationId.ToString("N"), null, null, null, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 await MarkAsync(branch, operationId, "Completed", null, leaseOwner, cancellationToken);
                 return CreditReversalOutcome.Completed;
@@ -275,9 +276,10 @@ public sealed class CreditReversalService
             await using (var ledger = new SqlCommand(
                 """
                 INSERT INTO dbo.CustomerCreditLedger
-                    (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, PaymentID, CreatedBy, ReversalReference, IdempotencyKey)
-                SELECT @entry, @customer, @operation, N'Reversal', @amount, N'ILS', @branch, @collection, @actor, original.LedgerEntryID, @key
+                    (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, PaymentID, CreatedBy, ReversalReference, IdempotencyKey, OriginOperationID, ReversedOperationID, BusinessID)
+                SELECT @entry, @customer, @operation, N'Reversal', @amount, N'ILS', @branch, @collection, @actor, original.LedgerEntryID, @key, @key, @originalKey, customer.BusinessID
                 FROM dbo.CustomerCreditLedger AS original
+                INNER JOIN dbo.Customers AS customer ON customer.CustomerID = original.CustomerID
                 WHERE original.IdempotencyKey = @originalKey;
                 """,
                 central, transaction))
@@ -300,6 +302,8 @@ public sealed class CreditReversalService
                     return CreditReversalOutcome.ReconciliationRequired;
                 }
             }
+
+            await FinancialEventStore.PublishLedgerAsync(central, transaction, "reversal:" + operationId.ToString("N"), null, null, null, cancellationToken);
 
             await using (var apply = new SqlCommand(
                 """

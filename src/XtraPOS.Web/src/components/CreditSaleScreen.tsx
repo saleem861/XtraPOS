@@ -1,20 +1,45 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
-import { SetupClientError, deviceHeaders } from "../api/client";
+import { deviceHeaders } from "../api/client";
 import type { CreditPolicy } from "../api/customers";
 import { createCustomerClient } from "../api/customers";
 import type { CartDraft } from "../cart/model";
 import { cartTotals } from "../cart/model";
-import { creditEligible, deferredAmount } from "../credit/creditSale";
-import { FullKeyboard } from "./FullKeyboard";
-import { ScreenHeader } from "./ScreenHeader";
+import { appendDeferred, creditEligible, splitDeferred } from "../credit/creditSale";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
+import { NumericKeypad } from "./NumericKeypad";
+import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
+import { ScreenHeader } from "./ScreenHeader";
+import "./debtScreens.css";
 
-export function CreditSaleScreen({ session, cart, customerName, branchName, userName, canCreate, operationId, onBack, onCompleted }: {
+interface Movement {
+  operationId: string;
+  eventType: string;
+  amount: number;
+  signedEffect: number;
+  balanceAfter: number;
+  confirmedAt: string;
+  saleId?: string | null;
+  reference?: string | null;
+  branchName?: string | null;
+  cashier?: string | null;
+  notes?: string | null;
+  pending?: boolean;
+}
+
+const typeLabel: Record<string, string> = {
+  CreditSale: "دين",
+  Repayment: "تسديد",
+  DebtReversal: "عكس دين",
+  RepaymentReversal: "عكس تسديد",
+  Adjustment: "تصحيح",
+};
+
+export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, canCreate, operationId, onBack, onCompleted }: {
   session: DeviceSession;
   cart: CartDraft;
   customerName: string;
+  customerNumber?: string | null;
   branchName: string;
   userName: string;
   canCreate: boolean;
@@ -25,48 +50,53 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
   const customers = createCustomerClient(session);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
   const [policy, setPolicy] = useState<CreditPolicy | null>(null);
-  const [immediate, setImmediate] = useState("0");
+  const [deferredInput, setDeferredInput] = useState("");
+  const [touched, setTouched] = useState(false);
   const [state, setState] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [movements, setMovements] = useState<Movement[]>([]);
+  const [summary, setSummary] = useState({ debt: 0, repaid: 0, balance: 0, stale: false });
+  const [skip, setSkip] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [document, setDocument] = useState<DebtDocument | null>(null);
+  const [documentTitle, setDocumentTitle] = useState("");
   const total = Number(cartTotals(cart).total);
-  const split = deferredAmount({ invoiceTotal: total, immediatePayment: Number(immediate || "0") });
+  const shownDeferred = touched ? deferredInput : (deferredInput || String(total));
+  const split = splitDeferred(total, Number(shownDeferred || "0"));
   const deferred = "deferred" in split ? split.deferred : null;
+  const immediate = "immediate" in split ? split.immediate : null;
   const block = creditEligible(policy, cart.customerId, canCreate);
-  const projected = policy && deferred !== null ? policy.outstanding + deferred : null;
 
   useEffect(() => {
     setDesktopKeyboard(usesDesktopCustomerKeyboard());
+    if (!touched) setDeferredInput(String(total));
+  }, [total, touched]);
+
+  useEffect(() => {
     if (!cart.customerId) return;
-    void customers.creditPolicy(cart.customerId).then(setPolicy).catch((error: unknown) => {
+    void customers.creditPolicy(cart.customerId).then(setPolicy).catch(() => {
       setPolicy(null);
-      setMessage(error instanceof SetupClientError ? error.message : "جهة الائتمان المركزية غير متاحة.");
+      setMessage("جهة الائتمان المركزية غير متاحة.");
     });
-    // The client identity changes every render; the customer id is the load key.
+    void loadHistory(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart.customerId]);
 
-  useEffect(() => {
-    if (desktopKeyboard || !window.visualViewport) return undefined;
-    const viewport = window.visualViewport;
-    const apply = () => {
-      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
-      document.documentElement.style.setProperty("--keyboard-inset", `${inset}px`);
-    };
-    viewport.addEventListener("resize", apply);
-    return () => {
-      viewport.removeEventListener("resize", apply);
-      document.documentElement.style.removeProperty("--keyboard-inset");
-    };
-  }, [desktopKeyboard]);
+  async function loadHistory(nextSkip: number) {
+    if (!cart.customerId) return;
+    const response = await fetch(`/api/pos/credit-history?customerId=${cart.customerId}&skip=${nextSkip}&take=20`, { headers: deviceHeaders(session) });
+    if (!response.ok) return;
+    const payload = await response.json() as { movements?: Movement[]; debtTotal?: number; repaymentTotal?: number; confirmedOutstanding?: number; stale?: boolean; totalCount?: number };
+    setMovements((current) => nextSkip === 0 ? (payload.movements ?? []) : [...current, ...(payload.movements ?? [])]);
+    setSummary({ debt: payload.debtTotal ?? 0, repaid: payload.repaymentTotal ?? 0, balance: payload.confirmedOutstanding ?? 0, stale: Boolean(payload.stale) });
+    setTotalCount(payload.totalCount ?? 0);
+    setSkip(nextSkip);
+  }
 
   async function confirm() {
-    if (busy || block || deferred === null || !cart.customerId) {
+    if (busy || block || deferred === null || immediate === null || !cart.customerId) {
       setMessage(block ?? ("error" in split ? split.error : ""));
-      return;
-    }
-    if (deferred > policy!.available) {
-      setMessage("المبلغ المؤجل يتجاوز المتاح للاستدانة.");
       return;
     }
     setBusy(true);
@@ -79,7 +109,7 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
           cartId: cart.cartId,
           customerId: cart.customerId,
           invoiceTotal: total,
-          immediatePayment: Number(immediate || "0"),
+          immediatePayment: immediate,
           lines: cart.lines.map((line) => line.lineType === "Fixed"
             ? { itemId: line.itemId, quantity: Number(line.quantity), lineType: "Fixed", expectedUnitPrice: Number(line.resolvedUnitPrice), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }
             : { itemId: line.referenceItemId, quantity: Number(line.quantity), lineType: "VariableValueByWeight", enteredScaleValue: Number(line.enteredScaleValue), expectedFinalSellingPrice: Number(line.finalSellingPrice), expectedReferenceBasePrice: Number(line.referenceBasePrice), expectedWeightKg: Number(line.weightKg), expectedStockOwnerQuantity: Number(line.projectedStockOwnerQuantity), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }),
@@ -88,13 +118,13 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
       const payload = await response.json() as { state?: string; message?: string };
       setState(payload.state ?? "");
       if (payload.state === "Completed") {
-        setMessage("تم تأكيد البيع بالدين.");
+        setMessage("تم تأكيد الدين.");
         onCompleted();
         return;
       }
-      if (payload.state === "PendingCentral") setMessage("العملية قيد التأكيد.");
+      if (payload.state === "PendingCentral") setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
       else if (payload.state === "ReconciliationRequired") setMessage("العملية بحاجة إلى مراجعة مالية.");
-      else setMessage(payload.message?.toLowerCase().includes("price") ? "تغيرت الأسعار. حدّث الفاتورة ثم أكّد المبلغ الجديد." : (payload.message ?? "تم رفض البيع بالدين. السلة ما زالت موجودة."));
+      else setMessage(payload.message ?? "تم رفض البيع بالدين. السلة ما زالت موجودة.");
     } catch {
       setMessage("العملية قيد التأكيد.");
       setState("PendingCentral");
@@ -102,6 +132,90 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
       setBusy(false);
     }
   }
+
+  async function openDetails(row: Movement) {
+    const query = row.saleId ? `saleId=${row.saleId}` : `operationId=${encodeURIComponent(row.operationId)}`;
+    const response = await fetch(`/api/pos/credit-documents?${query}`, { headers: deviceHeaders(session) });
+    if (!response.ok) {
+      setMessage("تفاصيل الحركة غير متاحة.");
+      return;
+    }
+    setDocument(await response.json() as DebtDocument);
+    setDocumentTitle(row.eventType === "CreditSale" || row.eventType === "DebtReversal" ? "تفاصيل الطلبية" : "تفاصيل سند التسديد");
+  }
+
+  if (document) {
+    return <OrderDetailsScreen title={documentTitle} document={document} onClose={() => setDocument(null)} />;
+  }
+
+  const pending = state === "PendingCentral";
+  return (
+    <section className="new-customer debt-screen" dir="rtl" aria-label="تأجيل دفع للزبون">
+      <ScreenHeader title="تأجيل دفع للزبون" onBack={onBack} />
+      <div className="debt-layout">
+        <div className="debt-main">
+          <div className="debt-facts">
+            <div className="debt-fact"><span>رقم الزبون</span><strong>{customerNumber || "—"}</strong></div>
+            <div className="debt-fact is-name"><span>اسم الزبون</span><strong>{customerName}</strong></div>
+            <div className="debt-fact"><span>رقم الطلبية الفعالة</span><strong>مسودة حالية</strong></div>
+            <div className="debt-fact"><span>المجموع بعد الخصم</span><strong>{money(total)}</strong></div>
+          </div>
+          <div className="debt-controls">
+            <div className="debt-amount"><span>القيمة المؤجلة</span><input aria-label="القيمة المؤجلة" inputMode="decimal" value={shownDeferred} onChange={(event) => { setTouched(true); setDeferredInput(event.target.value.replace(/[^\d.]/g, "")); }} /></div>
+            <button type="button" className="debt-register" disabled={busy || Boolean(block) || deferred === null || pending || state === "Completed" || state === "ReconciliationRequired"} onClick={() => void confirm()}>تسجيل الدين</button>
+            <div className="debt-metric"><span>الحد الائتماني</span><strong>{money(policy?.creditLimit)}</strong></div>
+            <div className="debt-metric is-available"><span>المتبقي المتاح</span><strong>{money(policy?.available)}</strong></div>
+            <div className="debt-metric is-debt"><span>مجموع الديون</span><strong>{money(policy?.outstanding)}</strong></div>
+          </div>
+          {immediate != null && immediate > 0 ? <p className="debt-note">سيُسجل {money(immediate)} دفعاً فورياً، و{money(deferred)} ديناً.</p> : null}
+          {block ? <p className="status-error">{block}</p> : null}
+          {message ? <p className={state === "Refused" || message.includes("تتجاوز") ? "status-error" : "debt-note"}>{message}</p> : null}
+          {pending ? <p className="debt-pending">قيد التأكيد المركزي</p> : null}
+          {pending ? <button type="button" onClick={() => void refresh()}>تحديث الحالة</button> : null}
+          <div className="debt-table-card">
+            <h3>سجل الديون والتسديدات للزبون</h3>
+            {summary.stale ? <p>آخر رصيد متزامن. قد يكون غير محدث. المركز هو مصدر الرصيد.</p> : null}
+            <table>
+              <thead>
+                <tr><th>#</th><th>التاريخ والوقت</th><th>نوع الحركة</th><th>رقم الطلبية</th><th>المبلغ</th><th>الرصيد بعد الحركة</th><th>الفرع</th><th>الموظف</th><th>ملاحظات</th><th>تفاصيل</th></tr>
+              </thead>
+              <tbody>
+                {movements.map((row, index) => (
+                  <tr key={row.operationId}>
+                    <td>{index + 1}</td>
+                    <td>{new Date(row.confirmedAt).toLocaleString("en-GB")}</td>
+                    <td><span className={row.signedEffect < 0 ? "debt-pill is-pay" : row.eventType.includes("Reversal") ? "debt-pill is-reverse" : "debt-pill is-debt"}>{typeLabel[row.eventType] ?? row.eventType}</span></td>
+                    <td>{row.reference || "—"}</td>
+                    <td className={row.signedEffect < 0 ? "is-pay" : "is-debt"}>{row.signedEffect < 0 ? "-" : ""}{money(row.amount)}</td>
+                    <td>{money(row.balanceAfter)}</td>
+                    <td>{row.branchName || "—"}</td>
+                    <td>{row.cashier || "—"}</td>
+                    <td>{row.notes || "—"}</td>
+                    <td><button type="button" onClick={() => void openDetails(row)}>تفاصيل</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {skip + movements.length < totalCount ? <button type="button" onClick={() => void loadHistory(skip + 20)}>عرض المزيد</button> : null}
+          </div>
+          <div className="debt-footer">
+            <p>لا يتم تعديل أو حذف أي سجل. التصحيح يتم بحركة جديدة.</p>
+            <strong className="is-debt">مجموع الديون {money(summary.debt)}</strong>
+            <strong className="is-pay">مجموع التسديدات {money(summary.repaid)}</strong>
+            <strong>الرصيد الحالي {money(summary.balance)}</strong>
+          </div>
+        </div>
+        {desktopKeyboard ? (
+          <NumericKeypad
+            allowDecimal
+            onDigit={(digit) => { setTouched(true); setDeferredInput((current) => appendDeferred(current || String(total), digit)); }}
+            onClear={() => { setTouched(true); setDeferredInput(""); }}
+          />
+        ) : null}
+      </div>
+      <button type="button" className="debt-close" onClick={onBack}>إغلاق</button>
+    </section>
+  );
 
   async function refresh() {
     const response = await fetch(`/api/pos/credit-sales/${operationId}`, { headers: deviceHeaders(session) });
@@ -112,41 +226,16 @@ export function CreditSaleScreen({ session, cart, customerName, branchName, user
     const payload = await response.json() as { centrallyConfirmed?: boolean; reconciliationRequired?: boolean };
     if (payload.centrallyConfirmed) {
       setState("Completed");
-      setMessage("تم تأكيد البيع بالدين.");
+      setMessage("تم تأكيد الدين.");
       onCompleted();
     } else if (payload.reconciliationRequired) {
       setState("ReconciliationRequired");
       setMessage("العملية بحاجة إلى مراجعة مالية.");
-    } else setMessage("العملية قيد التأكيد.");
+    } else setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
   }
+}
 
-  const due = new Date();
-  due.setDate(due.getDate() + (policy?.paymentTermDays ?? 30));
-
-  return (
-    <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="البيع بالدين / تأجيل الدفع">
-      <ScreenHeader title="البيع بالدين / تأجيل الدفع" onBack={onBack} />
-      <header className="new-customer-bar shell-page-bar">
-        <strong className="new-customer-brand">XtraPOS</strong>
-        <p>{branchName} · {userName}</p>
-        <h2>البيع بالدين / تأجيل الدفع</h2>
-        <button type="button" className="new-customer-back" onClick={onBack}><ArrowLeft aria-hidden="true" />رجوع</button>
-      </header>
-      <div className="new-customer-card credit-sale-sheet">
-        <p>الزبون: {customerName}</p>
-        <p>حالة الائتمان: {policy?.creditStatus ?? "—"} · الحد الائتماني {policy?.creditLimit ?? "—"} · الدين السابق {policy?.outstanding ?? "—"} · المبالغ المحجوزة {policy ? Math.max(0, policy.creditLimit - policy.outstanding - policy.available) : "—"} · المتاح للاستدانة {policy?.available ?? "—"}</p>
-        <p>إجمالي الفاتورة {total} NIS</p>
-        <label><span>المدفوع الآن</span><input aria-label="المدفوع الآن" inputMode="decimal" value={immediate} onChange={(event) => setImmediate(event.target.value.replace(/[^\d.]/g, ""))} onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })} /></label>
-        <p>المبلغ المؤجل {deferred ?? "—"} NIS</p>
-        <p>الرصيد المتوقع بعد العملية {projected ?? "—"} NIS</p>
-        <p>تاريخ الاستحقاق {due.toLocaleDateString("en-GB")}</p>
-        {block ? <p className="status-error">{block}</p> : null}
-        {message ? <p>{message}</p> : null}
-        <p>مرجع العملية {operationId}</p>
-        <button type="button" disabled={busy || Boolean(block) || deferred === null || state === "Completed" || state === "PendingCentral" || state === "ReconciliationRequired"} onClick={() => void confirm()}>تأكيد البيع بالدين</button>
-        {state === "PendingCentral" ? <button type="button" onClick={() => void refresh()}>تحديث الحالة</button> : null}
-      </div>
-      {desktopKeyboard ? <FullKeyboard onEnter={() => undefined} /> : null}
-    </section>
-  );
+function money(value: number | null | undefined) {
+  if (value == null || Number.isNaN(Number(value))) return "—";
+  return Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
