@@ -31,10 +31,17 @@
 .debt-note { color: #334155; }
 .debt-fact.is-danger strong { color: #dc2626; }
 .debt-screen .numeric-keypad { align-self: start; }
+.debt-receipt-sheet { display: none; width: 72mm; margin: 0 auto; color: #111; background: #fff; }
+.debt-receipt-sheet h1 { font-size: 16px; text-align: center; }
 @media (max-width: 900px) {
   .debt-layout, .debt-facts, .debt-controls, .debt-totals, .debt-actions { grid-template-columns: 1fr; }
   .debt-screen .numeric-keypad { display: none; }
 }
 @media print {
-  .debt-actions, .debt-close, .numeric-keypad, .topbar { display: none !important; }
+  body * { visibility: hidden; }
+  .debt-screen.is-printing-receipt .debt-receipt-sheet,
+  .debt-screen.is-printing-receipt .debt-receipt-sheet * { visibility: visible; }
+  .debt-screen.is-printing-receipt .debt-receipt-sheet { display: block; position: absolute; top: 0; right: 0; left: 0; }
+  .debt-screen.is-printing-a4 .invoice-preview,
+  .debt-screen.is-printing-a4 .invoice-preview * { visibility: visible; }
 }

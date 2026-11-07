@@ -258,7 +258,7 @@ public sealed class CreditCollectionService
 
             if (intent.Value.Status == "Completed" || await LedgerExistsAsync(central, transaction, operationId, cancellationToken))
             {
-                await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), null, null, null, cancellationToken);
+                await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), ReceiptPayload(intent.Value.Amount), null, null, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
                 await MarkAsync(branch, operationId, "Completed", null, leaseOwner, cancellationToken);
                 return CreditCollectionOutcome.Completed;
@@ -285,7 +285,7 @@ public sealed class CreditCollectionService
                 await ledger.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), null, null, null, cancellationToken);
+            await FinancialEventStore.PublishLedgerAsync(central, transaction, "collection:" + operationId.ToString("N"), ReceiptPayload(intent.Value.Amount), null, null, cancellationToken);
 
             await using (var apply = new SqlCommand(
                 """
@@ -526,6 +526,9 @@ public sealed class CreditCollectionService
         command.Parameters.Add("@code", SqlDbType.NVarChar, 100).Value = permissionCode;
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 1;
     }
+
+    private static string ReceiptPayload(decimal amount) =>
+        "{\"kind\":\"receipt\",\"amount\":" + amount.ToString(CultureInfo.InvariantCulture) + ",\"notes\":\"تسديد نقدي\"}";
 
     private static string Payload(CreditCollectionRequest request)
     {

@@ -35,10 +35,11 @@ export function OrderDetailsScreen({
   onClose: () => void;
 }) {
   const [preview, setPreview] = useState<A4Document | null>(null);
+  const [printingReceipt, setPrintingReceipt] = useState(false);
   const lines = sheet.lines ?? [];
   const a4 = toA4(title, sheet);
   return (
-    <section className="new-customer debt-screen" dir="rtl" aria-label={title}>
+    <section className={printingReceipt ? "new-customer debt-screen is-printing-receipt" : preview ? "new-customer debt-screen is-printing-a4" : "new-customer debt-screen"} dir="rtl" aria-label={title}>
       <ScreenHeader title={title} onBack={onClose} />
       <div className="debt-details">
         <div className="debt-facts">
@@ -88,10 +89,17 @@ export function OrderDetailsScreen({
         <p className="debt-pay-split">المدفوع فوراً {money(sheet.immediate)} · المؤجل {money(sheet.deferred)}</p>
         <div className="debt-actions">
           <button type="button" className="debt-print" onClick={() => setPreview(a4)}><Printer aria-hidden="true" />طباعة A4</button>
-          <button type="button" className="debt-print is-receipt" onClick={() => window.print()}><Printer aria-hidden="true" />طباعة وصل</button>
+          <button type="button" className="debt-print is-receipt" onClick={() => { setPrintingReceipt(true); window.setTimeout(() => { window.print(); setPrintingReceipt(false); }, 50); }}><Printer aria-hidden="true" />طباعة وصل</button>
           <button type="button" className="debt-close" onClick={onClose}><X aria-hidden="true" />إغلاق</button>
         </div>
       </div>
+      <article className="debt-receipt-sheet" aria-hidden={!printingReceipt}>
+        <h1>وصل {sheet.kind === "receipt" ? "تسديد" : "بيع"}</h1>
+        <p>{sheet.customerName || "—"} · {sheet.customerNumber || "—"}</p>
+        <p>{sheet.saleNumber || "سند"} · {sheet.branchName || "—"}</p>
+        <p>المبلغ {money(sheet.kind === "receipt" ? (sheet.amount ?? sheet.total) : sheet.deferred)}</p>
+        <p>{sheet.notes || "—"}</p>
+      </article>
       {preview ? (
         <InvoicePreview
           document={preview}
