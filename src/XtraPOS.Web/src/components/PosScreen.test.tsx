@@ -118,7 +118,7 @@ describe("POS cashier screen", () => {
     expect(fast.selectionEnd).toBe(fast.value.length);
     expect(document.activeElement).toBe(fast);
 
-    const css = readFileSync(resolve("src/styles/app.css"), "utf8");
+    const css = readFileSync(resolve("src/styles/app.css"), "utf8").replaceAll("\r\n", "\n");
     expect(css).toContain(".pos-screen .pos-fast input {\n  direction: ltr;\n  text-align: right;\n  padding-block: 0;\n  line-height: 1;\n}");
   });
 
