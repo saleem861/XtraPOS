@@ -61,7 +61,7 @@ public sealed class CreditSaleDocumentWriter(CheckoutService checkout)
         CheckoutService.CreditPreparedSale prepared;
         try
         {
-            prepared = await checkout.PrepareCreditAsync(branch, actor, request.CustomerId, request.CashSessionId, lines, cancellationToken);
+            prepared = await checkout.PrepareCreditAsync(branch, actor, request.CustomerId, request.CashSessionId, lines, request.ImmediatePayment > 0m, cancellationToken);
         }
         catch (CheckoutException exception)
         {

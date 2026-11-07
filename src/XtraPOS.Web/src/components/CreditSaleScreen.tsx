@@ -153,8 +153,8 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   return (
     <section className="new-customer debt-screen" dir="rtl" aria-label="تأجيل دفع للزبون">
       <ScreenHeader title="تأجيل دفع للزبون" onBack={onBack} />
-      <div className="debt-layout">
-        <div className="debt-main">
+      <div className="pos-desktop-shell debt-layout">
+        <div className="pos-main-workspace debt-main">
           <div className="debt-facts">
             <div className="debt-fact"><span>رقم الزبون</span><strong>{customerNumber || "—"}</strong></div>
             <div className="debt-fact is-name"><span>اسم الزبون</span><strong>{customerName}</strong></div>
@@ -207,20 +207,22 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
           </div>
         </div>
         {desktopKeyboard ? (
-          <aside className="debt-pad pos-side-card pos-pad-card" aria-label="لوحة الأرقام">
-            <h3>لوحة الأرقام</h3>
-            <div className="pos-side-pad" dir="ltr">
-              {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={key === "Enter" ? "is-enter" : key === "0" ? "is-wide" : undefined}
-                  onMouseDown={(event) => event.preventDefault()}
-                  aria-label={key === "Enter" ? "إدخال" : `مفتاح ${key}`}
-                  onClick={() => pressDebtPad(key)}
-                >{key === "Enter" ? "إدخال" : key}</button>
-              ))}
-            </div>
+          <aside className="pos-sidebar pos-pro" aria-label="لوحة الأرقام">
+            <section className="pos-side-card pos-pad-card">
+              <h3>لوحة الأرقام</h3>
+              <div className="pos-side-pad" dir="ltr">
+                {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={key === "Enter" ? "is-enter" : key === "0" ? "is-wide" : undefined}
+                    onMouseDown={(event) => event.preventDefault()}
+                    aria-label={key === "Enter" ? "إدخال" : `مفتاح ${key}`}
+                    onClick={() => pressDebtPad(key)}
+                  >{key === "Enter" ? "إدخال" : key}</button>
+                ))}
+              </div>
+            </section>
           </aside>
         ) : null}
       </div>

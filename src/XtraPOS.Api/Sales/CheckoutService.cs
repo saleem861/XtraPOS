@@ -490,7 +490,7 @@ public sealed class CheckoutService(
         command.Parameters.AddWithValue("@cart", cartId);
         command.Parameters.AddWithValue("@customer", (object?)customerId ?? DBNull.Value);
         command.Parameters.AddWithValue("@cashier", actor.UserId);
-        command.Parameters.AddWithValue("@session", cashSessionId);
+        command.Parameters.AddWithValue("@session", cashSessionId == Guid.Empty ? DBNull.Value : cashSessionId);
         AddMoney(command, "@total", total);
         command.Parameters.AddWithValue("@status", status);
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
@@ -502,6 +502,7 @@ public sealed class CheckoutService(
         Guid customerId,
         Guid claimedSessionId,
         IReadOnlyList<CheckoutLine> lines,
+        bool requireOpenSession,
         CancellationToken cancellationToken)
     {
         if (lines.Count == 0)
@@ -515,9 +516,13 @@ public sealed class CheckoutService(
             throw new CheckoutException(PriceOverrideModes.Forbidden, "لا توجد صلاحية لتعديل سعر سطر البيع.", StatusCodes.Status403Forbidden);
         }
 
-        var sessionId = await FindOpenSessionIdAsync(connection, null, actor, cancellationToken)
-            ?? throw new CheckoutException(CheckoutCodes.CashSessionRequired, "يجب فتح الصندوق أولاً.", StatusCodes.Status409Conflict);
-        if (claimedSessionId != Guid.Empty && claimedSessionId != sessionId)
+        var sessionId = await FindOpenSessionIdAsync(connection, null, actor, cancellationToken);
+        if (sessionId is null && requireOpenSession)
+        {
+            throw new CheckoutException(CheckoutCodes.CashSessionRequired, "يجب فتح الصندوق أولاً.", StatusCodes.Status409Conflict);
+        }
+
+        if (sessionId is Guid openSession && claimedSessionId != Guid.Empty && claimedSessionId != openSession)
         {
             throw new CheckoutException(CheckoutCodes.CashSessionRequired, "جلسة الصندوق لا تخص هذا الجهاز.", StatusCodes.Status409Conflict);
         }
@@ -535,7 +540,7 @@ public sealed class CheckoutService(
         }
 
         var total = decimal.Round(prepared.Sum(line => line.LineTotal), 4, MidpointRounding.AwayFromZero);
-        return new CreditPreparedSale(sessionId, total, prepared);
+        return new CreditPreparedSale(sessionId ?? Guid.Empty, total, prepared);
     }
 
     public async Task PersistCreditAsync(
