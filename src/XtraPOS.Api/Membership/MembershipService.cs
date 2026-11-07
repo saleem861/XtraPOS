@@ -14,7 +14,7 @@ public sealed class MembershipException(string code) : Exception(code)
 public sealed record MembershipVerificationCreated(Guid VerificationRequestId, string Token, DateTime ExpiresAtUtc, int PollingIntervalMs);
 public sealed record MembershipVerificationView(Guid VerificationRequestId, string Status, DateTime ExpiresAtUtc, Guid CustomerId, Guid CounterId, Guid SaleContextId);
 public sealed record MembershipPublicStatus(string Status, DateTime? ExpiresAtUtc, string? Code);
-public sealed record MembershipSummary(bool Configured, int ActiveSessions, IReadOnlyList<string> Providers, DateTime? LastVerifiedAtUtc);
+public sealed record MembershipSummary(bool Configured, int ActiveSessions, IReadOnlyList<string> Providers, DateTime? LastVerifiedAtUtc, string? Display);
 
 public sealed class MembershipService(
     SqlConnectionFactory connections,
@@ -219,7 +219,7 @@ public sealed class MembershipService(
     public async Task<MembershipSummary> SummaryAsync(Guid customerId, CancellationToken cancellationToken)
     {
         var connectionString = await CentralConnectionStringAsync(cancellationToken);
-        if (connectionString is null) return new MembershipSummary(false, 0, [], null);
+        if (connectionString is null) return new MembershipSummary(false, 0, [], null, null);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         var providers = new List<string>();
@@ -249,8 +249,200 @@ public sealed class MembershipService(
             var value = await last.ExecuteScalarAsync(cancellationToken);
             if (value is DateTime verified) lastVerified = DateTime.SpecifyKind(verified, DateTimeKind.Utc);
         }
-        return new MembershipSummary(options.Value.GoogleLoginEnabled || options.Value.AppleLoginEnabled, count, providers, lastVerified);
+        string? display = null;
+        await using (var shown = new SqlCommand(
+            """
+            SELECT TOP (1) ProviderAccountDisplay, ProviderEmail, ProviderSubject
+            FROM dbo.CustomerMembershipIdentities
+            WHERE CustomerID = @customer AND Status = N'Active'
+            ORDER BY LinkedAt DESC;
+            """, connection))
+        {
+            shown.Parameters.AddWithValue("@customer", customerId);
+            await using var reader = await shown.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var account = reader.IsDBNull(0) ? null : reader.GetString(0);
+                var email = reader.IsDBNull(1) ? null : reader.GetString(1);
+                var subject = reader.IsDBNull(2) ? null : reader.GetString(2);
+                display = MembershipEnrollmentRules.VisibleIdentity(email, account, subject);
+            }
+        }
+        return new MembershipSummary(options.Value.GoogleLoginEnabled || options.Value.AppleLoginEnabled, count, providers, lastVerified, display);
     }
+
+    public async Task<(string Token, DateOnly Day)> EnsureCounterTokenAsync(Guid businessId, Guid branchId, Guid counterId, CancellationToken cancellationToken)
+    {
+        var today = MembershipCalendar.Today();
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var existing = await ReadCounterAsync(connection, transaction, counterId, cancellationToken);
+        if (existing is null)
+        {
+            var created = MembershipTokens.CreateOpaqueToken();
+            await using var insert = new SqlCommand(
+                """
+                INSERT INTO dbo.MembershipCounterCodes
+                    (CounterID, BusinessID, BranchID, PublicToken, Status, UpdatedAt, TokenDay)
+                VALUES
+                    (@id, @business, @branch, @token, N'Waiting', SYSUTCDATETIME(), @day);
+                """, connection, transaction);
+            insert.Parameters.AddWithValue("@id", counterId);
+            insert.Parameters.AddWithValue("@business", businessId);
+            insert.Parameters.AddWithValue("@branch", branchId);
+            insert.Parameters.AddWithValue("@token", created);
+            insert.Parameters.Add("@day", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+            try
+            {
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return (created, today);
+            }
+            catch (SqlException)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                var raced = await ReadCounterAsync(connection, null, counterId, cancellationToken);
+                return (raced?.Token ?? created, raced?.Day ?? today);
+            }
+        }
+
+        if (existing.Day == today)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return (existing.Token, today);
+        }
+
+        if (existing.Day is null)
+        {
+            await using var stamp = new SqlCommand(
+                "UPDATE dbo.MembershipCounterCodes SET TokenDay = @day WHERE CounterID = @id AND TokenDay IS NULL;",
+                connection, transaction);
+            stamp.Parameters.Add("@day", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+            stamp.Parameters.AddWithValue("@id", counterId);
+            await stamp.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return (existing.Token, today);
+        }
+
+        var token = MembershipTokens.CreateOpaqueToken();
+        await using var rotate = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET PublicToken = @token, TokenDay = @day, Status = N'Waiting', RecognizedCustomerID = NULL, UpdatedAt = SYSUTCDATETIME()
+            WHERE CounterID = @id;
+            """, connection, transaction);
+        rotate.Parameters.AddWithValue("@token", token);
+        rotate.Parameters.Add("@day", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+        rotate.Parameters.AddWithValue("@id", counterId);
+        await rotate.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (token, today);
+    }
+
+    public async Task WatchCounterAsync(Guid counterId, Guid saleContextId, Guid? customerId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET SaleContextID = @sale, CustomerID = @customer, UpdatedAt = SYSUTCDATETIME()
+            WHERE CounterID = @id;
+            """, connection);
+        command.Parameters.AddWithValue("@sale", saleContextId);
+        command.Parameters.AddWithValue("@customer", (object?)customerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("@id", counterId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<(string Status, Guid? CustomerId)> ConsumeCounterResultAsync(Guid counterId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET Status = N'Waiting', RecognizedCustomerID = NULL
+            OUTPUT deleted.Status, deleted.RecognizedCustomerID
+            WHERE CounterID = @id AND Status IN (N'Verified', N'Unlinked', N'Rejected');
+            """, connection);
+        command.Parameters.AddWithValue("@id", counterId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return ("Waiting", null);
+        var status = reader.GetString(0);
+        var customer = reader.IsDBNull(1) ? (Guid?)null : reader.GetGuid(1);
+        return (status, customer);
+    }
+
+    public async Task<MembershipPublicStatus> CounterStatusAsync(string token, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT UpdatedAt FROM dbo.MembershipCounterCodes WHERE PublicToken = @token;", connection);
+        command.Parameters.AddWithValue("@token", token);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        if (value is not DateTime updated) return new MembershipPublicStatus("Missing", null, "MEMBERSHIP_REQUEST_NOT_FOUND");
+        updated = DateTime.SpecifyKind(updated, DateTimeKind.Utc);
+        if (updated <= DateTime.UtcNow.AddMinutes(-2)) return new MembershipPublicStatus("Expired", updated, "MEMBERSHIP_COUNTER_IDLE");
+        return new MembershipPublicStatus("Pending", updated, null);
+    }
+
+    public async Task MarkCounterAsync(string token, string status, Guid? customerId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET Status = @status, RecognizedCustomerID = @customer
+            WHERE PublicToken = @token AND UpdatedAt > DATEADD(minute, -2, SYSUTCDATETIME());
+            """, connection);
+        command.Parameters.AddWithValue("@status", status);
+        command.Parameters.AddWithValue("@customer", (object?)customerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("@token", token);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task CompleteCounterAsync(string token, string? sessionToken, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        DateTime updated;
+        await using (var read = new SqlCommand("SELECT UpdatedAt FROM dbo.MembershipCounterCodes WHERE PublicToken = @token;", connection, transaction))
+        {
+            read.Parameters.AddWithValue("@token", token);
+            var value = await read.ExecuteScalarAsync(cancellationToken);
+            if (value is not DateTime seen) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
+            updated = DateTime.SpecifyKind(seen, DateTimeKind.Utc);
+        }
+        if (updated <= DateTime.UtcNow.AddMinutes(-2)) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
+        var session = await ReadSessionAsync(connection, transaction, sessionToken, cancellationToken);
+        if (session is null) throw new MembershipException("MEMBERSHIP_SESSION_REQUIRED");
+        if (session.Revoked) throw new MembershipException("MEMBERSHIP_SESSION_REVOKED");
+        if (session.IdleExpiresAt <= DateTime.UtcNow || session.AbsoluteExpiresAt <= DateTime.UtcNow) throw new MembershipException("MEMBERSHIP_SESSION_EXPIRED");
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET Status = N'Verified', RecognizedCustomerID = @customer
+            WHERE PublicToken = @token AND UpdatedAt > DATEADD(minute, -2, SYSUTCDATETIME());
+            """, connection, transaction);
+        command.Parameters.AddWithValue("@customer", session.CustomerId);
+        command.Parameters.AddWithValue("@token", token);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task<CounterTokenRow?> ReadCounterAsync(SqlConnection connection, SqlTransaction? transaction, Guid counterId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            "SELECT PublicToken, TokenDay FROM dbo.MembershipCounterCodes WITH (UPDLOCK, HOLDLOCK) WHERE CounterID = @id;",
+            connection, transaction);
+        command.Parameters.AddWithValue("@id", counterId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var token = reader.GetString(0);
+        DateOnly? day = reader.IsDBNull(1) ? null : DateOnly.FromDateTime(reader.GetDateTime(1));
+        return new CounterTokenRow(token, day);
+    }
+
+    private sealed record CounterTokenRow(string Token, DateOnly? Day);
 
     public async Task<(string Token, DateTime ExpiresAtUtc)> CreateEnrollmentQrAsync(Guid businessId, Guid cashierUserId, Guid? customerId, CancellationToken cancellationToken)
     {
@@ -296,9 +488,9 @@ public sealed class MembershipService(
             expires = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
             provider = reader.IsDBNull(2) ? null : reader.GetString(2);
             subject = reader.IsDBNull(3) ? null : reader.GetString(3);
-            display = reader.IsDBNull(4) ? null : reader.GetString(4);
-            if (string.IsNullOrWhiteSpace(display) && !reader.IsDBNull(5)) display = reader.GetString(5);
-            if (string.IsNullOrWhiteSpace(display)) display = subject;
+            var account = reader.IsDBNull(4) ? null : reader.GetString(4);
+            var email = reader.IsDBNull(5) ? null : reader.GetString(5);
+            display = MembershipEnrollmentRules.VisibleIdentity(email, account, subject);
         }
         if (status == "Pending" && expires <= DateTime.UtcNow) status = "Expired";
         if (string.IsNullOrWhiteSpace(subject)) return (status, provider, display, null);

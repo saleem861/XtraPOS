@@ -2,7 +2,16 @@ import { useEffect, useState } from "react";
 import { pendingEnrollmentKey } from "../membership/newCustomerDraft";
 
 export function MembershipReadyPage() {
-  const pending = new URLSearchParams(window.location.search).get("pending");
+  const query = new URLSearchParams(window.location.search);
+  const pending = query.get("pending");
+  if (query.get("conflict") === "1") {
+    return (
+      <section className="card" dir="rtl">
+        <h1>الحساب مستخدم</h1>
+        <p>هذا الحساب مرتبط بزبون آخر. ارجع إلى شاشة الكاشير وامسح حساباً آخر.</p>
+      </section>
+    );
+  }
   const [stored, setStored] = useState(false);
   useEffect(() => {
     if (!pending) return;

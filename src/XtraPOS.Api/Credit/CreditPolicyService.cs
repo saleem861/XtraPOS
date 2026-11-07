@@ -25,7 +25,7 @@ public sealed record CreditPolicyView(
 
 public sealed record CreditPolicyWrite(bool CreditEnabled, decimal CreditLimit, int PaymentTermDays, string CreditStatus, string? RowVersion, string? Reason);
 
-public sealed class CreditPolicyService(SyncEndpointStore endpoints)
+public sealed class CreditPolicyService(SyncEndpointStore endpoints, SqlConnectionFactory connections, BranchCardOutboxSync outbox)
 {
     public static string? Denial(bool canManage, bool canSuspend, bool administer, CreditPolicyView current, CreditPolicyWrite next)
     {
@@ -57,41 +57,65 @@ public sealed class CreditPolicyService(SyncEndpointStore endpoints)
 
     public async Task<CreditPolicyView> ReadAsync(Guid customerId, CancellationToken cancellationToken)
     {
+        var local = await ReadLocalAsync(customerId, cancellationToken);
+        var outstanding = 0m;
+        var reachable = false;
+        CreditPolicyView? remote = null;
         try
         {
             var central = await OpenAsync(cancellationToken);
-            if (central is null)
+            if (central is not null)
             {
-                throw new CreditPolicyException("CENTRAL_UNAVAILABLE", "لم يتم إعداد الاتصال بجهة الائتمان المركزية.");
+                await using (central)
+                {
+                    reachable = true;
+                    remote = await ReadCoreAsync(central, customerId, cancellationToken);
+                    outstanding = remote?.Outstanding ?? await OutstandingAsync(central, customerId, cancellationToken);
+                }
             }
-
-            await using (central)
-            {
-                return await ReadCoreAsync(central, customerId, cancellationToken) ?? Missing(customerId, reachable: true);
-            }
-        }
-        catch (CreditPolicyException)
-        {
-            throw;
-        }
-        catch (SqlException exception) when (exception.Number == 208)
-        {
-            throw new CreditPolicyException("CENTRAL_UNAVAILABLE", "جداول الائتمان غير موجودة في الإدارة المركزية.");
         }
         catch (SqlException)
         {
-            throw new CreditPolicyException("CENTRAL_UNAVAILABLE", "تعذر الاتصال بجهة الائتمان المركزية.");
+            reachable = false;
         }
+
+        if (local is not null)
+        {
+            var available = local.CreditEnabled && local.CreditStatus == "Active" ? CreditAvailability.Available(local.CreditLimit, outstanding, 0m) : 0m;
+            return local with { Outstanding = outstanding, Available = available, CentralReachable = reachable };
+        }
+
+        if (remote is not null)
+        {
+            return remote with { CentralReachable = reachable };
+        }
+
+        return Missing(customerId, reachable);
     }
 
     public async Task<CreditPolicyView> SaveAsync(Guid customerId, Guid actorUserId, Guid? branchId, CreditPolicyWrite write, CancellationToken cancellationToken)
     {
+        _ = branchId;
         Validate(write);
-        var central = await OpenAsync(cancellationToken) ?? throw new CreditPolicyException("CENTRAL_UNAVAILABLE", "جهة الائتمان المركزية غير متاحة.");
-        await using (central)
+        try
         {
-            return await SaveAsync(central, customerId, actorUserId, branchId, write, cancellationToken);
+            await SaveLocalAsync(customerId, actorUserId, write, cancellationToken);
         }
+        catch (SqlException exception) when (exception.Number is 2601 or 2627)
+        {
+            throw new CreditPolicyException("CREDIT_CONFLICT", "تم تغيير إعدادات الائتمان من مستخدم آخر.");
+        }
+
+        try
+        {
+            await outbox.FlushAsync(cancellationToken);
+        }
+        catch (SqlException)
+        {
+            // The local card is saved. The pending outbox row is uploaded on the next cycle.
+        }
+
+        return await ReadAsync(customerId, cancellationToken);
     }
 
     public async Task<CreditPolicyView> SaveAsync(SqlConnection central, Guid customerId, Guid actorUserId, Guid? branchId, CreditPolicyWrite write, CancellationToken cancellationToken)
@@ -190,6 +214,127 @@ public sealed class CreditPolicyService(SyncEndpointStore endpoints)
         command.Parameters.Add("@terms", SqlDbType.Int).Value = terms;
         command.Parameters.Add("@status", SqlDbType.NVarChar, 20).Value = status;
         command.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value = actorUserId;
+    }
+
+    private async Task<CreditPolicyView?> ReadLocalAsync(Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var exists = new SqlCommand("SELECT OBJECT_ID(N'dbo.CustomerCreditPolicies', N'U');", connection);
+        if (await exists.ExecuteScalarAsync(cancellationToken) is null or DBNull)
+        {
+            return null;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            SELECT CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, RowVersion
+            FROM dbo.CustomerCreditPolicies
+            WHERE CustomerID = @id;
+            """,
+            connection);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var enabled = reader.GetBoolean(0);
+        var limit = reader.GetDecimal(1);
+        var status = reader.GetString(3);
+        var version = new byte[8];
+        reader.GetBytes(4, 0, version, 0, 8);
+        return new CreditPolicyView(customerId, enabled, limit, reader.GetInt32(2), status, Convert.ToBase64String(version), true, 0m, 0m, false);
+    }
+
+    private async Task SaveLocalAsync(Guid customerId, Guid actorUserId, CreditPolicyWrite write, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        if (!await CustomerExistsAsync(connection, transaction, customerId, cancellationToken))
+        {
+            throw new CreditPolicyException("CUSTOMER_NOT_FOUND", "الزبون غير موجود.");
+        }
+
+        var current = await ReadLocalCoreAsync(connection, transaction, customerId, cancellationToken) ?? Missing(customerId, false);
+        var version = string.IsNullOrWhiteSpace(write.RowVersion) ? current.RowVersion : write.RowVersion;
+        if (current.Configured && !string.Equals(version, current.RowVersion, StringComparison.Ordinal))
+        {
+            throw new CreditPolicyException("CREDIT_CONFLICT", "تم تغيير إعدادات الائتمان من مستخدم آخر.");
+        }
+
+        var status = write.CreditEnabled
+            ? (write.CreditStatus == "Suspended" ? "Suspended" : "Active")
+            : (write.CreditStatus == "Suspended" ? "Suspended" : "Inactive");
+        var enabled = write.CreditEnabled && status == "Active";
+        if (current.Configured)
+        {
+            await using var update = new SqlCommand(
+                """
+                UPDATE dbo.CustomerCreditPolicies
+                SET CreditEnabled = @enabled, CreditLimit = @limit, PaymentTermDays = @terms, CreditStatus = @status,
+                    UpdatedBy = @actor, UpdatedAt = SYSUTCDATETIME()
+                WHERE CustomerID = @customer AND RowVersion = @version;
+                """,
+                connection,
+                transaction);
+            Bind(update, customerId, enabled, write.CreditLimit, write.PaymentTermDays, status, actorUserId);
+            update.Parameters.Add("@version", SqlDbType.VarBinary, 8).Value = Convert.FromBase64String(current.RowVersion);
+            if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                throw new CreditPolicyException("CREDIT_CONFLICT", "تم تغيير إعدادات الائتمان من مستخدم آخر.");
+            }
+        }
+        else
+        {
+            await using var insert = new SqlCommand(
+                """
+                INSERT INTO dbo.CustomerCreditPolicies (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, UpdatedBy)
+                VALUES (@customer, @enabled, @limit, @terms, @status, @actor);
+                """,
+                connection,
+                transaction);
+            Bind(insert, customerId, enabled, write.CreditLimit, write.PaymentTermDays, status, actorUserId);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await outbox.EnqueueAsync(connection, transaction, BranchCardOutboxSync.CreditPolicies, customerId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task<CreditPolicyView?> ReadLocalCoreAsync(SqlConnection connection, SqlTransaction transaction, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, RowVersion
+            FROM dbo.CustomerCreditPolicies
+            WHERE CustomerID = @id;
+            """,
+            connection,
+            transaction);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var version = new byte[8];
+        reader.GetBytes(4, 0, version, 0, 8);
+        return new CreditPolicyView(customerId, reader.GetBoolean(0), reader.GetDecimal(1), reader.GetInt32(2), reader.GetString(3), Convert.ToBase64String(version), true, 0m, 0m, false);
+    }
+
+    private static async Task<decimal> OutstandingAsync(SqlConnection connection, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT ISNULL((SELECT SUM(OutstandingAmount) FROM dbo.CustomerReceivables WHERE CustomerID = @id AND Status IN (N'Open', N'Partial')), 0);
+            """,
+            connection);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+        return Convert.ToDecimal(await command.ExecuteScalarAsync(cancellationToken) ?? 0m);
     }
 
     private async Task<SqlConnection?> OpenAsync(CancellationToken cancellationToken)

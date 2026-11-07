@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { MembershipQr } from "./MembershipQr";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import QRCode from "qrcode";
 import {
   Archive,
   ArrowDown,
@@ -52,12 +52,14 @@ import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
 import { deviceHeaders } from "../api/client";
 import { membershipPricingCustomer } from "../membership/membershipPricing";
+import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
 import { createIndexedDbDraftDatabase, loadDraft, publishCartRestoreView, recordCartStorageEvent, saveDraft } from "../cart/draftStore";
 import { addDecimals, compareDecimals, formatPosMoney, isPositiveDecimal, isPositiveInteger, multiplyDecimals, roundDecimal, subtractDecimals } from "../cart/decimal";
-import { interpretFastEntry } from "../cart/fastEntry";
+import { hebronToday } from "../cart/heldDraftFilters";
+import { interpretFastEntry, sameItemNumber } from "../cart/fastEntry";
 import { POS_SEARCH_PAGE_SIZE, sortSearchResults, type SearchSortColumn } from "../cart/itemSearch";
 import { sortCustomers, type CustomerSortColumn } from "../cart/customerSearch";
 import {
@@ -104,6 +106,22 @@ const QUICK_ACTIONS: { label: string; icon: LucideIcon; title: string }[] = [
   { label: "فتح", icon: FolderOpen, title: "فتح" },
   { label: "مبيعات الزبون ؟", icon: UserRoundSearch, title: "مبيعات الزبون" },
 ];
+
+function placeEntryCaret(field: HTMLInputElement) {
+  const pin = () => {
+    if (!field.isConnected) return;
+    const end = field.value.length;
+    try {
+      field.setSelectionRange(end, end);
+    } catch {
+      return;
+    }
+    const overflow = field.scrollWidth - field.clientWidth;
+    field.scrollLeft = overflow > 0 ? overflow : 0;
+  };
+  pin();
+  window.requestAnimationFrame(pin);
+}
 
 function prefersProfessionalShell(): boolean {
   if (typeof window.matchMedia !== "function") return false;
@@ -169,6 +187,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   };
   const entryRef = useRef<HTMLInputElement>(null);
   const entryValueRef = useRef("");
+  const entryCaretPin = useRef(false);
   const [cart, setCart] = useState<CartDraft | null>(null);
   const [cartRestore, setCartRestore] = useState<"loading" | "ready" | "unavailable">("loading");
   const [entry, setEntry] = useState("");
@@ -219,12 +238,21 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [customerSelected, setCustomerSelected] = useState(-1);
   const [customerSort, setCustomerSort] = useState<{ column: CustomerSortColumn; direction: "asc" | "desc" } | null>(null);
   const [saleCustomer, setSaleCustomer] = useState<CustomerListItem | null>(null);
+  const [customerIdentity, setCustomerIdentity] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
+  const [counterQr, setCounterQr] = useState("");
   const [membershipVerifiedFor, setMembershipVerifiedFor] = useState<string | null>(null);
   const [membershipRestrict, setMembershipRestrict] = useState(false);
-  const [membershipMessage, setMembershipMessage] = useState("");
+  const [membershipMark, setMembershipMark] = useState<"ok" | "bad" | null>(null);
   const membershipHadCustomer = useRef(false);
   const membershipSettled = useRef(false);
+  const saleCustomerRef = useRef(saleCustomer);
+  const cartIdRef = useRef("");
+  const applyCounterResultRef = useRef<(status: string, customerId?: string) => void>(() => undefined);
+  const holdSaleCustomer = useRef(false);
+  const counterTokenRef = useRef("");
+  saleCustomerRef.current = saleCustomer;
+  cartIdRef.current = cart?.cartId ?? "";
   const [regularPricing, setRegularPricing] = useState(false);
   const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -356,9 +384,11 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
 
   useEffect(() => {
     if (!cart?.customerId) {
-      if (!regularPricingRef.current) setSaleCustomer(null);
+      if (!regularPricingRef.current && !holdSaleCustomer.current) setSaleCustomer(null);
+      setCustomerIdentity("");
       return;
     }
+    if (holdSaleCustomer.current && saleCustomer?.customerId === cart.customerId) holdSaleCustomer.current = false;
     if (membershipRestrict && membershipVerifiedFor !== cart.customerId) {
       regularPricingRef.current = true;
       setRegularPricing(true);
@@ -379,6 +409,17 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       cancelled = true;
     };
   }, [cart?.customerId, customers, saleCustomer?.customerId, membershipRestrict, membershipVerifiedFor]);
+
+  useEffect(() => {
+    if (!cart?.customerId) return;
+    let cancelled = false;
+    setCustomerIdentity("");
+    void fetch(`/api/customers/${cart.customerId}/membership`, { credentials: "same-origin", headers: deviceHeaders(session) })
+      .then(async (response) => response.ok ? await response.json() as { display?: string | null } : null)
+      .then((body) => { if (!cancelled) setCustomerIdentity(savedMembershipIdentity(body?.display)); })
+      .catch(() => { if (!cancelled) setCustomerIdentity(""); });
+    return () => { cancelled = true; };
+  }, [cart?.customerId, session]);
 
   useEffect(() => {
     let cancelled = false;
@@ -404,8 +445,9 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   function focusEntry() {
     if (surfaceOpen) return;
     const field = entryRef.current;
-    if (!field || document.activeElement === field) return;
-    field.focus({ preventScroll: true });
+    if (!field) return;
+    if (document.activeElement !== field) field.focus({ preventScroll: true });
+    placeEntryCaret(field);
   }
 
   useEffect(() => {
@@ -450,6 +492,14 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     entryValueRef.current = entry;
   }, [entry]);
 
+  useLayoutEffect(() => {
+    if (!entryCaretPin.current || surfaceOpen) return;
+    entryCaretPin.current = false;
+    const field = entryRef.current;
+    if (!field || document.activeElement !== field) return;
+    placeEntryCaret(field);
+  }, [entry, surfaceOpen]);
+
   useEffect(() => {
     if (surfaceOpen) return;
     function routeScanner(event: KeyboardEvent) {
@@ -471,11 +521,15 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     return () => window.removeEventListener("keydown", routeScanner);
   }, [surfaceOpen, cart]);
 
+  const entryReady = cartRestore === "ready" && cart !== null;
   useEffect(() => {
-    if (surfaceOpen) return;
+    if (surfaceOpen || !entryReady) return;
     suppressEntryFocus.current = false;
-    entryRef.current?.focus({ preventScroll: true });
-  }, [surfaceOpen]);
+    const field = entryRef.current;
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    placeEntryCaret(field);
+  }, [surfaceOpen, entryReady]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -509,8 +563,8 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   }
 
   async function findExactItem(itemNumber: string) {
-    const page = await items.loadItems({ search: itemNumber, activity: "active", page: 1, pageSize: 25, sort: "number" });
-    return page.items.find((item) => item.itemNumber === itemNumber) ?? null;
+    const page = await items.loadItems({ search: itemNumber, activity: "active", page: 1, pageSize: 25, sort: "number", exact: true });
+    return page.items.find((item) => sameItemNumber(item.itemNumber, itemNumber)) ?? null;
   }
 
   async function addItem(item: ItemListItem) {
@@ -717,21 +771,20 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
 
   function failMembershipScan() {
     setMembershipVerifiedFor(null);
-    if (!membershipHadCustomer.current) {
-      setMembershipMessage("");
-      return;
-    }
+    setMembershipMark("bad");
+    if (!membershipHadCustomer.current) return;
     regularPricingRef.current = true;
     setRegularPricing(true);
     void changeCustomer(null);
   }
 
-  function chooseCustomer(customer: CustomerListItem, preserveMessage = false, verified = false) {
+  function chooseCustomer(customer: CustomerListItem, verified = false) {
+    holdSaleCustomer.current = true;
     regularPricingRef.current = false;
     setRegularPricing(false);
     setMembershipOpen(false);
     setMembershipVerifiedFor(verified ? customer.customerId : null);
-    if (!preserveMessage) setMembershipMessage("");
+    setMembershipMark(verified ? "ok" : null);
     setSaleCustomer(customer);
     setCustomerOpen(false);
     cancelMembershipSale(cart?.cartId);
@@ -750,7 +803,8 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     setRegularPricing(false);
     setMembershipOpen(false);
     setMembershipVerifiedFor(null);
-    setMembershipMessage("");
+    setMembershipMark(null);
+    holdSaleCustomer.current = false;
     setSaleCustomer(null);
     setCustomerOpen(false);
     cancelMembershipSale(cart?.cartId);
@@ -829,7 +883,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     cancelMembershipSale(cart.cartId);
     setMembershipOpen(false);
     setMembershipVerifiedFor(null);
-    setMembershipMessage("");
+    setMembershipMark(null);
     try {
       const detail = await heldSales.get(saleId);
       await persist(cartFromHeldSale(scope, detail));
@@ -904,7 +958,8 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       setRegularPricing(false);
       setMembershipOpen(false);
       setMembershipVerifiedFor(null);
-      setMembershipMessage("");
+      setMembershipMark(null);
+      holdSaleCustomer.current = false;
       setCompletedShare({ saleId: completed.saleId, phone });
       setReceipt(completed);
       setPaying(false);
@@ -1022,6 +1077,75 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     });
   }, [cart, cartRestore, scope.businessId, scope.deviceId, scope.userId]);
 
+  applyCounterResultRef.current = (status, recognizedCustomerId) => {
+    const recognized = recognizedCustomerId && recognizedCustomerId !== "00000000-0000-0000-0000-000000000000" ? recognizedCustomerId : "";
+    if (status === "Verified") {
+      membershipSettled.current = true;
+      setMembershipOpen(false);
+      const current = saleCustomerRef.current;
+      if (recognized && current?.customerId !== recognized) {
+        void customers.get(recognized).then((customer) => { if (customer) chooseCustomer(customer, true); });
+        return;
+      }
+      if (current) {
+        chooseCustomer(current, true);
+        return;
+      }
+      if (recognized) {
+        void customers.get(recognized).then((customer) => { if (customer) chooseCustomer(customer, true); });
+      }
+      return;
+    }
+    if (status !== "Unlinked" && status !== "Rejected") return;
+    membershipHadCustomer.current = Boolean(saleCustomerRef.current);
+    membershipSettled.current = true;
+    setMembershipOpen(false);
+    failMembershipScan();
+  };
+
+  useEffect(() => {
+    let stop = false;
+    let shownDay = "";
+    const loadCounterQr = () => {
+      void fetch("/api/pos/membership-counter", { headers: deviceHeaders(session), credentials: "same-origin" }).then(async (response) => {
+        const body = await response.json().catch(() => ({})) as { token?: string };
+        if (!response.ok || stop || !body.token) return;
+        shownDay = hebronToday();
+        if (body.token === counterTokenRef.current) return;
+        counterTokenRef.current = body.token;
+        const image = await QRCode.toDataURL(`${window.location.origin}/membership/counter/${body.token}`, { margin: 0, width: 220 });
+        if (!stop) setCounterQr(image);
+      }).catch(() => undefined);
+    };
+    void fetch("/api/membership/config").then(async (response) => {
+      if (!response.ok || stop) return;
+      const body = await response.json() as { requireVerificationForSpecialPrices?: boolean };
+      setMembershipRestrict(Boolean(body.requireVerificationForSpecialPrices));
+    }).catch(() => undefined);
+    loadCounterQr();
+    const timer = window.setInterval(() => {
+      if (!counterTokenRef.current || shownDay !== hebronToday()) loadCounterQr();
+      const saleId = cartIdRef.current;
+      if (!saleId) return;
+      void fetch("/api/pos/membership-counter/watch", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
+        body: JSON.stringify({ saleContextId: saleId, customerId: saleCustomerRef.current?.customerId || null }),
+      }).catch(() => undefined);
+      void fetch("/api/pos/membership-counter/result", { credentials: "same-origin", headers: deviceHeaders(session) }).then(async (response) => {
+        if (!response.ok) return;
+        const body = await response.json() as { status?: string; customerId?: string };
+        if (!body.status || body.status === "Waiting") return;
+        applyCounterResultRef.current(body.status, body.customerId);
+      }).catch(() => undefined);
+    }, 1000);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+    };
+  }, [session]);
+
   if (cartRestore === "loading" || !cart) return <section className="card">جاري استعادة السلة…</section>;
   const totals = cartTotals(cart);
   const orderedResults = searchSort ? sortSearchResults(results, searchSort.column, searchSort.direction, (item) => item.resolvedPrice ?? null) : results;
@@ -1064,9 +1188,10 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     if (!target) return;
     if (target === entryInput) {
       if (token === "Enter") { void submitEntry(); return; }
+      if (token === "BS" || token === "Del" || /^[0-9]$/.test(token)) entryCaretPin.current = true;
       if (token === "BS") { setEntry((value) => value.slice(0, -1)); return; }
       if (token === "Del") { setEntry(""); return; }
-      if (/^[0-9]$/.test(token)) setEntry((value) => `${value}${token}`);
+      if (/^[0-9]$/.test(token)) { setEntry((value) => `${value}${token}`); return; }
       return;
     }
     const key = token === "BS" ? "Backspace" : token === "Del" ? "Delete" : token;
@@ -1088,13 +1213,14 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      <ScreenHeader title="نقطة البيع" onBack={onBack} />
+      <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
           <input
             id="pos-fast-entry"
             ref={entryRef}
+            dir="ltr"
             autoComplete="off"
             aria-autocomplete="none"
             aria-label="رقم الصنف"
@@ -1106,14 +1232,14 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           <button className="nav-button" type="submit"><CirclePlus className="pos-pro-icon" aria-hidden="true" />إضافة</button>
         </form>
         <button className="nav-button" type="button" onClick={() => setSearchOpen((open) => !open)}><Search className="pos-pro-icon" aria-hidden="true" />بحث عن صنف</button>
-        <p className="pos-meta">الزبون: {cart.customerId ? cart.customerId : "زبون عادي"} · <span className={connected ? "status-ok" : "status-error"}>{connected ? "متصل بخادم الفرع" : "خادم الفرع غير متاح. السلة محفوظة."}</span></p>
+        <p className="pos-meta">{!cart.customerId ? "الزبون: زبون عادي · " : customerIdentity ? `الزبون: ${customerIdentity} · ` : null}<span className={connected ? "status-ok" : "status-error"}>{connected ? "متصل بخادم الفرع" : "خادم الفرع غير متاح. السلة محفوظة."}</span></p>
       </div>
       <p id="pos-fast-help" className="pos-help">من 1 إلى 300 تُحسب قيمة ميزان. لإضافة صنف برقمه استخدم # مثل #224.</p>
       </div>
       {cart.status === "NeedsReprice" ? <p className="status-error">السلة تحتاج إعادة تسعير.</p> : null}
       <div className="pos-info pos-pro" aria-label="بيانات الزبون والتسعير">
         <div className="pos-original-total"><span><Coins className="pos-pro-icon" aria-hidden="true" />المجموع قبل الخصم</span><strong>{formatPosMoney(originalCartTotal(cart))}</strong></div>
-        <div><button type="button" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
+        <div><button type="button" className="pos-customer-number" onClick={openCustomerSearch}><span><UserRound className="pos-pro-icon" aria-hidden="true" />رقم الزبون</span><strong title={saleCustomer?.customerNumber ?? ""}>{membershipMark === "ok" ? <i className="pos-member-mark is-ok" aria-label="تم التحقق">✓</i> : null}{membershipMark === "bad" ? <i className="pos-member-mark is-bad" aria-label="فشل التحقق">✕</i> : null}{saleCustomer ? (saleCustomer.customerNumber ?? "—") : "—"}</strong></button></div>
         <div><button type="button" onClick={openCustomerSearch}><span>اسم الزبون</span><strong title={saleCustomer?.name ?? "زبون عادي"}>{saleCustomer?.name ?? (cart.customerId ? "—" : "زبون عادي")}</strong></button></div>
         <div><span>نوع الزبون</span><strong>{regularPricing ? "عادي" : saleCustomer ? (saleCustomer.classificationName || "—") : cart.customerId ? "—" : "عادي"}</strong></div>
         <div><span><Tag className="pos-pro-icon" aria-hidden="true" />التسعيرة</span><strong dir="ltr">{regularPricing ? "Price0" : saleCustomer?.priceCode || (cart.customerId ? (priceTier || "—") : "Price0")}</strong></div>
@@ -1121,32 +1247,17 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <div><span><UserRound className="pos-pro-icon" aria-hidden="true" />اسم الموظف</span><strong title={user.displayName}>{user.displayName}</strong></div>
         <div><span><Percent className="pos-pro-icon" aria-hidden="true" />الخصم</span><strong>{regularPricing || !saleCustomer ? "0" : saleCustomer.variableValueDiscountPercent}</strong></div>
       </div>
-      {cart && membershipOpen ? <MembershipQr session={session} customerId={saleCustomer?.customerId ?? ""} saleContextId={cart.cartId} active={membershipOpen} onDismiss={() => { setMembershipOpen(false); if (!membershipSettled.current) failMembershipScan(); }} onPhase={(phase, restrict, recognizedCustomerId) => {
-        if (phase === "Config") {
-          setMembershipRestrict(restrict);
-          return;
-        }
-        if (phase === "Verified") {
-          membershipSettled.current = true;
-          const recognized = recognizedCustomerId && recognizedCustomerId !== "00000000-0000-0000-0000-000000000000" ? recognizedCustomerId : "";
-          setMembershipVerifiedFor(recognized || saleCustomer?.customerId || null);
-          setMembershipMessage("تم التحقق من العضوية");
-          setMembershipOpen(false);
-          if (!membershipHadCustomer.current && recognized) {
-            void customers.get(recognized).then((customer) => { if (customer) chooseCustomer(customer, true, true); });
-            return;
-          }
-          if (membershipHadCustomer.current) return;
-          regularPricingRef.current = false;
-          setRegularPricing(false);
-          return;
-        }
-        if (phase !== "Expired" && phase !== "Rejected" && phase !== "Cancelled") return;
-        if (membershipSettled.current) return;
-        membershipSettled.current = true;
-        failMembershipScan();
-      }} /> : null}
-      {membershipMessage ? <p className="status-ok passkey-result" role="status">{membershipMessage}</p> : null}
+      {membershipOpen ? (
+        <div className="membership-dialog-backdrop" role="presentation">
+          <div className="membership-dialog" role="dialog" aria-modal="true" aria-label="رمز العضوية">
+            <h2>امسح رمز العضوية</h2>
+            {counterQr ? <img src={counterQr} alt="رمز العضوية" width={220} height={220} /> : <p>جاري إظهار رمز العضوية…</p>}
+            <div>
+              <button type="button" onClick={() => setMembershipOpen(false)}>إغلاق</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="pos-summary">
         <div>
           <div className="pos-total-label"><Coins className="pos-pro-icon" aria-hidden="true" />المجموع</div>
@@ -1190,7 +1301,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
                     if (isPositiveInteger(next)) void commitRepriced(updateFixedQuantity(cart, line.cartLineId, next)).then(() => focusEntry());
                   }}
                 /></div>
-                <div className="pos-col-base" role="cell">{line.originalUnitPrice == null ? "—" : formatPosMoney(line.originalUnitPrice)}</div>
+                <div className="pos-col-base" role="cell"><ReadonlyPriceBox value={line.originalUnitPrice == null ? "—" : formatPosMoney(line.originalUnitPrice)} /></div>
                 <div className="pos-col-price" role="cell"><PriceBox value={formatPosMoney(line.unitPrice)} manual={line.priceOverrideMode !== "None"} onClick={() => openPrice(line.cartLineId, "unit", formatPosMoney(line.unitPrice))} /></div>
                 <div className="pos-col-total" role="cell"><PriceBox value={formatPosMoney(line.lineTotal)} manual={line.priceOverrideMode !== "None"} onClick={() => openPrice(line.cartLineId, "total", formatPosMoney(line.lineTotal))} /></div>
               </>
@@ -1213,12 +1324,12 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
                     if (isPositiveInteger(next)) void persist(updateVariableQuantity(cart, line.cartLineId, next)).then(() => focusEntry());
                   }}
                 /></div>
-                <div className="pos-col-base" role="cell" title="قيمة التوزين الأصلية">{line.enteredScaleValue == null ? "—" : formatPosMoney(line.enteredScaleValue)}</div>
+                <div className="pos-col-base" role="cell" title="قيمة التوزين الأصلية"><ReadonlyPriceBox value={line.enteredScaleValue == null ? "—" : formatPosMoney(line.enteredScaleValue)} /></div>
                 <div className="pos-col-price" role="cell"><PriceBox value={formatPosMoney(line.unitPrice)} manual={line.priceOverrideMode !== "None"} onClick={() => openPrice(line.cartLineId, "unit", formatPosMoney(line.unitPrice))} /></div>
                 <div className="pos-col-total" role="cell"><PriceBox value={formatPosMoney(line.lineTotal)} manual={line.priceOverrideMode !== "None"} onClick={() => openPrice(line.cartLineId, "total", formatPosMoney(line.lineTotal))} /></div>
               </>
             )}
-            <div className="pos-col-action" role="cell"><button type="button" onClick={() => void persist(removeLine(cart, line.cartLineId)).then(() => focusEntry())}>حذف</button></div>
+            <div className="pos-col-action" role="cell"><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => void persist(removeLine(cart, line.cartLineId)).then(() => { focusEntry(); window.setTimeout(() => focusEntry(), 0); })}>حذف</button></div>
           </div>
         ))}
         </div>
@@ -1243,7 +1354,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         <section className="pos-side-card">
           <h3>إجراءات سريعة</h3>
           <div className="pos-quick-grid">
-            <button type="button" title="رمز العضوية" onClick={() => { membershipHadCustomer.current = Boolean(saleCustomer); membershipSettled.current = false; setMembershipMessage(""); setMembershipOpen(true); }}><QrCode aria-hidden="true" /><span>رمز العضوية</span></button>
+            <button type="button" title="رمز العضوية" onClick={() => setMembershipOpen(true)}><QrCode aria-hidden="true" /><span>رمز العضوية</span></button>
             <button type="button" title="حفظ الطلب الحالي" onClick={() => void saveHeldInvoice()}><Save aria-hidden="true" /><span>حفظ</span></button>
             <button type="button" title="طباعة ومشاركة" onClick={openInvoicePreview}><Printer aria-hidden="true" /><span>طباعة ومشاركة</span></button>
             <button type="button" title="المحفوظات" onClick={() => setHeldOpen(true)}><Archive aria-hidden="true" /><span>المحفوظات</span></button>
@@ -1259,6 +1370,9 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
               );
             })}
             <button type="button" disabled title="الجرد"><PackageSearch aria-hidden="true" /><span>الجرد</span></button>
+            <button type="button" className="pos-side-qr" title="رمز العضوية" onClick={() => setMembershipOpen(true)}>
+              {counterQr ? <img src={counterQr} alt="رمز العضوية" /> : <QrCode aria-hidden="true" />}
+            </button>
           </div>
         </section>
         <section className="pos-side-card pos-pad-card">
@@ -1323,6 +1437,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           session={session}
           cart={cart}
           customerName={saleCustomer?.name ?? "زبون عادي"}
+          customerNumber={saleCustomer?.customerNumber ?? null}
           branchName={session.branchName}
           userName={user.displayName}
           canCreate={user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer")}
@@ -1648,6 +1763,10 @@ function cashGap(expected: string, counted: string) {
   if (Number(difference) === 0) return "متطابق";
   if (difference.startsWith("-")) return `عجز ${difference.slice(1)} ₪`;
   return `زيادة ${difference} ₪`;
+}
+
+function ReadonlyPriceBox({ value }: { value: string }) {
+  return <span className="pos-money-value pos-money-readonly">{value}</span>;
 }
 
 function PriceBox({ value, manual, onClick }: { value: string; manual: boolean; onClick: () => void }) {

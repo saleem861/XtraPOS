@@ -329,6 +329,100 @@ public sealed class CustomerMasterTests(BranchApiFixture fixture)
     }
 
     [Fact]
+    public async Task LinkedCustomerCard_UploadsNewerLocalEdits_AndPendingCreditPolicy()
+    {
+        try
+        {
+            await DropCentralAsync();
+            await PrepareCentralAsync();
+            await SaveCentralEndpointAsync();
+            using var client = Client();
+            await LoginAsync(client);
+            var priceTypeId = await QueryGuidAsync("SELECT PriceTypeID FROM dbo.PriceTypes WHERE PriceCode = N'Price0';");
+            var created = await CreateAsync(client, new { name = "بطاقة الفرع", phone = "0594444444", priceTypeId, variableValueDiscountPercent = 0, isActive = true });
+            var customerId = created.Customer!.CustomerId;
+            Assert.Equal(1, await CentralIntAsync($"SELECT COUNT(*) FROM dbo.Customers WHERE CustomerID = '{customerId}' AND Name = N'بطاقة الفرع';"));
+            Assert.Equal(0, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending';"));
+
+            var renamed = await client.PutAsJsonAsync(
+                $"/api/customers/{customerId}",
+                new { name = "بعد الرفع", phone = "0594444444", priceTypeId, rowVersion = created.Customer.RowVersion, variableValueDiscountPercent = 0, isActive = true });
+            Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+            Assert.Equal(1, await CentralIntAsync($"SELECT COUNT(*) FROM dbo.Customers WHERE CustomerID = '{customerId}' AND Name = N'بعد الرفع';"));
+            Assert.Equal(0, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending';"));
+
+            await CentralExecuteAsync($"UPDATE dbo.Customers SET Name = N'الأحدث في المركز', UpdatedAt = DATEADD(day, 2, SYSUTCDATETIME()) WHERE CustomerID = '{customerId}';");
+            var current = await client.GetFromJsonAsync<CustomerBody>($"/api/customers/{customerId}", Json);
+            var kept = await client.PutAsJsonAsync(
+                $"/api/customers/{customerId}",
+                new { name = "تعديل أقدم", phone = "0594444444", priceTypeId, rowVersion = current!.RowVersion, variableValueDiscountPercent = 0, isActive = true });
+            Assert.Equal(HttpStatusCode.OK, kept.StatusCode);
+            Assert.Equal("الأحدث في المركز", await QueryStringAsync($"SELECT Name FROM dbo.Customers WHERE CustomerID = '{customerId}';"));
+            Assert.Equal(1, await CentralIntAsync($"SELECT COUNT(*) FROM dbo.Customers WHERE CustomerID = '{customerId}' AND Name = N'الأحدث في المركز';"));
+            Assert.Equal(0, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending';"));
+
+            var actor = await QueryGuidAsync("SELECT TOP (1) UserID FROM dbo.Users;");
+            await ExecuteAsync(
+                $"""
+                INSERT INTO dbo.CustomerCreditPolicies
+                    (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, UpdatedBy, UpdatedAt)
+                VALUES ('{customerId}', 1, 500, 15, N'Active', '{actor}', SYSUTCDATETIME());
+                """);
+            await CentralExecuteAsync(
+                $"""
+                INSERT INTO dbo.CustomerCreditPolicies
+                    (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, UpdatedBy, CreatedAt, UpdatedAt)
+                VALUES ('{customerId}', 1, 100, 30, N'Active', '{actor}', DATEADD(day, -2, SYSUTCDATETIME()), DATEADD(day, -2, SYSUTCDATETIME()));
+                """);
+            await ExecuteAsync(
+                $"""
+                INSERT INTO dbo.SyncOutbox (OutboxID, EndpointID, EntityType, EntityId, Status)
+                SELECT NEWID(), EndpointID, N'CustomerCreditPolicies', '{customerId}', N'Pending'
+                FROM dbo.SyncEndpoints WHERE DatabaseRole = N'Central';
+                """);
+            using (var scope = fixture.Factory.Services.CreateScope())
+            {
+                await scope.ServiceProvider.GetRequiredService<BranchCardOutboxSync>().FlushAsync(CancellationToken.None);
+            }
+
+            Assert.Equal(500, await CentralIntAsync($"SELECT CAST(CreditLimit AS int) FROM dbo.CustomerCreditPolicies WHERE CustomerID = '{customerId}';"));
+            Assert.Equal(0, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending';"));
+
+            await CentralExecuteAsync($"UPDATE dbo.CustomerCreditPolicies SET CreditLimit = 900, UpdatedAt = DATEADD(day, 2, SYSUTCDATETIME()) WHERE CustomerID = '{customerId}';");
+            await ExecuteAsync($"UPDATE dbo.CustomerCreditPolicies SET CreditLimit = 500, UpdatedAt = DATEADD(day, -1, SYSUTCDATETIME()) WHERE CustomerID = '{customerId}';");
+            await ExecuteAsync(
+                $"""
+                INSERT INTO dbo.SyncOutbox (OutboxID, EndpointID, EntityType, EntityId, Status)
+                SELECT NEWID(), EndpointID, N'CustomerCreditPolicies', '{customerId}', N'Pending'
+                FROM dbo.SyncEndpoints WHERE DatabaseRole = N'Central';
+                """);
+            using (var scope = fixture.Factory.Services.CreateScope())
+            {
+                await scope.ServiceProvider.GetRequiredService<BranchCardOutboxSync>().FlushAsync(CancellationToken.None);
+            }
+
+            Assert.Equal(900, await QueryIntAsync($"SELECT CAST(CreditLimit AS int) FROM dbo.CustomerCreditPolicies WHERE CustomerID = '{customerId}';"));
+            Assert.Equal(900, await CentralIntAsync($"SELECT CAST(CreditLimit AS int) FROM dbo.CustomerCreditPolicies WHERE CustomerID = '{customerId}';"));
+            Assert.Equal(0, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending';"));
+
+            var beforeOffline = await client.GetFromJsonAsync<CustomerBody>($"/api/customers/{customerId}", Json);
+            await ExecuteAsync("UPDATE dbo.SyncEndpoints SET DatabaseName = N'XtraPOS_Central_Missing' WHERE DatabaseRole = N'Central';");
+            var offline = await client.PutAsJsonAsync(
+                $"/api/customers/{customerId}",
+                new { name = "أثناء الانقطاع", phone = "0594444444", priceTypeId, rowVersion = beforeOffline!.RowVersion, variableValueDiscountPercent = 0, isActive = true });
+            Assert.Equal(HttpStatusCode.OK, offline.StatusCode);
+            Assert.Equal("أثناء الانقطاع", await QueryStringAsync($"SELECT Name FROM dbo.Customers WHERE CustomerID = '{customerId}';"));
+            Assert.Equal(1, await CentralIntAsync($"SELECT COUNT(*) FROM dbo.Customers WHERE CustomerID = '{customerId}' AND Name = N'الأحدث في المركز';"));
+            Assert.Equal(1, await QueryIntAsync("SELECT COUNT(*) FROM dbo.SyncOutbox WHERE Status = N'Pending' AND EntityType = N'Customers';"));
+        }
+        finally
+        {
+            await CleanupBranchAsync();
+            await DropCentralAsync();
+        }
+    }
+
+    [Fact]
     public async Task LocalReplica_RemainsSearchable_WhenCentralEndpointIsUnreachable()
     {
         var customerId = Guid.NewGuid();
@@ -531,7 +625,8 @@ public sealed class CustomerMasterTests(BranchApiFixture fixture)
             Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
             Assert.Contains("SPECIAL_PRICE_UNCONFIRMED", await blocked.Content.ReadAsStringAsync());
             var credit = await client.GetAsync($"/api/customers/{customerId}/credit-policy");
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, credit.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, credit.StatusCode);
+            Assert.Contains("\"centralReachable\":false", await credit.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -648,8 +743,8 @@ public sealed class CustomerMasterTests(BranchApiFixture fixture)
             Assert.Equal(-1m, await QueryDecimalAsync($"SELECT QuantityDelta FROM dbo.StockMovements WHERE SourceDocumentID = (SELECT SaleID FROM dbo.Sales WHERE CartID = '{cartId}');"));
 
             var credit = await client.GetAsync($"/api/customers/{keptId}/credit-policy");
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, credit.StatusCode);
-            Assert.Contains("CENTRAL_UNAVAILABLE", await credit.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.OK, credit.StatusCode);
+            Assert.Contains("\"centralReachable\":false", await credit.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
 
             await ExecuteAsync(
                 $"""
@@ -950,6 +1045,7 @@ public sealed class CustomerMasterTests(BranchApiFixture fixture)
             SELECT @userId, RoleID, SYSUTCDATETIME() FROM dbo.Roles WHERE RoleCode = N'Admin';
             INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
             VALUES (@userId, @branchId, 1, SYSUTCDATETIME());
+            DELETE FROM dbo.PriceTypes WHERE PriceCode = @priceCode;
             INSERT INTO dbo.PriceTypes (PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt)
             VALUES (@priceTypeId, @priceCode, @priceName, @sortOrder, 1, SYSUTCDATETIME());
             """,
@@ -1004,6 +1100,7 @@ public sealed class CustomerMasterTests(BranchApiFixture fixture)
         await ExecuteAsync(
             """
             DELETE FROM dbo.CustomerAdministrationAudit;
+            IF OBJECT_ID(N'dbo.CustomerCreditPolicies', N'U') IS NOT NULL DELETE FROM dbo.CustomerCreditPolicies;
             DELETE FROM dbo.Customers;
             DELETE FROM dbo.CustomerClassifications;
             DELETE FROM dbo.SyncCheckpoints;

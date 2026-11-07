@@ -180,6 +180,9 @@
     <EmbeddedResource Include="Data\Migrations\036_CustomerMembershipException.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.036_CustomerMembershipException.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\037_BranchCustomerCreditPolicies.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.037_BranchCustomerCreditPolicies.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Migrations\038_BranchFinancialInbox.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.038_BranchFinancialInbox.sql</LogicalName>
     </EmbeddedResource>
@@ -209,6 +212,12 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\023_MembershipDisplayAndException.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.023_MembershipDisplayAndException.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\024_MembershipCounterCode.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.024_MembershipCounterCode.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\025_MembershipCounterDay.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.025_MembershipCounterDay.sql</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\026_CreditFinancialEvents.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.026_CreditFinancialEvents.sql</LogicalName>

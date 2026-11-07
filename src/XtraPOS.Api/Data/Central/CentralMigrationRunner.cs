@@ -53,6 +53,10 @@ public sealed class CentralMigrationRunner
     public const string MembershipPendingEnrollmentMigrationName = "Membership pending enrollment";
     public const string MembershipDisplayMigrationId = "023_MembershipDisplayAndException";
     public const string MembershipDisplayMigrationName = "Membership display and exception";
+    public const string MembershipCounterMigrationId = "024_MembershipCounterCode";
+    public const string MembershipCounterMigrationName = "Stable POS membership counter code";
+    public const string MembershipCounterDayMigrationId = "025_MembershipCounterDay";
+    public const string MembershipCounterDayMigrationName = "Daily POS membership counter code";
     public const string CreditFinancialEventMigrationId = "026_CreditFinancialEvents";
     public const string CreditFinancialEventMigrationName = "Credit financial events";
 
@@ -81,6 +85,8 @@ public sealed class CentralMigrationRunner
         (CustomerReferenceForBusinessMigrationId, CustomerReferenceForBusinessMigrationName, "XtraPOS.Api.Data.Central.Migrations.021_CustomerReferenceForExistingBusiness.sql"),
         (MembershipPendingEnrollmentMigrationId, MembershipPendingEnrollmentMigrationName, "XtraPOS.Api.Data.Central.Migrations.022_MembershipPendingEnrollment.sql"),
         (MembershipDisplayMigrationId, MembershipDisplayMigrationName, "XtraPOS.Api.Data.Central.Migrations.023_MembershipDisplayAndException.sql"),
+        (MembershipCounterMigrationId, MembershipCounterMigrationName, "XtraPOS.Api.Data.Central.Migrations.024_MembershipCounterCode.sql"),
+        (MembershipCounterDayMigrationId, MembershipCounterDayMigrationName, "XtraPOS.Api.Data.Central.Migrations.025_MembershipCounterDay.sql"),
         (CreditFinancialEventMigrationId, CreditFinancialEventMigrationName, "XtraPOS.Api.Data.Central.Migrations.026_CreditFinancialEvents.sql"),
     ];
 

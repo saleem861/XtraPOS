@@ -115,12 +115,14 @@ public sealed class MembershipAuthService(
         }
 
         var dot = state.IndexOf('.');
+        Guid? enrollmentCustomer = null;
         if (dot > 0)
         {
             await using var enroll = new SqlCommand(
                 """
                 UPDATE dbo.MembershipEnrollmentRequests
                 SET Provider = @provider, ProviderSubject = @subject, ProviderEmail = @email, ProviderAccountDisplay = @display
+                OUTPUT inserted.CustomerID
                 WHERE TokenHash = @hash AND Status = N'Pending' AND ExpiresAt > SYSUTCDATETIME();
                 """, connection, transaction);
             enroll.Parameters.AddWithValue("@provider", provider);
@@ -129,8 +131,9 @@ public sealed class MembershipAuthService(
             enroll.Parameters.AddWithValue("@email", (object?)email ?? DBNull.Value);
             enroll.Parameters.AddWithValue("@display", email ?? claims.Subject);
             enroll.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(state[..dot]);
-            var linked = await enroll.ExecuteNonQueryAsync(cancellationToken);
-            DiagnosticLog.Write(environment, "enrollment-link", linked == 1 ? "linked" : "not-found");
+            var enrolled = await enroll.ExecuteScalarAsync(cancellationToken);
+            if (enrolled is Guid enrolledCustomer) enrollmentCustomer = enrolledCustomer;
+            DiagnosticLog.Write(environment, "enrollment-link", enrolled is null ? "not-found" : "linked");
         }
         else
         {
@@ -139,6 +142,11 @@ public sealed class MembershipAuthService(
 
         if (linkedCustomer is Guid customer && linkedBusiness is Guid business && identityId is Guid identity)
         {
+            if (dot > 0 && enrollmentCustomer != customer)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return new MembershipAuthResult(null, "MEMBERSHIP_PROVIDER_CONFLICT", attempt.Id.ToString());
+            }
             var session = await membership.CreateSessionAsync(connection, transaction, business, customer, identity, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return new MembershipAuthResult(session, null, null);
@@ -160,6 +168,27 @@ public sealed class MembershipAuthService(
             """, connection);
         command.Parameters.AddWithValue("@id", attemptId);
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_ENROLLMENT_EXPIRED");
+    }
+
+    public async Task<bool> AttemptIdentityTakenAsync(Guid attemptId, CancellationToken cancellationToken)
+    {
+        await using var connection = await membership.OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            SELECT CASE WHEN EXISTS (
+                SELECT 1
+                FROM dbo.MembershipAuthAttempts AS attempt
+                INNER JOIN dbo.CustomerMembershipIdentities AS linked
+                    ON linked.Provider = attempt.Provider
+                   AND linked.ProviderSubject = attempt.ProviderSubject
+                   AND linked.Status = N'Active'
+                WHERE attempt.AttemptID = @id
+                  AND attempt.ProviderSubject IS NOT NULL
+            ) THEN 1 ELSE 0 END;
+            """,
+            connection);
+        command.Parameters.AddWithValue("@id", attemptId);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
     }
 
     public async Task CommitNewCustomerAsync(Guid attemptId, Guid customerId, CancellationToken cancellationToken)

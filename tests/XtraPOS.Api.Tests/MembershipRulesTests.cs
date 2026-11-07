@@ -71,6 +71,16 @@ public class MembershipRulesTests
     }
 
     [Fact]
+    public void VisibleIdentityPrefersEmailAndHidesSubject()
+    {
+        Assert.Equal("a@b.c", MembershipEnrollmentRules.VisibleIdentity("a@b.c", "subject-1", "subject-1"));
+        Assert.Equal("Nora", MembershipEnrollmentRules.VisibleIdentity(null, "Nora", "subject-1"));
+        Assert.Null(MembershipEnrollmentRules.VisibleIdentity(null, "subject-1", "subject-1"));
+        Assert.Null(MembershipEnrollmentRules.VisibleIdentity("c0a56ca7-3aa6-43a1-a2ee-82b0bc705196", "c0a56ca7-3aa6-43a1-a2ee-82b0bc705196", "c0a56ca7-3aa6-43a1-a2ee-82b0bc705196"));
+        Assert.Null(MembershipEnrollmentRules.VisibleIdentity("  ", "  ", "subject-1"));
+    }
+
+    [Fact]
     public void ReturnedIdentityCommitsWithoutPhoneProofAndRejectsReuse()
     {
         var customer = Guid.NewGuid();

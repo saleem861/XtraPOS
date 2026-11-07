@@ -217,6 +217,28 @@ public sealed class FinancialDistributionTests
                 Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'Repayment';"));
             }
 
+            var documents = new CreditHistoryService();
+            var receipt = await documents.DocumentAsync(null, b2, graph.BusinessId, null, "collection:" + operation.ToString("N"), CancellationToken.None);
+            Assert.Contains("receipt", receipt);
+            Assert.DoesNotContain("Sync item", receipt);
+            var second = Request(graph, 10m);
+            Assert.Equal(CreditSaleOutcome.Completed, (await Coordinator(branchA).StageAsync(central, a2, second, true, false, false, null, CancellationToken.None)).Outcome);
+            var reversal = new CreditDebtReversalService();
+            Assert.Equal(CreditDebtReversalOutcome.Completed, (await reversal.ReverseAsync(central, a2, Guid.NewGuid(), second.SaleId, graph.ActorUserId, graph.BusinessId, "إلغاء", true, CancellationToken.None)).Outcome);
+            Assert.Equal(CreditDebtReversalOutcome.AlreadyReversed, (await reversal.ReverseAsync(central, a2, Guid.NewGuid(), second.SaleId, graph.ActorUserId, graph.BusinessId, "تكرار", true, CancellationToken.None)).Outcome);
+            await FinancialInboxSync.PullAsync(central, a2, CancellationToken.None);
+            await FinancialInboxSync.PullAsync(central, b2, CancellationToken.None);
+            await FinancialInboxSync.PullAsync(central, c2, CancellationToken.None);
+            foreach (var cs in new[] { Connection(branchA), Connection(branchB), Connection(branchC) })
+            {
+                Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'DebtReversal';"));
+                Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.FinancialSyncCheckpoints;"));
+            }
+
+            var reversalDocument = await documents.DocumentAsync(null, c2, graph.BusinessId, second.SaleId, null, CancellationToken.None);
+            Assert.Contains("إلغاء", reversalDocument);
+            Assert.Equal(0, await IntAsync(Connection(branchC), "SELECT COUNT(*) FROM dbo.Sales WHERE SaleID = '" + second.SaleId + "';"));
+
             await ExecuteAsync(Connection(branchD), "INSERT INTO dbo.Businesses (BusinessID, BusinessName, IsActive, CreatedAt) VALUES (@business, N'Sync', 1, SYSUTCDATETIME()); INSERT INTO dbo.SystemSettings (SettingKey, SettingValue) VALUES (N'BusinessID', CONVERT(nvarchar(36), @business));", ("@business", graph.BusinessId));
             await using var d = new SqlConnection(Connection(branchD));
             await d.OpenAsync();
@@ -235,6 +257,49 @@ public sealed class FinancialDistributionTests
             await DropAsync(branchB);
             await DropAsync(branchC);
             await DropAsync(branchD);
+        }
+    }
+
+    [Fact]
+    public async Task Fresh_branch_migration_creates_the_inbox_and_backfill_is_idempotent()
+    {
+        const string centralName = "XtraPOS_Central_Test_CreditSyncFresh";
+        const string branchName = "XtraPOS_Branch_Test_CreditSyncFresh";
+        CentralDatabase.Require(centralName);
+        TestDatabase.Require(branchName);
+        await DropAsync(centralName);
+        await DropAsync(branchName);
+        try
+        {
+            await CreateAsync(centralName);
+            await CreateAsync(branchName);
+            await new CentralMigrationRunner().ApplyAsync(Connection(centralName), CancellationToken.None);
+            await new MigrationRunner(Factory(branchName), NullLogger<MigrationRunner>.Instance).ApplyPendingAsync(CancellationToken.None);
+            Assert.Equal(2, await IntAsync(Connection(branchName), "SELECT COUNT(*) FROM sys.tables WHERE name IN (N'BranchFinancialInbox', N'FinancialSyncCheckpoints');"));
+            var business = Guid.NewGuid();
+            var customer = Guid.NewGuid();
+            await ExecuteAsync(Connection(centralName), """
+                INSERT INTO dbo.Businesses (BusinessID, BusinessName, IsActive, CreatedAt) VALUES (@business, N'Fresh', 1, SYSUTCDATETIME());
+                INSERT INTO dbo.Customers (CustomerID, BusinessID, Name, IsActive, CreatedAt, UpdatedAt) VALUES (@customer, @business, N'Buyer', 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+                INSERT INTO dbo.CentralFinancialEvents (OperationID, EventType, BusinessID, CustomerID, OriginBranchID, Amount, SignedEffect, Payload)
+                VALUES (N'fresh-sale', N'CreditSale', @business, @customer, NEWID(), 15, 15, N'{"kind":"sale"}');
+                """, ("@business", business), ("@customer", customer));
+            await ExecuteAsync(Connection(branchName), "INSERT INTO dbo.Businesses (BusinessID, BusinessName, IsActive, CreatedAt) VALUES (@business, N'Fresh', 1, SYSUTCDATETIME()); INSERT INTO dbo.SystemSettings (SettingKey, SettingValue) VALUES (N'BusinessID', CONVERT(nvarchar(36), @business));", ("@business", business));
+            await using var central = new SqlConnection(Connection(centralName));
+            await using var branch = new SqlConnection(Connection(branchName));
+            await central.OpenAsync();
+            await branch.OpenAsync();
+            var first = await FinancialInboxSync.PullAsync(central, branch, CancellationToken.None);
+            var second = await FinancialInboxSync.PullAsync(central, branch, CancellationToken.None);
+            Assert.Equal(1, first.Applied);
+            Assert.Equal(0, second.Applied);
+            Assert.Equal(1, await IntAsync(Connection(branchName), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox;"));
+            Assert.Equal(1, await IntAsync(Connection(branchName), "SELECT COUNT(*) FROM dbo.FinancialSyncCheckpoints;"));
+        }
+        finally
+        {
+            await DropAsync(centralName);
+            await DropAsync(branchName);
         }
     }
 

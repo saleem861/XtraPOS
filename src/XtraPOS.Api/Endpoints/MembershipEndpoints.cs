@@ -23,14 +23,15 @@ public static class MembershipEndpoints
         }));
 
         app.MapGet("/api/membership/auth/google/start", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => StartAsync(http, auth, "Google", cancellationToken));
-        app.MapGet("/api/membership/auth/google/callback", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => CallbackAsync(http, auth, "Google", cancellationToken));
+        app.MapGet("/api/membership/auth/google/callback", (HttpContext http, MembershipAuthService auth, MembershipService membership, CancellationToken cancellationToken) => CallbackAsync(http, auth, membership, "Google", cancellationToken));
         app.MapGet("/api/membership/auth/apple/start", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => StartAsync(http, auth, "Apple", cancellationToken));
-        app.MapPost("/api/membership/auth/apple/callback", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => CallbackAsync(http, auth, "Apple", cancellationToken));
+        app.MapPost("/api/membership/auth/apple/callback", (HttpContext http, MembershipAuthService auth, MembershipService membership, CancellationToken cancellationToken) => CallbackAsync(http, auth, membership, "Apple", cancellationToken));
         app.MapPost("/api/membership/enrollment/link", LinkAsync);
         app.MapPost("/api/membership/enrollment-qr", CreateEnrollmentQrAsync);
         app.MapGet("/api/membership/enrollment-qr/{token}", ReadEnrollmentQrAsync);
         app.MapPost("/api/membership/enrollment/prove", ProveAsync);
         app.MapPost("/api/membership/enrollment/commit", CommitAsync);
+        app.MapGet("/api/membership/enrollment/attempt/{attemptId:guid}/taken", AttemptTakenAsync);
 
         app.MapGet("/api/membership/verify/{token}", (string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken) =>
         {
@@ -64,6 +65,18 @@ public static class MembershipEndpoints
             }
         });
 
+        app.MapGet("/api/membership/counter/{token}", (string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken) =>
+        {
+            var csrf = MembershipTokens.CreateOpaqueToken();
+            http.Response.Cookies.Append(MembershipService.CsrfCookie, csrf, new CookieOptions { HttpOnly = false, Secure = http.Request.IsHttps, SameSite = SameSiteMode.Lax, IsEssential = true });
+            return membership.CounterStatusAsync(token, cancellationToken);
+        });
+        app.MapPost("/api/membership/counter/{token}/complete", (string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken) => CompleteCounterAsync(token, http, membership, cancellationToken));
+
+        app.MapGet("/api/pos/membership-counter", CounterTokenAsync);
+        app.MapPost("/api/pos/membership-counter/watch", WatchCounterAsync);
+        app.MapGet("/api/pos/membership-counter/result", CounterResultAsync);
+
         var pos = app.MapGroup("/api/pos/membership-verifications");
         pos.MapPost("", CreateAsync);
         pos.MapGet("/{id:guid}", ReadAsync);
@@ -94,7 +107,7 @@ public static class MembershipEndpoints
         }
     }
 
-    private static async Task<IResult> CallbackAsync(HttpContext http, MembershipAuthService auth, string provider, CancellationToken cancellationToken)
+    private static async Task<IResult> CallbackAsync(HttpContext http, MembershipAuthService auth, MembershipService membership, string provider, CancellationToken cancellationToken)
     {
         var form = http.Request.HasFormContentType ? await http.Request.ReadFormAsync(cancellationToken) : null;
         var code = http.Request.Query["code"].ToString();
@@ -117,7 +130,16 @@ public static class MembershipEndpoints
             }
             if (back is not null && result.Code == "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED")
             {
+                const string counterPrefix = "/membership/counter/";
+                if (back.StartsWith(counterPrefix, StringComparison.Ordinal))
+                {
+                    await membership.MarkCounterAsync(back[counterPrefix.Length..], "Unlinked", null, cancellationToken);
+                }
                 return Results.Redirect(back + "?unlinked=1");
+            }
+            if (result.Code == "MEMBERSHIP_PROVIDER_CONFLICT")
+            {
+                return Results.Redirect("/membership/ready?conflict=1");
             }
             if (result.Code == "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" && Guid.TryParse(result.ReturnPath, out var attemptId))
             {
@@ -190,6 +212,14 @@ public static class MembershipEndpoints
         {
             return Results.Json(new { code = "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED" }, statusCode: StatusCodes.Status409Conflict);
         }
+    }
+
+    private static async Task<IResult> AttemptTakenAsync(Guid attemptId, HttpContext http, AuthService authService, MembershipAuthService auth, CancellationToken cancellationToken)
+    {
+        var current = await authService.GetCurrentAsync(http, cancellationToken);
+        if (current is null) return Results.Unauthorized();
+        var taken = await auth.AttemptIdentityTakenAsync(attemptId, cancellationToken);
+        return Results.Ok(new { taken });
     }
 
     private static async Task<IResult> CommitAsync(HttpContext http, AuthService authService, MembershipAuthService auth, MembershipCommitRequest? request, CancellationToken cancellationToken)
@@ -287,9 +317,11 @@ public static class MembershipEndpoints
 
     private static string? SafeMembershipReturn(string? value)
     {
-        const string prefix = "/membership/verify/";
-        if (string.IsNullOrWhiteSpace(value) || !value.StartsWith(prefix, StringComparison.Ordinal)) return null;
-        if (value.Contains('?') || value.Contains('#') || value.Contains('\\') || value.Contains("//")) return null;
+        if (string.IsNullOrWhiteSpace(value) || value.Contains('?') || value.Contains('#') || value.Contains('\\') || value.Contains("//")) return null;
+        var prefix = value.StartsWith("/membership/verify/", StringComparison.Ordinal) ? "/membership/verify/"
+            : value.StartsWith("/membership/counter/", StringComparison.Ordinal) ? "/membership/counter/"
+            : null;
+        if (prefix is null) return null;
         var token = value[prefix.Length..];
         if (token.Length is < 20 or > 128 || token.Any(item => !char.IsLetterOrDigit(item) && item != '-' && item != '_')) return null;
         return value;
@@ -311,14 +343,22 @@ public static class MembershipEndpoints
         return origin + path;
     }
 
-    private static CookieOptions SessionCookie(HttpContext http) => new()
+    private static CookieOptions SessionCookie(HttpContext http)
     {
-        HttpOnly = true,
-        Secure = http.Request.IsHttps,
-        SameSite = SameSiteMode.Lax,
-        IsEssential = true,
-        Path = "/"
-    };
+        var end = MembershipCalendar.EndOfTodayUtc();
+        var remaining = end - DateTimeOffset.UtcNow;
+        if (remaining < TimeSpan.FromMinutes(1)) remaining = TimeSpan.FromMinutes(1);
+        return new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = http.Request.IsHttps,
+            SameSite = SameSiteMode.Lax,
+            IsEssential = true,
+            Path = "/",
+            Expires = end,
+            MaxAge = remaining
+        };
+    }
 
     private static IResult ProviderUnavailable(bool enabled, string? clientId, string provider)
     {
@@ -422,6 +462,64 @@ public static class MembershipEndpoints
         "MEMBERSHIP_SERVER_UNAVAILABLE" => "التحقق من العضوية غير متاح.",
         _ => "تعذر التحقق من العضوية."
     };
+
+    private static async Task<IResult> CounterTokenAsync(HttpContext http, AuthService auth, MembershipService membership, CancellationToken cancellationToken)
+    {
+        var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
+        if (device is null) return Results.Unauthorized();
+        var counter = await membership.EnsureCounterTokenAsync(device.BusinessId, device.BranchId, device.StationId, cancellationToken);
+        return Results.Ok(new { token = counter.Token, day = counter.Day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) });
+    }
+
+    private static async Task<IResult> WatchCounterAsync(HttpContext http, AuthService auth, MembershipService membership, CounterWatchRequest? request, CancellationToken cancellationToken)
+    {
+        var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
+        if (device is null || request is null || request.SaleContextId == Guid.Empty) return Results.Unauthorized();
+        await membership.WatchCounterAsync(device.StationId, request.SaleContextId, request.CustomerId, cancellationToken);
+        return Results.Ok(new { watching = true });
+    }
+
+    private static async Task<IResult> CounterResultAsync(HttpContext http, AuthService auth, MembershipService membership, CancellationToken cancellationToken)
+    {
+        var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
+        if (device is null) return Results.Unauthorized();
+        var result = await membership.ConsumeCounterResultAsync(device.StationId, cancellationToken);
+        return Results.Ok(new { status = result.Status, customerId = result.CustomerId });
+    }
+
+    private static async Task<IResult> CompleteCounterAsync(string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken)
+    {
+        var origin = http.Request.Headers.Origin.ToString();
+        if (!string.IsNullOrWhiteSpace(origin) && !string.Equals(origin, $"{http.Request.Scheme}://{http.Request.Host}", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Json(new { code = "MEMBERSHIP_CSRF" }, statusCode: StatusCodes.Status400BadRequest);
+        }
+        var csrf = http.Request.Headers["X-Membership-CSRF"].ToString();
+        if (string.IsNullOrWhiteSpace(csrf) || !http.Request.Cookies.TryGetValue(MembershipService.CsrfCookie, out var cookie) || !string.Equals(csrf, cookie, StringComparison.Ordinal))
+        {
+            return Results.Json(new { code = "MEMBERSHIP_CSRF" }, statusCode: StatusCodes.Status400BadRequest);
+        }
+        http.Request.Cookies.TryGetValue(MembershipService.SessionCookie, out var session);
+        try
+        {
+            await membership.CompleteCounterAsync(token, session, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(session))
+            {
+                http.Response.Cookies.Append(MembershipService.SessionCookie, session, SessionCookie(http));
+            }
+            return Results.Ok(new { status = "Verified" });
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code, message = Arabic(exception.Code) }, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private sealed class CounterWatchRequest
+    {
+        public Guid SaleContextId { get; set; }
+        public Guid? CustomerId { get; set; }
+    }
 
     private sealed class MembershipCreateRequest
     {

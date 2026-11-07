@@ -39,7 +39,7 @@ export function ApplicationRoot({
     return <MembershipEnrollPage pathname={pathname} />;
   }
 
-  if (pathname.startsWith("/membership/verify/")) {
+  if (pathname.startsWith("/membership/verify/") || pathname.startsWith("/membership/counter/")) {
     return <MembershipPhonePage pathname={pathname} />;
   }
 

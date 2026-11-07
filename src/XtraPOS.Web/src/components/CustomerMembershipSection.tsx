@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
 import { pendingEnrollmentKey } from "../membership/newCustomerDraft";
+import { savedMembershipIdentity } from "../membership/savedIdentity";
 import type { DeviceSession } from "../types/setup";
 
 interface Summary {
@@ -10,14 +11,16 @@ interface Summary {
   activeSessions?: number;
   providers?: string[];
   lastVerifiedAtUtc?: string | null;
+  display?: string | null;
 }
 
-export function CustomerMembershipSection({ session, customerId, identityKey = "", canUnlink, canExcept = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onPending, onException }: {
+export function CustomerMembershipSection({ session, customerId, identityKey = "", canUnlink, canExcept = false, exceptionLocked = false, canApproveException = false, pendingEnrollment = false, onBeforeEnroll, onPending, onException }: {
   session: DeviceSession;
   customerId: string;
   identityKey?: string;
   canUnlink: boolean;
   canExcept?: boolean;
+  exceptionLocked?: boolean;
   canApproveException?: boolean;
   pendingEnrollment?: boolean;
   onBeforeEnroll?: () => void;
@@ -68,6 +71,25 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
         const body = await response.json().catch(() => ({})) as { status?: string; display?: string; attemptId?: string };
         traceUi("customer", "enrollment-poll", response.ok ? (body.status ?? "unknown") : String(response.status));
         if (!response.ok || body.status !== "Ready" || !body.attemptId) return;
+        const takenResponse = await fetch(`/api/membership/enrollment/attempt/${encodeURIComponent(body.attemptId)}/taken`, { credentials: "same-origin", headers: deviceHeaders(session) });
+        const takenBody = takenResponse.ok ? await takenResponse.json().catch(() => ({})) as { taken?: boolean } : null;
+        if (!alive) return;
+        if (!takenBody) {
+          alive = false;
+          setNotice("تعذر التحقق من مفتاح التعريف.");
+          setQrImage("");
+          setQrToken("");
+          return;
+        }
+        if (takenBody.taken) {
+          alive = false;
+          sessionStorage.removeItem(pendingEnrollmentKey);
+          onPendingRef.current?.("", "");
+          setNotice("مفتاح التعريف مستخدم بالفعل.");
+          setQrImage("");
+          setQrToken("");
+          return;
+        }
         alive = false;
         sessionStorage.setItem(pendingEnrollmentKey, body.attemptId);
         onPendingRef.current?.(body.attemptId, body.display ?? "");
@@ -90,11 +112,10 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
         setNotice("تعذر قراءة حالة العضوية.");
         return;
       }
-      setNotice("");
       setSummary(await response.json() as Summary);
     }).catch(() => { if (!stop) setNotice("تعذر قراءة حالة العضوية."); });
     return () => { stop = true; };
-  }, [customerId]);
+  }, [customerId, identityKey]);
 
   async function revoke() {
     const response = await fetch(`/api/customers/${customerId}/membership/revoke-all`, { method: "POST", credentials: "same-origin", headers: deviceHeaders(session) });
@@ -120,6 +141,9 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
     }).catch(() => undefined);
   }, [customerId]);
 
+  const scannedIdentity = savedMembershipIdentity(identityKey);
+  const shownIdentity = scannedIdentity || (customerId ? savedMembershipIdentity(summary?.display) : "");
+  const enrollLabel = customerId || pendingEnrollment ? "تعديل عضوية Google/Apple" : "تسجيل عضوية Google/Apple";
   const dialog = qrImage ? (
     <div className="membership-dialog-backdrop" role="presentation">
       <div className="membership-dialog" role="dialog" aria-label="رمز العضوية">
@@ -140,12 +164,12 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
         <span>{pendingEnrollment ? "بانتظار الحفظ" : "غير مرتبطة"}</span>
         {pendingEnrollment ? <p>تم التحقق بنجاح</p> : <p>يمكن تسجيل العضوية قبل حفظ الزبون.</p>}
         <div className="membership-register-row">
-          {!pendingEnrollment ? <button type="button" onClick={() => void startQr()}>تسجيل العضوية</button> : null}
-          <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={identityKey} /></label>
+          <button type="button" onClick={() => void startQr()}>{enrollLabel}</button>
+          <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={shownIdentity} /></label>
+          {canExcept ? <label className="membership-exception"><input type="checkbox" disabled={exceptionLocked} checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /><span>تسجيل الزبون بدون تعريف إلكتروني</span></label> : null}
         </div>
         {qrError ? <p role="status">{qrError}</p> : null}
         {notice ? <p role="status">{notice}</p> : null}
-        {canExcept ? <label><input type="checkbox" checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /> تسجيل الزبون بدون تعريف إلكتروني</label> : null}
         {dialog}
       </section>
     );
@@ -160,8 +184,9 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
       <span>{linked ? "مرتبطة" : "غير مرتبطة"}</span>
       {linked ? providers.map((provider) => <em key={provider}>{provider}</em>) : null}
       <div className="membership-register-row">
-        <button type="button" onClick={() => void startQr()}>{linked ? "تعديل العضوية الذكية" : "تسجيل العضوية"}</button>
-        <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={identityKey} /></label>
+        <button type="button" onClick={() => void startQr()}>{enrollLabel}</button>
+        <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={shownIdentity} /></label>
+        {canExcept ? <label className="membership-exception"><input type="checkbox" disabled={exceptionLocked} checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /><span>تسجيل الزبون بدون تعريف إلكتروني</span></label> : null}
       </div>
       {qrError ? <p role="status">{qrError}</p> : null}
       {linked ? <button type="button" onClick={() => setOpen((value) => !value)}>إدارة العضوية</button> : null}

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { interpretFastEntry } from "../cart/fastEntry";
+import { interpretFastEntry, sameItemNumber } from "../cart/fastEntry";
 import { rankItemMatches, sortSearchResults } from "../cart/itemSearch";
 import type { ItemListItem } from "../catalog/types";
 import { DEVICE_TYPE_POS, type CurrentUser, type DeviceSession } from "../types/setup";
@@ -56,6 +56,10 @@ describe("fast entry routing", () => {
     expect(interpretFastEntry("0").kind).toBe("invalid");
     expect(interpretFastEntry("301")).toEqual({ kind: "item", itemNumber: "301" });
     expect(interpretFastEntry("#224")).toEqual({ kind: "item", itemNumber: "224" });
+    expect(sameItemNumber("650", "650")).toBe(true);
+    expect(sameItemNumber("0650", "650")).toBe(true);
+    expect(sameItemNumber("650", "٦٥٠")).toBe(true);
+    expect(sameItemNumber("651", "650")).toBe(false);
   });
 
   it("ranks exact, then starts-with, then name contains, and limits the first page", () => {
@@ -86,6 +90,37 @@ describe("fast entry routing", () => {
 
 describe("POS cashier screen", () => {
   const calls: string[] = [];
+
+  it("keeps the sale caret inside the item field", async () => {
+    installFakeIndexedDb();
+    const cashier = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith("/health")) return new Response("ok");
+      if (path.includes("/api/pos/cash-session/current")) return json({ session: null });
+      return new Response("missing", { status: 404 });
+    }));
+
+    render(<PosScreen session={session} user={user} onBack={() => undefined} />);
+    const fast = await screen.findByLabelText("رقم الصنف") as HTMLInputElement;
+    expect(fast.getAttribute("dir")).toBe("ltr");
+    await waitFor(() => expect(document.activeElement).toBe(fast));
+    expect(fast.selectionStart).toBe(fast.value.length);
+    expect(fast.selectionEnd).toBe(fast.value.length);
+
+    await cashier.type(fast, "224");
+    expect(fast.selectionStart).toBe(3);
+    expect(fast.selectionEnd).toBe(3);
+    fast.setSelectionRange(0, 0);
+    await cashier.click(screen.getByRole("button", { name: "مفتاح 5" }));
+    await waitFor(() => expect(fast.value).toBe("2245"));
+    expect(fast.selectionStart).toBe(fast.value.length);
+    expect(fast.selectionEnd).toBe(fast.value.length);
+    expect(document.activeElement).toBe(fast);
+
+    const css = readFileSync(resolve("src/styles/app.css"), "utf8");
+    expect(css).toContain(".pos-screen .pos-fast input {\n  direction: ltr;\n  text-align: right;\n  padding-block: 0;\n  line-height: 1;\n}");
+  });
 
   afterEach(() => {
     cleanup();

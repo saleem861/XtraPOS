@@ -83,6 +83,9 @@ export function createItemClient(session: DeviceSession): ItemCatalogClient {
       if (query.customerId) {
         params.set("customerId", query.customerId);
       }
+      if (query.exact) {
+        params.set("exact", "true");
+      }
       return get<ItemPage>(`/api/items?${params.toString()}`, "تعذر تحميل الأصناف.");
     },
     loadDetail: (itemId) => get<ItemDetail>(`/api/items/${itemId}`, "تعذر تحميل الصنف."),

@@ -78,6 +78,7 @@ builder.Services.AddScoped<MembershipService>();
 builder.Services.AddScoped<MembershipCodeExchange>();
 builder.Services.AddScoped<IMembershipIdTokenValidator, MembershipIdTokenValidator>();
 builder.Services.AddScoped<MembershipAuthService>();
+builder.Services.AddScoped<BranchCardOutboxSync>();
 builder.Services.AddScoped<CustomerMasterService>();
 builder.Services.AddScoped<CustomerPasskeyService>();
 builder.Services.AddScoped<PhoneVerificationService>();
@@ -935,6 +936,21 @@ if (args.Any(arg => string.Equals(arg, "--ensure-customer-replica", StringCompar
     var customers = (int)(await count.ExecuteScalarAsync() ?? 0);
     Console.WriteLine($"CustomerReplicaState={state} LocalCustomers={customers}");
     return;
+}
+
+if (app.Environment.IsStaging())
+{
+    try
+    {
+        var added = await XtraPOS.Api.Catalog.StagingCatalogSeed.EnsureAsync(
+            app.Services.GetRequiredService<SqlConnectionFactory>(),
+            CancellationToken.None);
+        Console.WriteLine($"StagingCatalogSeed={added}");
+    }
+    catch (Exception exception)
+    {
+        Console.WriteLine($"StagingCatalogSeedFailed={exception.GetType().Name}");
+    }
 }
 
 app.Run();

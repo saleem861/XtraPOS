@@ -154,6 +154,7 @@ public sealed class SharedDataSync(
         var priceTypes = await ReadPriceTypesAsync(remote, branch, cancellationToken);
         await CopyClassificationsAsync(remote, branch, priceTypes, cancellationToken);
         await CopyCustomersAsync(remote, branch, priceTypes, cancellationToken);
+        await CopyCreditPoliciesAsync(remote, branch, cancellationToken);
         await CopySpecialPricesAsync(remote, branch, cancellationToken);
     }
 
@@ -285,6 +286,50 @@ public sealed class SharedDataSync(
             upsert.Parameters.AddWithValue("@legacyKey", reader.IsDBNull(14) ? DBNull.Value : reader.GetString(14));
             upsert.Parameters.AddWithValue("@created", reader.GetDateTime(15));
             upsert.Parameters.AddWithValue("@updated", reader.IsDBNull(16) ? reader.GetDateTime(15) : reader.GetDateTime(16));
+            await upsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task CopyCreditPoliciesAsync(SqlConnection remote, SqlConnection branch, CancellationToken cancellationToken)
+    {
+        await using var remoteExists = new SqlCommand("SELECT OBJECT_ID(N'dbo.CustomerCreditPolicies', N'U');", remote);
+        await using var branchExists = new SqlCommand("SELECT OBJECT_ID(N'dbo.CustomerCreditPolicies', N'U');", branch);
+        if (await remoteExists.ExecuteScalarAsync(cancellationToken) is null or DBNull
+            || await branchExists.ExecuteScalarAsync(cancellationToken) is null or DBNull)
+        {
+            return;
+        }
+
+        await using var read = new SqlCommand(
+            """
+            SELECT CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, CreatedAt, UpdatedAt, UpdatedBy
+            FROM dbo.CustomerCreditPolicies;
+            """,
+            remote);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            await using var upsert = new SqlCommand(
+                """
+                IF EXISTS (SELECT 1 FROM dbo.CustomerCreditPolicies WHERE CustomerID = @id)
+                    UPDATE dbo.CustomerCreditPolicies
+                    SET CreditEnabled = @enabled, CreditLimit = @limit, PaymentTermDays = @terms, CreditStatus = @status,
+                        UpdatedBy = @actor, UpdatedAt = @updated
+                    WHERE CustomerID = @id AND @updated >= UpdatedAt;
+                ELSE
+                    INSERT INTO dbo.CustomerCreditPolicies
+                        (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, CreatedAt, UpdatedAt, UpdatedBy)
+                    VALUES (@id, @enabled, @limit, @terms, @status, @created, @updated, @actor);
+                """,
+                branch);
+            upsert.Parameters.AddWithValue("@id", reader.GetGuid(0));
+            upsert.Parameters.AddWithValue("@enabled", reader.GetBoolean(1));
+            upsert.Parameters.AddWithValue("@limit", reader.GetDecimal(2));
+            upsert.Parameters.AddWithValue("@terms", reader.GetInt32(3));
+            upsert.Parameters.AddWithValue("@status", reader.GetString(4));
+            upsert.Parameters.AddWithValue("@created", reader.GetDateTime(5));
+            upsert.Parameters.AddWithValue("@updated", reader.GetDateTime(6));
+            upsert.Parameters.AddWithValue("@actor", reader.IsDBNull(7) ? DBNull.Value : reader.GetGuid(7));
             await upsert.ExecuteNonQueryAsync(cancellationToken);
         }
     }

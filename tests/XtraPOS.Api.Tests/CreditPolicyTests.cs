@@ -40,7 +40,7 @@ public sealed class CreditPolicyTests
                 await seed.ExecuteNonQueryAsync();
             }
 
-            var service = new CreditPolicyService(null!);
+            var service = new CreditPolicyService(null!, null!, null!);
             var initial = await service.ReadAsync(central, customer, CancellationToken.None);
             Assert.False(initial.Configured);
             Assert.False(initial.CreditEnabled);

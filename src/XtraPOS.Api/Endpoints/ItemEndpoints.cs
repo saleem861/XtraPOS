@@ -34,6 +34,7 @@ public static class ItemEndpoints
         string? sort,
         bool? resolvePrice,
         Guid? customerId,
+        bool? exact,
         CancellationToken cancellationToken)
     {
         var caller = await RequireViewAsync(http, auth, cancellationToken);
@@ -48,6 +49,7 @@ public static class ItemEndpoints
             page ?? 1,
             pageSize is 25 or 50 or 100 ? pageSize.Value : 50,
             ParseSort(sort),
+            exact == true,
             cancellationToken);
         if (resolvePrice == true)
         {

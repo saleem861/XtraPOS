@@ -174,12 +174,22 @@ public sealed class ItemCatalogService(BranchDbContext db)
             .ToListAsync(cancellationToken);
     }
 
+    public Task<ItemPageResult> SearchPageAsync(
+        string? search,
+        ItemActivityFilter activity,
+        int page,
+        int pageSize,
+        ItemSort sort,
+        CancellationToken cancellationToken) =>
+        SearchPageAsync(search, activity, page, pageSize, sort, false, cancellationToken);
+
     public async Task<ItemPageResult> SearchPageAsync(
         string? search,
         ItemActivityFilter activity,
         int page,
         int pageSize,
         ItemSort sort,
+        bool exact,
         CancellationToken cancellationToken)
     {
         page = page < 1 ? 1 : page;
@@ -196,7 +206,14 @@ public sealed class ItemCatalogService(BranchDbContext db)
             _ => query.Where(item => item.IsActive),
         };
 
-        if (!string.IsNullOrWhiteSpace(search))
+        if (exact && !string.IsNullOrWhiteSpace(search))
+        {
+            var text = search.Trim();
+            var digits = ArabicSearchNormalizer.NormalizeDigits(text);
+            query = query.Where(item => item.ItemNumber == text || (digits != text && item.ItemNumber == digits));
+            query = query.OrderBy(item => item.ItemNumber);
+        }
+        else if (!string.IsNullOrWhiteSpace(search))
         {
             var text = search.Trim();
             var strict = ArabicSearchNormalizer.NormalizeStrict(text);

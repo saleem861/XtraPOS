@@ -74,6 +74,14 @@ textarea {
 
 .app .new-customer {
   top: 64px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: auto;
+}
+
+html.pos-pro-shell .app .new-customer {
+  top: 50px;
 }
 
 .topbar-rule {
@@ -1626,7 +1634,6 @@ html.pos-pro-shell .topbar {
 }
 
 .pos-toolbar,
-.pos-fast,
 .pos-search,
 .pos-screen .actions {
   display: flex;
@@ -1636,6 +1643,42 @@ html.pos-pro-shell .topbar {
   bottom: 0;
   z-index: 4;
   background: var(--card);
+}
+
+.pos-fast {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  position: static;
+  z-index: 4;
+  background: var(--card);
+}
+
+.pos-customer-number strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pos-member-mark {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pos-member-mark.is-ok {
+  background: #1f8a4c;
+}
+
+.pos-member-mark.is-bad {
+  background: #e07a1f;
 }
 
 .pos-toolbar,
@@ -1675,6 +1718,13 @@ html.pos-pro-shell .topbar {
   border: 2px solid var(--line);
   border-radius: 10px;
   padding: 8px;
+}
+
+.pos-screen .pos-fast input {
+  direction: ltr;
+  text-align: right;
+  padding-block: 0;
+  line-height: 1;
 }
 
 .pos-help {
@@ -1773,6 +1823,10 @@ html.pos-pro-shell .topbar {
   font-weight: 600;
   line-height: 1;
   appearance: none;
+}
+
+.pos-money-readonly {
+  cursor: default;
 }
 
 .pos-money-value {
@@ -3348,6 +3402,7 @@ html.pos-pro-shell .topbar {
     padding: 0 12px;
     font-size: 15px;
   }
+
 }
 
 @media (pointer: coarse) and (orientation: portrait) and (max-width: 599px) {
@@ -3594,7 +3649,7 @@ html.pos-pro-shell .topbar {
 
 @media (pointer: coarse) and (orientation: landscape) and (min-width: 1000px) and (min-height: 640px) {
   .pos-workspace.card {
-    padding: 10px 12px;
+    padding: 0;
   }
 
   .pos-summary {
@@ -3893,7 +3948,7 @@ html.pos-pro-shell .topbar {
 }
 
 .held-drafts-content {
-  flex: 1 1 67%;
+  flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   display: flex;
@@ -3905,6 +3960,7 @@ html.pos-pro-shell .topbar {
 }
 .held-drafts-note { margin: 0; color: #5d7384; font-size: 13px; }
 .held-drafts-filters, .held-drafts-presets { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.held-drafts-filters .held-drafts-presets { flex: 1 1 auto; justify-content: flex-start; }
 .held-drafts-filters label { display: grid; gap: 4px; font-size: 13px; font-weight: 700; }
 .held-drafts-filters input { height: 40px; border: 1px solid #c9d7e8; border-radius: 8px; padding: 0 10px; }
 .held-drafts-filters input:focus { outline: 2px solid #2580e8; }
@@ -3929,7 +3985,7 @@ html.pos-pro-shell .topbar {
 .held-drafts-guard { display: grid; gap: 6px; margin-bottom: 8px; }
 
 .customer-search-content {
-  flex: 1 1 67%;
+  flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   display: flex;
@@ -4010,10 +4066,11 @@ html.pos-pro-shell .topbar {
 
 .customer-browse-row {
   display: grid;
-  grid-template-columns: 148px minmax(180px, 1.7fr) minmax(120px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr) 220px;
+  justify-items: center;
   align-items: center;
   column-gap: 16px;
-  text-align: start;
+  text-align: center;
   min-height: 52px;
   padding: 8px 16px;
   background: var(--xp-surface);
@@ -4052,7 +4109,7 @@ html.pos-pro-shell .topbar {
 .customer-browse-actions {
   display: flex;
   gap: 8px;
-  justify-content: flex-start;
+  justify-content: center;
   align-items: center;
 }
 
@@ -4414,12 +4471,13 @@ html.pos-pro-shell .topbar {
   .workspace:has(.pos-desktop-shell) {
     width: 100%;
     justify-content: stretch;
-    padding: 12px 18px;
+    padding: 0 12px;
   }
 
   .pos-workspace.card {
     width: 100%;
     max-width: none;
+    padding: 0;
   }
 
   .pos-desktop-shell {
@@ -4441,7 +4499,7 @@ html.pos-pro-shell .topbar {
     min-width: 0;
     min-height: 0;
     height: 100%;
-    padding: 12px 16px 14px;
+    padding: 0 12px;
     border: 1px solid #d9e4ea;
     border-radius: 18px;
     background: #fff;
@@ -4474,7 +4532,7 @@ html.pos-pro-shell .topbar {
 
   .pos-info.pos-pro {
     display: grid;
-    grid-template-columns: minmax(168px, 1.15fr) 0.8fr 1.05fr 0.75fr 0.75fr 0.75fr 1.25fr 0.65fr;
+    grid-template-columns: minmax(210px, 1fr) minmax(190px, 1.55fr) 1.05fr 0.5fr 0.5fr 0.58fr 1.15fr 0.4fr;
     gap: 8px;
     width: 100%;
     margin-top: 8px;
@@ -4535,14 +4593,21 @@ html.pos-pro-shell .topbar {
     unicode-bidi: isolate;
   }
 
+  .pos-info .pos-customer-number strong {
+    overflow: visible;
+    text-overflow: clip;
+  }
+
   .pos-original-total {
-    min-width: 168px;
+    min-width: 210px;
     animation: pos-original-total-flash 1.8s ease-in-out infinite alternate;
   }
 
   .pos-original-total span {
+    overflow: visible;
     color: #17324d;
     font-weight: 700;
+    text-overflow: clip;
   }
 
   .pos-original-total strong {
@@ -4574,42 +4639,75 @@ html.pos-pro-shell .topbar {
   }
 
   .pos-summary {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(210px, 1fr) minmax(190px, 1.55fr) 1.05fr 0.5fr 0.5fr 0.58fr 1.15fr 0.4fr;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+    box-sizing: border-box;
+    height: 62px;
+    min-height: 62px;
+    max-height: 62px;
     margin-top: 8px;
-    padding: 8px 10px;
+    padding: 0;
+    overflow: hidden;
     border-radius: 12px;
     background: #eef4f7;
   }
 
   .pos-summary > div:first-child {
-    padding: 6px 12px;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    padding: 4px 10px;
     border-radius: 10px;
     background: #163a59;
     color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
 
   .pos-total {
     color: #fff;
-    font-size: 34px;
+    font-size: 18px;
+    line-height: 1;
   }
 
   .pos-total-label {
     color: #d5e4ee;
+    font-size: 12px;
+    line-height: 1.1;
   }
 
   .pos-col-base {
-    display: block;
+    display: flex;
+    justify-content: center;
   }
 
   .pos-cart {
-    --pos-cart-columns: minmax(12rem, 1fr) 5.5rem 6.5rem 6.5rem 6.5rem 6.5rem;
+    --pos-cart-columns: minmax(12rem, 1fr) 4.25rem 4.75rem 6.6rem 6.6rem 6.6rem 4.5rem;
   }
 
-  .pos-col-action,
+  .pos-main-workspace .pos-toolbar {
+    margin-top: 0;
+  }
+
   .pos-desktop-shell .pos-qty button:not(.pos-qty-value) {
     display: none;
+  }
+
+  .pos-col-action {
+    display: flex;
+  }
+
+  .pos-cart-head,
+  .pos-line {
+    grid-template-columns: var(--pos-cart-columns);
+    width: 100%;
+    max-width: 100%;
+    justify-content: start;
+    column-gap: 6px;
   }
 
   .pos-item-name {
@@ -4714,6 +4812,17 @@ html.pos-pro-shell .topbar {
     width: 22px;
     height: 22px;
     stroke-width: 1.8;
+  }
+
+  .pos-quick-grid button.pos-side-qr {
+    padding: 3px;
+    background: #fff;
+  }
+
+  .pos-quick-grid button.pos-side-qr img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
   }
 
   .pos-quick-grid button:hover:not(:disabled) {
@@ -4861,6 +4970,10 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
     min-height: 46px;
   }
 
+  html.pos-pro-shell .app .new-customer {
+    top: 46px;
+  }
+
   html.pos-pro-shell .brand-name {
     font-size: 24px;
   }
@@ -4883,7 +4996,7 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   }
 
   .pos-main-workspace {
-    padding: 10px 12px;
+    padding: 0 12px;
   }
 
   .pos-info.pos-pro {
@@ -4895,6 +5008,12 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
     padding: 6px 7px;
   }
 
+  .pos-summary {
+    height: 54px;
+    min-height: 54px;
+    max-height: 54px;
+  }
+
   .pos-info span {
     font-size: 11px;
   }
@@ -4904,7 +5023,8 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   }
 
   .pos-total {
-    font-size: 26px;
+    font-size: 15px;
+    line-height: 1;
   }
 
   .pos-quick-grid button {
@@ -5226,22 +5346,26 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  height: 60px;
+  gap: 6px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 10px;
   background: linear-gradient(180deg, #0d63d8, #0a54c2);
   color: #fff;
   font: inherit;
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .new-customer-specials p {
   display: flex;
   align-items: center;
-  height: 60px;
+  height: 34px;
   margin: 0;
   padding: 0 14px;
   overflow: hidden;
@@ -5283,11 +5407,11 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .membership-compact {
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px 12px;
-  margin: 8px 14px 0;
-  padding: 8px 12px;
+  margin: 8px 0 0;
+  padding: 4px 8px;
   border: 1px solid #d5e1ee;
   border-radius: 10px;
   background: #fff;
@@ -5380,20 +5504,20 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   display: grid;
   grid-template-columns: 1.25fr auto 1.05fr 0.85fr 160px;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex: 0 0 auto;
-  margin: 12px 14px 8px;
+  margin: 8px 0 0;
 }
 
 .new-customer-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  height: 60px;
-  border-radius: 12px;
+  gap: 6px;
+  height: 40px;
+  border-radius: 10px;
   font: inherit;
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -5437,16 +5561,16 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 }
 
 .new-customer-otp input {
-  width: 54px;
-  height: 54px;
+  width: 36px;
+  height: 40px;
   padding: 0;
   text-align: center;
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
 }
 
 .new-customer.full-keyboard-screen {
-  height: 100%;
+  height: auto;
   min-height: 0;
 }
 
@@ -5459,10 +5583,11 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   box-sizing: border-box;
   width: 100%;
   max-width: none;
-  flex: 0 0 33%;
-  height: 33%;
+  flex: 0 1 auto;
+  height: clamp(160px, 28vh, 260px);
   min-height: 0;
-  max-height: none;
+  max-height: 36%;
+  overflow: hidden;
   margin-top: 0;
   padding: 10px 12px 12px;
   border-top: 1px solid #cbd8e6;
@@ -5559,8 +5684,10 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 }
 
 .new-customer.has-keyboard > .new-customer-card,
-.new-customer.has-keyboard > .exceptional-page {
-  flex: 1 1 67%;
+.new-customer.has-keyboard > .exceptional-page,
+.new-customer.has-keyboard > .customer-search-content,
+.new-customer.has-keyboard > .held-drafts-content {
+  flex: 1 1 0;
   min-height: 0;
   overflow: auto;
 }
@@ -5819,9 +5946,103 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   .setup-welcome h1 { font-size: 1.35rem; }
   .setup-choice-card { min-height: 96px; padding: 10px; }
 }
-.membership-register-row { display: flex; align-items: end; gap: 12px; margin-top: 8px; }
-.membership-register-row label { display: grid; gap: 4px; min-width: 240px; }
-.membership-register-row input { min-height: 40px; }
+.membership-register-row { display: flex; align-items: center; gap: 8px; margin: 0; }
+.membership-register-row label { display: grid; gap: 2px; min-width: 180px; }
+.membership-register-row input { min-height: 32px; height: 32px; }
+.membership-exception {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.new-customer .membership-compact {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.new-customer .membership-compact > p {
+  flex: 1 0 100%;
+  font-size: 12px;
+}
+
+.new-customer .membership-register-row {
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+}
+
+.new-customer .membership-register-row > button,
+.new-customer .membership-register-row > label.membership-exception {
+  flex: 0 0 auto;
+}
+
+.new-customer .membership-register-row > label:not(.membership-exception) {
+  flex: 1 1 auto;
+  min-width: 22rem;
+}
+
+.new-customer .membership-register-row > label:not(.membership-exception) > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.new-customer .membership-register-row > label:not(.membership-exception) input {
+  flex: 1 1 auto;
+  width: 1%;
+  min-width: 16rem;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 0 8px;
+  direction: ltr;
+  text-align: left;
+}
+
+.new-customer .membership-register-row,
+.new-customer .membership-register-row label,
+.new-customer label.membership-exception {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.new-customer .membership-register-row label > span,
+.new-customer label.membership-exception > span {
+  margin: 0;
+}
+
+.new-customer .membership-exception input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  max-height: 16px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 16px;
+}
+
+.new-customer-actions button,
+.new-customer-actions .save-button {
+  height: 34px;
+  min-height: 34px;
+  font-size: 14px;
+}
+
+.new-customer-otp input {
+  width: 32px;
+  height: 34px;
+  min-height: 34px;
+  font-size: 16px;
+}
+
+.customer-browse-row > span {
+  text-align: center;
+  justify-self: stretch;
+}
 .membership-dialog-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgb(15 23 42 / 35%); }
 .membership-dialog { display: grid; justify-items: center; gap: 12px; width: min(320px, calc(100vw - 32px)); padding: 16px; border-radius: 16px; background: #fff; }
 .membership-dialog div { display: flex; gap: 8px; }

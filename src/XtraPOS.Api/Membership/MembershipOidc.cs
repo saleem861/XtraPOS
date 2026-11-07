@@ -78,6 +78,21 @@ public sealed class MembershipIdTokenValidator : IMembershipIdTokenValidator
 
 public static class MembershipEnrollmentRules
 {
+    public static string? VisibleIdentity(string? email, string? accountDisplay, string? subject)
+    {
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            var trimmedEmail = email.Trim();
+            if (!Guid.TryParse(trimmedEmail, out _)) return trimmedEmail;
+        }
+
+        if (string.IsNullOrWhiteSpace(accountDisplay)) return null;
+        var account = accountDisplay.Trim();
+        if (account.Length == 0 || Guid.TryParse(account, out _)) return null;
+        if (!string.IsNullOrWhiteSpace(subject) && string.Equals(account, subject.Trim(), StringComparison.Ordinal)) return null;
+        return account;
+    }
+
     public static string? CommitBlock(DateTime expiresAtUtc, DateTime nowUtc, Guid? linkedCustomerId, Guid requestedCustomerId, bool consumed)
     {
         if (consumed && linkedCustomerId == requestedCustomerId) return null;

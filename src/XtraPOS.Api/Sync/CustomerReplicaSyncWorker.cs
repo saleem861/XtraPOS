@@ -76,6 +76,7 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
         {
             status.Report("InProgress", "customer-replica", "جاري المزامنة", null);
         }
+        await provider.GetRequiredService<BranchCardOutboxSync>().FlushAsync(stoppingToken);
         var result = await sync.PullAsync(view.EndpointId, settings, stoppingToken);
         if (!result.CentralReachable)
         {

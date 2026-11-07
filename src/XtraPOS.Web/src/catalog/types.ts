@@ -10,6 +10,7 @@ export interface ItemQuery {
   sort: ItemSort;
   resolvePrice?: boolean;
   customerId?: string | null;
+  exact?: boolean;
 }
 
 export interface ItemListItem {

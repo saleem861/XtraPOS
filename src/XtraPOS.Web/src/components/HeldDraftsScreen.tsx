@@ -86,7 +86,7 @@ export function HeldDraftsScreen({
 
   return (
     <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard held-drafts" : "new-customer held-drafts"} dir="rtl" aria-label="استرجاع المسودات المحفوظة">
-      <header className="new-customer-bar">
+      <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <h2>استرجاع المسودات المحفوظة</h2>
         <button type="button" className="new-customer-back" onClick={onClose}><ArrowLeft aria-hidden="true" />رجوع</button>
@@ -102,14 +102,14 @@ export function HeldDraftsScreen({
           <button className="primary-button" type="submit">بحث</button>
           <button className="nav-button" type="button" onClick={() => { setCustomer(""); void load("", from, to); }}>مسح البحث</button>
           <button className="nav-button" type="button" onClick={reset}>إعادة تعيين</button>
+          <div className="held-drafts-presets" role="group" aria-label="فترات سريعة">
+            {(["today", "yesterday", "week", "month"] as const).map((item) => (
+              <button key={item} type="button" className={preset === item ? "is-selected" : ""} onClick={() => applyPreset(item)}>
+                {item === "today" ? "اليوم" : item === "yesterday" ? "أمس" : item === "week" ? "آخر 7 أيام" : "آخر 30 يوم"}
+              </button>
+            ))}
+          </div>
         </form>
-        <div className="held-drafts-presets" role="group" aria-label="فترات سريعة">
-          {(["today", "yesterday", "week", "month"] as const).map((item) => (
-            <button key={item} type="button" className={preset === item ? "is-selected" : ""} onClick={() => applyPreset(item)}>
-              {item === "today" ? "اليوم" : item === "yesterday" ? "أمس" : item === "week" ? "آخر 7 أيام" : "آخر 30 يوم"}
-            </button>
-          ))}
-        </div>
         <div className="held-drafts-main">
           <section className="held-drafts-results">
             <p>{loading ? "جاري التحميل…" : `${rows.length} مسودة`}</p>

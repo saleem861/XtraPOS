@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Catalog;
+using XtraPOS.Api.Credit;
 using XtraPOS.Api.Customers;
 
 namespace XtraPOS.Api.Sync;
@@ -29,7 +30,7 @@ public static class CentralChangeApply
     };
 
     public static bool CanApply(string entityType) =>
-        entityType is "Items" or "ItemUnits" or "ItemPrices" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices";
+        entityType is "Items" or "ItemUnits" or "ItemPrices" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices" or "CustomerCreditPolicies";
 
     public static async Task ApplyAsync(
         SqlConnection connection,
@@ -64,6 +65,10 @@ public static class CentralChangeApply
         {
             await ApplySpecialPriceAsync(connection, null, payload, cancellationToken);
         }
+        else if (entityType == "CustomerCreditPolicies")
+        {
+            await ApplyCreditPolicyAsync(connection, null, payload, authoritative: false, cancellationToken);
+        }
     }
 
     public static async Task ApplyAsync(
@@ -81,6 +86,12 @@ public static class CentralChangeApply
             return;
         }
 
+        if (entityType == "CustomerCreditPolicies")
+        {
+            await ApplyCreditPolicyAsync(connection, transaction, payload, authoritative, cancellationToken);
+            return;
+        }
+
         if (entityType == "CustomerItemSpecialPrices")
         {
             await ApplySpecialPriceAsync(connection, transaction, payload, cancellationToken);
@@ -91,6 +102,64 @@ public static class CentralChangeApply
     }
 
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
+
+    private static async Task ApplyCreditPolicyAsync(
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        string? payload,
+        bool authoritative,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return;
+        }
+
+        await using var exists = new SqlCommand("SELECT OBJECT_ID(N'dbo.CustomerCreditPolicies', N'U');", connection, transaction);
+        if (await exists.ExecuteScalarAsync(cancellationToken) is null or DBNull)
+        {
+            return;
+        }
+
+        var policy = JsonSerializer.Deserialize<CreditPolicySyncPayload>(payload, Json);
+        if (policy is null)
+        {
+            return;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            IF EXISTS (SELECT 1 FROM dbo.CustomerCreditPolicies WHERE CustomerID = @id)
+                UPDATE dbo.CustomerCreditPolicies
+                SET CreditEnabled = @enabled,
+                    CreditLimit = @limit,
+                    PaymentTermDays = @terms,
+                    CreditStatus = @status,
+                    UpdatedBy = @actor,
+                    UpdatedAt = @updated
+                WHERE CustomerID = @id
+                  AND (@authoritative = 1 OR @updated >= UpdatedAt);
+            ELSE
+                INSERT INTO dbo.CustomerCreditPolicies
+                    (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, CreatedAt, UpdatedAt, UpdatedBy)
+                VALUES (@id, @enabled, @limit, @terms, @status, @created, @updated, @actor);
+            """,
+            connection,
+            transaction);
+        command.Parameters.Add("@authoritative", SqlDbType.Bit).Value = authoritative;
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = policy.CustomerId;
+        command.Parameters.Add("@enabled", SqlDbType.Bit).Value = policy.CreditEnabled;
+        var limit = command.Parameters.Add("@limit", SqlDbType.Decimal);
+        limit.Precision = 19;
+        limit.Scale = 4;
+        limit.Value = policy.CreditLimit;
+        command.Parameters.Add("@terms", SqlDbType.Int).Value = policy.PaymentTermDays;
+        command.Parameters.Add("@status", SqlDbType.NVarChar, 20).Value = policy.CreditStatus;
+        command.Parameters.Add("@created", SqlDbType.DateTime2).Value = policy.CreatedAt;
+        command.Parameters.Add("@updated", SqlDbType.DateTime2).Value = policy.UpdatedAt;
+        command.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value = (object?)policy.UpdatedBy ?? DBNull.Value;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 
     private static async Task ApplySpecialPriceAsync(
         SqlConnection connection,

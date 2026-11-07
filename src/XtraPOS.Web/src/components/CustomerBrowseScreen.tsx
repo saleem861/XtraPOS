@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { SetupClientError } from "../api/client";
 import { createCustomerClient, type CustomerListItem } from "../api/customers";
@@ -29,6 +29,12 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
   const [pendingDelete, setPendingDelete] = useState<CustomerListItem | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectedId || pendingDelete) return;
+    searchRef.current?.focus();
+  }, [selectedId, pendingDelete]);
 
   useEffect(() => {
     const media = window.matchMedia("(pointer: fine) and (hover: hover)");
@@ -111,13 +117,18 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
       <div className="customer-search-content">
         <label>
           <span>بحث</span>
-          <input aria-label="بحث عن زبون" value={term} placeholder="رقم الزبون أو الاسم أو الهاتف" onChange={(event) => setTerm(event.target.value)} />
+          <input ref={searchRef} autoFocus aria-label="بحث عن زبون" value={term} placeholder="رقم الزبون أو الاسم أو الهاتف" onChange={(event) => setTerm(event.target.value)} onBlur={(event) => {
+            if (selectedId || pendingDelete) return;
+            const next = event.relatedTarget;
+            if (next instanceof HTMLElement && next.closest(".new-customer-back, .customer-delete-card")) return;
+            window.setTimeout(() => searchRef.current?.focus(), 0);
+          }} />
         </label>
         {state === "loading" ? <p>جارٍ البحث...</p> : null}
         {state === "error" ? <p className="status-error">{message}</p> : null}
         {state === "ready" && rows.length === 0 ? <p>لا توجد نتائج.</p> : null}
         {message && state !== "error" ? <p className="new-customer-success">{message}</p> : null}
-        <div className="customer-browse-results" role="table" aria-label="نتائج الزبائن">
+        <div className="customer-browse-results" role="table" aria-label="نتائج الزبائن" onMouseDown={(event) => event.preventDefault()}>
           <div className="customer-browse-row customer-browse-head" role="row">
             <span role="columnheader">رقم الزبون</span>
             <span role="columnheader">اسم الزبون</span>

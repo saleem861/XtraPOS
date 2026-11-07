@@ -15,6 +15,7 @@ public sealed class CustomerMasterService(
     SyncEndpointStore endpoints,
     CustomerPasskeyService passkeys,
     MembershipService membership,
+    BranchCardOutboxSync cardSync,
     IHostEnvironment environment,
     ILogger<CustomerMasterService> logger)
 {
@@ -43,6 +44,21 @@ public sealed class CustomerMasterService(
 
     public async Task<CustomerRecord?> GetAsync(Guid customerId, CancellationToken cancellationToken)
     {
+        try
+        {
+            await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+            await branch.OpenAsync(cancellationToken);
+            var local = await ReadCustomerAsync(branch, null, customerId, cancellationToken);
+            if (local is not null)
+            {
+                return local;
+            }
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            logger.LogWarning(exception, "Branch customer read failed for {CustomerId}.", customerId);
+        }
+
         try
         {
             var central = await LinkedCentralAsync(cancellationToken);
@@ -411,23 +427,16 @@ public sealed class CustomerMasterService(
         var central = await LinkedCentralAsync(cancellationToken);
         try
         {
-            if (central is null)
+            await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+            await branch.OpenAsync(cancellationToken);
+            await using var transaction = (SqlTransaction)await branch.BeginTransactionAsync(cancellationToken);
+            await change(branch, transaction);
+            if (central is not null)
             {
-                await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
-                await branch.OpenAsync(cancellationToken);
-                await using var transaction = (SqlTransaction)await branch.BeginTransactionAsync(cancellationToken);
-                await change(branch, transaction);
-                await transaction.CommitAsync(cancellationToken);
+                await cardSync.EnqueueAsync(branch, transaction, BranchCardOutboxSync.Customers, customerId, cancellationToken);
             }
-            else
-            {
-                await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
-                await remote.OpenAsync(cancellationToken);
-                await using var transaction = (SqlTransaction)await remote.BeginTransactionAsync(cancellationToken);
-                await change(remote, transaction);
-                await transaction.CommitAsync(cancellationToken);
-                await CopyToBranchAsync(central, customerId, cancellationToken);
-            }
+
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (CustomerMasterException)
         {
@@ -447,6 +456,18 @@ public sealed class CustomerMasterService(
         {
             logger.LogWarning("Customer save failed with SQL {SqlNumber} for {CustomerId}.", exception.Number, customerId);
             throw new CustomerMasterException("تعذر حفظ بيانات الزبون.", StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (central is not null)
+        {
+            try
+            {
+                await cardSync.FlushAsync(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Customer {CustomerId} stayed pending until central is reachable.", customerId);
+            }
         }
 
         logger.LogInformation("Customer master change completed for {CustomerId} by {ActorUserId}.", customerId, actorUserId);
@@ -527,12 +548,22 @@ public sealed class CustomerMasterService(
     {
         var customer = await GetAsync(customerId, cancellationToken)
             ?? throw new CustomerMasterException("الزبون غير موجود.", StatusCodes.Status404NotFound);
-        var central = await LinkedCentralAsync(cancellationToken);
-        var connectionString = central?.BuildConnectionString(central.DatabaseName) ?? connections.CreateBranchConnectionString();
-        await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
-        var warning = await DuplicateWarningAsync(connection, null, customer, cancellationToken);
-        return new CustomerMutationResult(customer, warning);
+        try
+        {
+            var central = await LinkedCentralAsync(cancellationToken);
+            var connectionString = central?.BuildConnectionString(central.DatabaseName) ?? connections.CreateBranchConnectionString();
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            var warning = await DuplicateWarningAsync(connection, null, customer, cancellationToken);
+            return new CustomerMutationResult(customer, warning);
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
+        {
+            await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+            await branch.OpenAsync(cancellationToken);
+            var warning = await DuplicateWarningAsync(branch, null, customer, cancellationToken);
+            return new CustomerMutationResult(customer, warning);
+        }
     }
 
     private static async Task<CustomerPage> ReadPageAsync(string connectionString, CustomerListFilter filter, CancellationToken cancellationToken)

@@ -120,6 +120,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [resendAt, setResendAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [message, setMessage] = useState("");
+  const [duplicateNotice, setDuplicateNotice] = useState("");
   const [saveUi, setSaveUi] = useState<"idle" | "saving" | "success">("idle");
   const [passkeyVerified, setPasskeyVerified] = useState(false);
   const [passkeySessionId, setPasskeySessionId] = useState<string | null>(null);
@@ -421,6 +422,37 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     setRecordVersion(row.rowVersion ?? "");
   }
 
+  async function duplicateReason() {
+    const selfId = customerId || savedCustomerId || "";
+    const number = customerNumber.trim();
+    if (number) {
+      const found = await customers.search(number).catch(() => null);
+      if (found?.customers.some((row) => row.customerId !== selfId && (row.customerNumber ?? "").trim() === number)) {
+        return "رقم الزبون مستخدم بالفعل.";
+      }
+    }
+    const phoneDigits = whatsAppLocal.replace(/\D/g, "");
+    if (phoneDigits.length >= 7) {
+      const found = await customers.search(phoneDigits).catch(() => null);
+      if (found?.customers.some((row) => {
+        if (row.customerId === selfId) return false;
+        const stored = (row.phone ?? "").replace(/\D/g, "");
+        return stored.length >= 7 && (stored.endsWith(phoneDigits) || phoneDigits.endsWith(stored));
+      })) {
+        return "رقم الهاتف مستخدم بالفعل.";
+      }
+    }
+    const attempt = pendingEnrollment || sessionStorage.getItem(pendingEnrollmentKey) || "";
+    if (attempt) {
+      const response = await fetch(`/api/membership/enrollment/attempt/${encodeURIComponent(attempt)}/taken`, { credentials: "same-origin", headers: deviceHeaders(session) }).catch(() => null);
+      if (response?.ok) {
+        const body = await response.json().catch(() => ({})) as { taken?: boolean };
+        if (body.taken) return "مفتاح التعريف مستخدم بالفعل.";
+      }
+    }
+    return "";
+  }
+
   async function save() {
     if (saveUi === "saving") return;
     const activation = creditSwitchState(creditEnabled, creditStatus);
@@ -446,6 +478,11 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     }
     if (!saveEnabled) return;
     if (!customerId && !verificationId && !passkeyVerified && !skipMembership && !pendingEnrollment) return;
+    const clash = await duplicateReason();
+    if (clash) {
+      setDuplicateNotice(clash);
+      return;
+    }
     setSaveUi("saving");
     setMessage("");
     try {
@@ -453,7 +490,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       const saved = await customers.saveCustomer(sent, savedCustomerId);
       setSavedCustomerId(saved.customerId);
       const pending = sessionStorage.getItem(pendingEnrollmentKey);
-      if (!customerId && pending) {
+      if (pending) {
         const committed = await fetch("/api/membership/enrollment/commit", {
           method: "POST",
           credentials: "same-origin",
@@ -461,9 +498,20 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
         });
         if (!committed.ok) {
-          setMessage("تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.");
+          const failure = await committed.json().catch(() => ({})) as { code?: string };
+          setSaveUi("idle");
+          if (failure.code === "MEMBERSHIP_PROVIDER_CONFLICT") {
+            sessionStorage.removeItem(pendingEnrollmentKey);
+            setPendingEnrollment("");
+            setMembershipDisplay("");
+          }
+          setDuplicateNotice(failure.code === "MEMBERSHIP_PROVIDER_CONFLICT"
+            ? "مفتاح التعريف مستخدم بالفعل."
+            : "تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.");
+          return;
         } else {
           clearNewCustomerDraft();
+          sessionStorage.removeItem(pendingEnrollmentKey);
           setPendingEnrollment("");
         }
       }
@@ -495,6 +543,12 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       }
       setSaveUi("success");
     } catch (error) {
+      const text = error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.";
+      if (text.includes("مستخدم بالفعل") || text.includes("تتعارض")) {
+        setSaveUi("idle");
+        setDuplicateNotice(text.includes("رقم الزبون") ? "رقم الزبون مستخدم بالفعل." : text.includes("هاتف") ? "رقم الهاتف مستخدم بالفعل." : "مفتاح التعريف مستخدم بالفعل.");
+        return;
+      }
       setSaveUi("idle");
       setMessage(error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.");
     }
@@ -658,8 +712,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         ) : null}
         {verifiedDestination ? <p className="new-customer-success">تم التحقق من رقم الهاتف بنجاح</p> : null}
         </fieldset>
-      </div>
-      {!readOnly ? <CustomerMembershipSection session={session} identityKey={membershipDisplay} customerId={customerId || savedCustomerId || ""} canUnlink={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
+      {!readOnly || customerId ? <CustomerMembershipSection key={pendingEnrollment || customerId || "new"} session={session} identityKey={membershipDisplay} customerId={customerId || savedCustomerId || ""} canUnlink={!readOnly && (permissions.includes("Customers.Manage") || permissions.includes("System.Administer"))} canExcept={permissions.includes("Customers.Manage") || permissions.includes("System.Administer")} exceptionLocked={readOnly} canApproveException={permissions.includes("System.Administer")} pendingEnrollment={Boolean(pendingEnrollment)} onException={setSkipMembership} onBeforeEnroll={() => writeNewCustomerDraft({ customerNumber, name, whatsAppLocal, countryCode, classificationId, priceTypeId, discount, notes })} onPending={(attemptId, display) => { if (!attemptId) { sessionStorage.removeItem(pendingEnrollmentKey); setPendingEnrollment(""); setMembershipDisplay(""); setMessage("مفتاح التعريف مستخدم بالفعل."); return; } sessionStorage.setItem(pendingEnrollmentKey, attemptId); setPendingEnrollment(attemptId); setMembershipDisplay(display); setMessage("تم التحقق بنجاح"); }} /> : null}
       {readOnly ? null : (
       <div className="new-customer-actions">
         <button id="send-code" className="send-button" type="button" onClick={() => void send()} onKeyDown={(event) => onEnter(event, "send-code")}><Send aria-hidden="true" />إرسال رمز التحقق</button>
@@ -678,7 +731,16 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         <button id="save-customer" className="save-button" type="button" disabled={!saveEnabled || saveUi === "saving"} onClick={() => void save()}><Save aria-hidden="true" />{customerId ? "حفظ" : "حفظ الزبون"}</button>
       </div>
       )}
+      </div>
       </>}
+      {duplicateNotice ? (
+        <div className="customer-save-progress" role="presentation">
+          <div className="customer-save-card" role="dialog" aria-modal="true" aria-label="قيمة مكررة">
+            <p>{duplicateNotice}</p>
+            <button type="button" onClick={() => setDuplicateNotice("")}>إغلاق</button>
+          </div>
+        </div>
+      ) : null}
       {saveUi === "success" ? (
         <div className="customer-save-progress" role="presentation">
           <div className="customer-save-card" role="dialog" aria-modal="true" aria-label={customerId ? "تم حفظ تعديلات الزبون بنجاح" : "تم حفظ الزبون بنجاح"}>

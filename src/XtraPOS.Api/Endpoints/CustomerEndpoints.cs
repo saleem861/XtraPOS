@@ -465,11 +465,6 @@ public static class CustomerEndpoints
         {
             return Results.Json(new { code = exception.Code, message = exception.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
-        if (!current.CentralReachable)
-        {
-            return Results.Json(new { code = "CENTRAL_UNAVAILABLE", message = "جهة الائتمان المركزية غير متاحة." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
         var manage = await permissions.HasPermissionAsync(caller.UserId, PermissionCodes.CreditManageLimit, cancellationToken);
         var suspend = await permissions.HasPermissionAsync(caller.UserId, PermissionCodes.CreditSuspend, cancellationToken);
         var administer = await permissions.HasPermissionAsync(caller.UserId, PermissionCodes.SystemAdminister, cancellationToken);
