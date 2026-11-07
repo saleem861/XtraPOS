@@ -1,4 +1,4 @@
-import { deferredAmount, splitDeferred, appendDeferred, creditEligible } from "./creditSale";
+import { deferredAmount, splitDeferred, appendDeferred, creditEligible, creditLimitMessage } from "./creditSale";
 import { describe, expect, it } from "vitest";
 
 describe("credit sale amounts", () => {
@@ -18,6 +18,8 @@ describe("credit sale amounts", () => {
     const active = { creditEnabled: true, creditStatus: "Active", available: 100, centralReachable: true };
     expect(creditEligible(active, null, true)).toContain("زبون عادي");
     expect(creditEligible({ ...active, creditEnabled: false }, "c", true)).toContain("غير نشط");
+    expect(creditLimitMessage(40.5, 50)).toContain("تتجاوز الحد");
+    expect(creditLimitMessage(50, 50)).toBeNull();
     expect(creditEligible({ ...active, creditStatus: "Suspended" }, "c", true)).toContain("غير نشط");
     expect(creditEligible({ ...active, available: 0 }, "c", true)).toContain("لا يوجد");
     expect(creditEligible(active, "c", false)).toContain("صلاحية");
