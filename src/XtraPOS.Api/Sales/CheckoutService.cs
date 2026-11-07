@@ -417,6 +417,16 @@ public sealed class CheckoutService(
         }
     }
 
+    private static string ArabicPriceField(string field) => field switch
+    {
+        "UnitPrice" => "سعر الوحدة",
+        "FinalSellingPrice" => "سعر البيع",
+        "ReferenceBasePrice" => "السعر المرجعي",
+        "WeightKg" => "الوزن",
+        "StockOwnerQuantity" => "كمية المخزون",
+        _ => "السعر",
+    };
+
     private static void Compare(List<CheckoutPriceChange> changes, Guid cartLineId, string field, decimal? preview, decimal authoritative)
     {
         if (preview is decimal expected && expected != authoritative)
@@ -565,7 +575,11 @@ public sealed class CheckoutService(
 
         if (changes.Count > 0)
         {
-            throw new CheckoutException(CheckoutCodes.PriceChanged, "السعر المرسل لا يطابق سعر الخادم.", StatusCodes.Status409Conflict);
+            var first = changes[0];
+            throw new CheckoutException(
+                CheckoutCodes.PriceChanged,
+                $"السعر المرسل لا يطابق سعر الخادم. {ArabicPriceField(first.Field)}: المرسل {first.Preview.ToString("0.####", CultureInfo.InvariantCulture)} والمعتمد {first.Authoritative.ToString("0.####", CultureInfo.InvariantCulture)}.",
+                StatusCodes.Status409Conflict);
         }
 
         var total = decimal.Round(prepared.Sum(line => line.LineTotal), 4, MidpointRounding.AwayFromZero);

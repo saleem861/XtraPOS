@@ -14,49 +14,6 @@ public sealed record CreditReserveResult(
 
 public sealed class CreditReservationService
 {
-    public async Task<CreditReserveResult> PreviewAsync(
-        SqlConnection connection,
-        Guid customerId,
-        decimal amount,
-        CancellationToken cancellationToken)
-    {
-        await using var policy = new SqlCommand(
-            """
-            SELECT CreditEnabled, CreditStatus, CreditLimit
-            FROM dbo.CustomerCreditPolicies
-            WHERE CustomerID = @customer;
-            """,
-            connection);
-        policy.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;
-        await using var policyReader = await policy.ExecuteReaderAsync(cancellationToken);
-        if (!await policyReader.ReadAsync(cancellationToken))
-        {
-            return new CreditReserveResult(Guid.Empty, "Missing", CreditDecision.CreditDisabled, false);
-        }
-
-        var enabled = policyReader.GetBoolean(0);
-        var status = policyReader.GetString(1);
-        var limit = policyReader.GetDecimal(2);
-        await policyReader.CloseAsync();
-        var outstanding = await MoneyAsync(connection, null, """
-            SELECT ISNULL(SUM(OutstandingAmount), 0)
-            FROM dbo.CustomerReceivables
-            WHERE CustomerID = @customer AND Status IN (N'Open', N'Partial');
-            """, customerId, cancellationToken);
-        var reserved = await MoneyAsync(connection, null, """
-            SELECT ISNULL(SUM(RequestedAmount), 0)
-            FROM dbo.CreditAuthorizations
-            WHERE CustomerID = @customer
-              AND (
-                    Status = N'Posting'
-                    OR (Status IN (N'Pending', N'Authorized') AND ExpiresAt > SYSUTCDATETIME())
-                  );
-            """, customerId, cancellationToken);
-        var available = CreditAvailability.Available(limit, outstanding, reserved);
-        var decision = CreditAvailability.Decide(enabled, status, limit, outstanding, reserved, amount);
-        return new CreditReserveResult(Guid.Empty, "Preview", decision, false, available, limit, outstanding);
-    }
-
     public async Task<CreditReserveResult> ReserveAsync(
         SqlConnection connection,
         Guid customerId,
@@ -396,7 +353,7 @@ public sealed class CreditReservationService
         return new CreditReserveResult(authorizationId, storedStatus, decision, rejectedAuthorizationId is not null, available, limit, outstanding);
     }
 
-    private static async Task<decimal> MoneyAsync(SqlConnection connection, SqlTransaction? transaction, string sql, Guid customerId, CancellationToken cancellationToken)
+    private static async Task<decimal> MoneyAsync(SqlConnection connection, SqlTransaction transaction, string sql, Guid customerId, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(sql, connection, transaction);
         command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;

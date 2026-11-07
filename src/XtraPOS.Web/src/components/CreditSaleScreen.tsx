@@ -1,14 +1,15 @@
-import { Keyboard } from "lucide-react";
 import { useEffect, useState } from "react";
 import { deviceHeaders } from "../api/client";
 import type { CreditPolicy } from "../api/customers";
 import { createCustomerClient } from "../api/customers";
 import type { CartDraft } from "../cart/model";
 import { cartTotals } from "../cart/model";
+import { subtractDecimals } from "../cart/decimal";
 import { appendDeferred, creditEligible, creditLimitMessage, splitDeferred } from "../credit/creditSale";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
+import { NumericKeypad } from "./NumericKeypad";
 import { ScreenHeader } from "./ScreenHeader";
 import "./debtScreens.css";
 
@@ -104,20 +105,13 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
     }
     setBusy(true);
     try {
+      const invoiceTotal = cartTotals(cart).total;
+      const deferredText = shownDeferred.endsWith(".") ? shownDeferred.slice(0, -1) : shownDeferred;
+      const immediateText = subtractDecimals(invoiceTotal, deferredText || "0");
       const response = await fetch("/api/pos/credit-sales", {
         method: "POST",
         headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
-        body: JSON.stringify({
-          operationId,
-          cartId: cart.cartId,
-          customerId: cart.customerId,
-          invoiceTotal: total,
-          immediatePayment: immediate,
-          cashSessionId: cashSessionId || null,
-          lines: cart.lines.map((line) => line.lineType === "Fixed"
-            ? { itemId: line.itemId, quantity: Number(line.quantity), lineType: "Fixed", expectedUnitPrice: Number(line.resolvedUnitPrice), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }
-            : { itemId: line.referenceItemId, quantity: Number(line.quantity), lineType: "VariableValueByWeight", enteredScaleValue: Number(line.enteredScaleValue), expectedFinalSellingPrice: Number(line.finalSellingPrice), expectedReferenceBasePrice: Number(line.referenceBasePrice), expectedWeightKg: Number(line.weightKg), expectedStockOwnerQuantity: Number(line.projectedStockOwnerQuantity), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }),
-        }),
+        body: `{"operationId":"${operationId}","cartId":"${cart.cartId}","customerId":"${cart.customerId}","invoiceTotal":${invoiceTotal},"immediatePayment":${immediateText},"cashSessionId":${cashSessionId ? `"${cashSessionId}"` : "null"},"lines":[${cart.lines.map(creditLineJson).join(",")}]}`,
       });
       const payload = await response.json() as { state?: string; message?: string };
       setState(payload.state ?? "");
@@ -221,20 +215,13 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
               <h3>إجراءات سريعة</h3>
               <div className="pos-quick-grid" />
             </section>
-            <section className="pos-side-card pos-pad-card">
-              <h3><Keyboard aria-hidden="true" />لوحة الأرقام</h3>
-              <div className="pos-side-pad" dir="ltr">
-                {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={key === "Enter" ? "is-enter" : key === "0" ? "is-wide" : undefined}
-                    onMouseDown={(event) => event.preventDefault()}
-                    aria-label={key === "Enter" ? "إدخال" : `مفتاح ${key}`}
-                    onClick={() => pressDebtPad(key)}
-                  >{key === "Enter" ? "إدخال" : key}</button>
-                ))}
-              </div>
+            <section className="pos-side-card debt-keypad-card">
+              <h3>لوحة الأرقام</h3>
+              <NumericKeypad
+                allowDecimal
+                onDigit={(digit) => pressDebtPad(digit)}
+                onClear={() => pressDebtPad("Del")}
+              />
             </section>
           </aside>
         ) : null}
@@ -278,6 +265,17 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
       setMessage("العملية بحاجة إلى مراجعة مالية.");
     } else setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
   }
+}
+
+function creditLineJson(line: CartDraft["lines"][number]) {
+  const manual = line.priceOverrideMode === "UnitPrice"
+    ? `,"priceOverrideMode":"UnitPrice","manualUnitPrice":${line.manualUnitPrice}`
+    : line.priceOverrideMode === "LineTotal"
+      ? `,"priceOverrideMode":"LineTotal","manualLineTotal":${line.manualLineTotal}`
+      : `,"priceOverrideMode":"None"`;
+  return line.lineType === "Fixed"
+    ? `{"itemId":"${line.itemId}","quantity":${line.quantity},"lineType":"Fixed","expectedUnitPrice":${line.resolvedUnitPrice}${manual}}`
+    : `{"itemId":"${line.referenceItemId}","quantity":${line.quantity},"lineType":"VariableValueByWeight","enteredScaleValue":${line.enteredScaleValue},"expectedFinalSellingPrice":${line.finalSellingPrice},"expectedReferenceBasePrice":${line.referenceBasePrice},"expectedWeightKg":${line.weightKg},"expectedStockOwnerQuantity":${line.projectedStockOwnerQuantity}${manual}}`;
 }
 
 function money(value: number | null | undefined) {
