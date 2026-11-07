@@ -150,7 +150,7 @@ public static class CreditEndpoints
             }, statusCode: StatusCodes.Status403Forbidden);
         }
 
-        var body = new { operationId, state = outcome.ToString(), saleId = result.SaleId };
+        var body = new { operationId, state = outcome.ToString(), saleId = result.SaleId, message = result.Message };
         return outcome switch
         {
             CreditSaleOutcome.Completed => Results.Ok(body),

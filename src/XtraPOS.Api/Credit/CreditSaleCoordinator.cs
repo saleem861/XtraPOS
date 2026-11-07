@@ -22,7 +22,8 @@ public sealed record CreditSaleOutcomeResult(
     Guid? AuthorizationId,
     decimal? MaxDeferred = null,
     decimal? CreditLimit = null,
-    decimal? Outstanding = null);
+    decimal? Outstanding = null,
+    string? Message = null);
 
 public sealed class CreditSaleCoordinator(CreditReservationService credit, CreditSaleDocumentWriter documents)
 {
@@ -48,12 +49,18 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             replayExists = Convert.ToInt32(await existing.ExecuteScalarAsync(cancellationToken)) > 0;
         }
 
+        var customerProblem = await EnsureBranchCustomerAsync(central, branch, request.BusinessId, request.CustomerId, cancellationToken);
+        if (customerProblem is not null)
+        {
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null, Message: customerProblem);
+        }
+
         CreditQuote quote;
         try
         {
             quote = await documents.QuoteAsync(branch, request, cancellationToken);
         }
-        catch (CreditConflictException)
+        catch (CreditConflictException exception)
         {
             if (replayExists)
             {
@@ -61,12 +68,12 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
                 return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, request.SaleId, null);
             }
 
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null);
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null, Message: ArabicConflict(exception.Message));
         }
 
         if (quote.Deferred <= 0m || request.DeferredAmount != quote.Deferred)
         {
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null);
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null, Message: "القيمة المؤجلة يجب أن تكون أكبر من صفر ومساوية للفرق بين المجموع والدفع الفوري.");
         }
 
         if (!centralReachable)
@@ -119,7 +126,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         catch
         {
             await credit.ReleaseAsync(central, reserved.AuthorizationId, cancellationToken);
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, reserved.AuthorizationId);
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, reserved.AuthorizationId, Message: "تعذر حفظ الفاتورة على الفرع. السلة ما زالت موجودة.");
         }
 
         if (afterLocalCommit is not null)
@@ -398,6 +405,82 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             && Guid.TryParse(parts[1], out customerId)
             && Guid.TryParse(parts[2], out branchId)
             && Guid.TryParse(parts[3], out saleId);
+    }
+
+    private static string ArabicConflict(string message) => message switch
+    {
+        "A credit sale needs priced lines." => "السلة فارغة.",
+        "The customer is not an active registered customer." => "الزبون غير مسجّل أو غير فعال على هذا الفرع.",
+        "The submitted total does not match the server price." => "المجموع لا يطابق سعر الخادم. حدّث الأسعار ثم أعد المحاولة.",
+        "A variable-weight credit line must confirm the server price, weight, and stock quantity." => "سطر التوزين لا يطابق السعر المحسوب. حدّث الأسعار ثم أعد المحاولة.",
+        _ => string.IsNullOrWhiteSpace(message) ? "تم رفض البيع بالدين. السلة ما زالت موجودة." : message,
+    };
+
+    private static async Task<string?> EnsureBranchCustomerAsync(SqlConnection central, SqlConnection branch, Guid businessId, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using (var local = new SqlCommand("SELECT IsActive FROM dbo.Customers WHERE CustomerID = @id AND BusinessID = @business;", branch))
+        {
+            local.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+            local.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+            if (await local.ExecuteScalarAsync(cancellationToken) is bool active)
+            {
+                return active ? null : "الزبون غير فعال على هذا الفرع.";
+            }
+        }
+
+        await using var remote = new SqlCommand(
+            """
+            SELECT CustomerNumber, Name, NameSearchStrict, NameSearchLoose, Phone, NormalizedPhone, IsActive
+            FROM dbo.Customers
+            WHERE CustomerID = @id AND BusinessID = @business;
+            """,
+            central);
+        remote.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+        remote.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+        await using var reader = await remote.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return "الزبون غير موجود في الإدارة المركزية.";
+        }
+
+        if (!reader.GetBoolean(6))
+        {
+            return "الزبون غير فعال.";
+        }
+
+        var number = reader.IsDBNull(0) ? null : reader.GetString(0);
+        var name = reader.GetString(1);
+        var strict = reader.IsDBNull(2) ? name : reader.GetString(2);
+        var loose = reader.IsDBNull(3) ? name : reader.GetString(3);
+        var phone = reader.IsDBNull(4) ? null : reader.GetString(4);
+        var normalized = reader.IsDBNull(5) ? null : reader.GetString(5);
+        await reader.CloseAsync();
+        try
+        {
+            await using var insert = new SqlCommand(
+                """
+                INSERT INTO dbo.Customers
+                    (CustomerID, BusinessID, CustomerNumber, Name, NameSearchStrict, NameSearchLoose, Phone, NormalizedPhone, IsActive, CreatedAt, UpdatedAt)
+                VALUES
+                    (@id, @business, @number, @name, @strict, @loose, @phone, @normalized, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+                """,
+                branch);
+            insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = customerId;
+            insert.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+            insert.Parameters.Add("@number", SqlDbType.NVarChar, 40).Value = (object?)number ?? DBNull.Value;
+            insert.Parameters.Add("@name", SqlDbType.NVarChar, 200).Value = name;
+            insert.Parameters.Add("@strict", SqlDbType.NVarChar, 200).Value = strict;
+            insert.Parameters.Add("@loose", SqlDbType.NVarChar, 200).Value = loose;
+            insert.Parameters.Add("@phone", SqlDbType.NVarChar, 40).Value = (object?)phone ?? DBNull.Value;
+            insert.Parameters.Add("@normalized", SqlDbType.NVarChar, 40).Value = (object?)normalized ?? DBNull.Value;
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqlException)
+        {
+            return "تعذر حفظ بطاقة الزبون على الفرع قبل تسجيل الدين.";
+        }
+
+        return null;
     }
 }
 

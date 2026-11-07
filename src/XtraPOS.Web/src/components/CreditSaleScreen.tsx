@@ -7,7 +7,6 @@ import { cartTotals } from "../cart/model";
 import { appendDeferred, creditEligible, splitDeferred } from "../credit/creditSale";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
-import { NumericKeypad } from "./NumericKeypad";
 import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
 import { ScreenHeader } from "./ScreenHeader";
 import "./debtScreens.css";
@@ -35,11 +34,12 @@ const typeLabel: Record<string, string> = {
   Adjustment: "تصحيح",
 };
 
-export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, canCreate, operationId, onBack, onCompleted }: {
+export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack, onCompleted }: {
   session: DeviceSession;
   cart: CartDraft;
   customerName: string;
   customerNumber?: string | null;
+  cashSessionId?: string | null;
   branchName: string;
   userName: string;
   canCreate: boolean;
@@ -110,6 +110,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
           customerId: cart.customerId,
           invoiceTotal: total,
           immediatePayment: immediate,
+          cashSessionId: cashSessionId || null,
           lines: cart.lines.map((line) => line.lineType === "Fixed"
             ? { itemId: line.itemId, quantity: Number(line.quantity), lineType: "Fixed", expectedUnitPrice: Number(line.resolvedUnitPrice), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }
             : { itemId: line.referenceItemId, quantity: Number(line.quantity), lineType: "VariableValueByWeight", enteredScaleValue: Number(line.enteredScaleValue), expectedFinalSellingPrice: Number(line.finalSellingPrice), expectedReferenceBasePrice: Number(line.referenceBasePrice), expectedWeightKg: Number(line.weightKg), expectedStockOwnerQuantity: Number(line.projectedStockOwnerQuantity), priceOverrideMode: line.priceOverrideMode, manualUnitPrice: line.manualUnitPrice ? Number(line.manualUnitPrice) : null, manualLineTotal: line.manualLineTotal ? Number(line.manualLineTotal) : null }),
@@ -206,16 +207,44 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
           </div>
         </div>
         {desktopKeyboard ? (
-          <NumericKeypad
-            allowDecimal
-            onDigit={(digit) => { setTouched(true); setDeferredInput((current) => appendDeferred(current || String(total), digit)); }}
-            onClear={() => { setTouched(true); setDeferredInput(""); }}
-          />
+          <aside className="debt-pad pos-side-card pos-pad-card" aria-label="لوحة الأرقام">
+            <h3>لوحة الأرقام</h3>
+            <div className="pos-side-pad" dir="ltr">
+              {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={key === "Enter" ? "is-enter" : key === "0" ? "is-wide" : undefined}
+                  onMouseDown={(event) => event.preventDefault()}
+                  aria-label={key === "Enter" ? "إدخال" : `مفتاح ${key}`}
+                  onClick={() => pressDebtPad(key)}
+                >{key === "Enter" ? "إدخال" : key}</button>
+              ))}
+            </div>
+          </aside>
         ) : null}
       </div>
       <button type="button" className="debt-close" onClick={onBack}>إغلاق</button>
     </section>
   );
+
+  function pressDebtPad(key: string) {
+    if (key === "Enter") {
+      void confirm();
+      return;
+    }
+    if (key === "/" || key === "*" || key === "-" || key === "+") return;
+    setTouched(true);
+    if (key === "Del") {
+      setDeferredInput("");
+      return;
+    }
+    if (key === "BS") {
+      setDeferredInput((current) => (current || String(total)).slice(0, -1));
+      return;
+    }
+    setDeferredInput((current) => appendDeferred(current || String(total), key));
+  }
 
   async function refresh() {
     const response = await fetch(`/api/pos/credit-sales/${operationId}`, { headers: deviceHeaders(session) });

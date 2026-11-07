@@ -492,6 +492,12 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     entryValueRef.current = entry;
   }, [entry]);
 
+  useEffect(() => {
+    if (surfaceOpen || creditOpen || registerOpen || membershipOpen || heldOpen || printSheet || debtCustomer) return;
+    const timer = window.setTimeout(() => focusEntry(), 0);
+    return () => window.clearTimeout(timer);
+  }, [surfaceOpen, creditOpen, registerOpen, membershipOpen, heldOpen, printSheet, debtCustomer, cartRestore]);
+
   useLayoutEffect(() => {
     if (!entryCaretPin.current || surfaceOpen) return;
     entryCaretPin.current = false;
@@ -1336,7 +1342,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       </div>
       {receipt ? <p className="status-ok">تمت عملية البيع بنجاح. رقم الفاتورة {receipt.saleNumber}. المجموع {receipt.total} ₪.{receipt.payments.some((payment) => Number(payment.changeAmount) > 0) ? ` الباقي ${receipt.payments.find((payment) => payment.method === "Cash")?.changeAmount ?? ""} ₪.` : ""}</p> : null}
       {message && !searchOpen ? <p className="status-error">{message}</p> : null}
-      <div className="actions pos-action-bar">
+      <div className="actions pos-action-bar" onMouseDown={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.preventDefault(); }}>
         <button className="nav-button" type="button" onClick={() => void changeCustomer(cart.customerId)}><RefreshCw className="pos-pro-icon" aria-hidden="true" />تحديث الأسعار</button>
         {confirmClear ? (
           <button className="danger-button" type="button" onClick={() => { setConfirmClear(false); void persist(clearCart(cart)); }}>تأكيد مسح السلة</button>
@@ -1350,7 +1356,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         )}
       </div>
       </div>
-      <aside className="pos-sidebar pos-pro" aria-label="الشريط الجانبي">
+      <aside className="pos-sidebar pos-pro" aria-label="الشريط الجانبي" onMouseDown={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.preventDefault(); }}>
         <section className="pos-side-card">
           <h3>إجراءات سريعة</h3>
           <div className="pos-quick-grid">
@@ -1438,6 +1444,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           cart={cart}
           customerName={saleCustomer?.name ?? "زبون عادي"}
           customerNumber={saleCustomer?.customerNumber ?? null}
+          cashSessionId={cashSession?.cashSessionId ?? null}
           branchName={session.branchName}
           userName={user.displayName}
           canCreate={user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer")}
