@@ -9,6 +9,8 @@ describe("credit sale amounts", () => {
     expect("error" in splitDeferred(600, 0)).toBe(true);
     expect("error" in splitDeferred(600, 700)).toBe(true);
     expect(appendDeferred("12", "3")).toBe("123");
+    expect(appendDeferred("", "8")).toBe("8");
+    expect(appendDeferred("", "9")).toBe("9");
     expect(appendDeferred("12.", "5")).toBe("12.5");
     expect("error" in deferredAmount({ invoiceTotal: 600, immediatePayment: 600 })).toBe(true);
     expect("error" in deferredAmount({ invoiceTotal: 600, immediatePayment: 700 })).toBe(true);

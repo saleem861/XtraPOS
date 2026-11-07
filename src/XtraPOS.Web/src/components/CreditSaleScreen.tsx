@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deviceHeaders } from "../api/client";
 import type { CreditPolicy } from "../api/customers";
 import { createCustomerClient } from "../api/customers";
@@ -50,6 +50,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   onPosted: () => void;
 }) {
   const customers = createCustomerClient(session);
+  const saleCartId = useRef(crypto.randomUUID());
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
   const [policy, setPolicy] = useState<CreditPolicy | null>(null);
   const [deferredInput, setDeferredInput] = useState("");
@@ -69,6 +70,10 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   const deferred = "deferred" in split ? split.deferred : null;
   const immediate = "immediate" in split ? split.immediate : null;
   const block = creditEligible(policy, cart.customerId, canCreate);
+
+  useEffect(() => {
+    saleCartId.current = crypto.randomUUID();
+  }, [operationId]);
 
   useEffect(() => {
     setDesktopKeyboard(usesDesktopCustomerKeyboard());
@@ -111,7 +116,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
       const response = await fetch("/api/pos/credit-sales", {
         method: "POST",
         headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
-        body: `{"operationId":"${operationId}","cartId":"${cart.cartId}","customerId":"${cart.customerId}","invoiceTotal":${invoiceTotal},"immediatePayment":${immediateText},"cashSessionId":${cashSessionId ? `"${cashSessionId}"` : "null"},"lines":[${cart.lines.map(creditLineJson).join(",")}]}`,
+        body: `{"operationId":"${operationId}","cartId":"${saleCartId.current}","customerId":"${cart.customerId}","invoiceTotal":${invoiceTotal},"immediatePayment":${immediateText},"cashSessionId":${cashSessionId ? `"${cashSessionId}"` : "null"},"lines":[${cart.lines.map(creditLineJson).join(",")}]}`,
       });
       const payload = await response.json() as { state?: string; message?: string };
       setState(payload.state ?? "");
@@ -236,16 +241,17 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
       return;
     }
     if (key === "/" || key === "*" || key === "-" || key === "+") return;
+    const base = touched ? deferredInput : String(total);
     setTouched(true);
     if (key === "Del") {
       setDeferredInput("");
       return;
     }
     if (key === "BS") {
-      setDeferredInput((current) => (current || String(total)).slice(0, -1));
+      setDeferredInput(base.slice(0, -1));
       return;
     }
-    setDeferredInput((current) => appendDeferred(current || String(total), key));
+    setDeferredInput(appendDeferred(base, key));
   }
 
   async function refresh() {

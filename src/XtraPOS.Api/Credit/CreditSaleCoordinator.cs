@@ -138,10 +138,10 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         {
             await InsertPendingSaleAsync(branch, request, quote, saleId, reserved.AuthorizationId, failLocalCommit, cancellationToken);
         }
-        catch
+        catch (Exception exception)
         {
             await credit.ReleaseAsync(central, reserved.AuthorizationId, cancellationToken);
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, reserved.AuthorizationId, Message: "تعذر حفظ الفاتورة على الفرع. السلة ما زالت موجودة.");
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, reserved.AuthorizationId, Message: LocalSaveMessage(exception));
         }
 
         if (afterLocalCommit is not null)
@@ -420,6 +420,16 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             && Guid.TryParse(parts[1], out customerId)
             && Guid.TryParse(parts[2], out branchId)
             && Guid.TryParse(parts[3], out saleId);
+    }
+
+    private static string LocalSaveMessage(Exception exception)
+    {
+        if (exception is SqlException sql && sql.Number is 2601 or 2627)
+        {
+            return "هذه السلة مرتبطة بفاتورة محفوظة. أعد تسجيل الدين.";
+        }
+
+        return "تعذر حفظ الفاتورة على الفرع. السلة ما زالت موجودة.";
     }
 
     private static bool IsPriceMismatch(string message) =>
