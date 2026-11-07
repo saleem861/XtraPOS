@@ -1,10 +1,11 @@
+import { Keyboard } from "lucide-react";
 import { useEffect, useState } from "react";
 import { deviceHeaders } from "../api/client";
 import type { CreditPolicy } from "../api/customers";
 import { createCustomerClient } from "../api/customers";
 import type { CartDraft } from "../cart/model";
 import { cartTotals } from "../cart/model";
-import { appendDeferred, creditEligible, splitDeferred } from "../credit/creditSale";
+import { appendDeferred, creditEligible, creditLimitMessage, splitDeferred } from "../credit/creditSale";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
@@ -34,7 +35,7 @@ const typeLabel: Record<string, string> = {
   Adjustment: "تصحيح",
 };
 
-export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack, onCompleted }: {
+export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack, onPosted }: {
   session: DeviceSession;
   cart: CartDraft;
   customerName: string;
@@ -45,7 +46,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   canCreate: boolean;
   operationId: string;
   onBack: () => void;
-  onCompleted: () => void;
+  onPosted: () => void;
 }) {
   const customers = createCustomerClient(session);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
@@ -95,8 +96,10 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   }
 
   async function confirm() {
-    if (busy || block || deferred === null || immediate === null || !cart.customerId) {
-      setMessage(block ?? ("error" in split ? split.error : ""));
+    const limitMessage = policy && deferred !== null ? creditLimitMessage(policy.available, deferred) : null;
+    if (busy || block || deferred === null || immediate === null || !cart.customerId || limitMessage) {
+      setState(limitMessage ? "Refused" : "");
+      setMessage(limitMessage ?? block ?? ("error" in split ? split.error : ""));
       return;
     }
     setBusy(true);
@@ -119,8 +122,14 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
       const payload = await response.json() as { state?: string; message?: string };
       setState(payload.state ?? "");
       if (payload.state === "Completed") {
+        setState("");
+        setTouched(false);
         setMessage("تم تأكيد الدين.");
-        onCompleted();
+        await Promise.all([
+          loadHistory(0),
+          customers.creditPolicy(cart.customerId).then(setPolicy).catch(() => setMessage("تم تأكيد الدين. تعذر تحديث الحد الائتماني.")),
+        ]);
+        onPosted();
         return;
       }
       if (payload.state === "PendingCentral") setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
@@ -152,7 +161,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   const pending = state === "PendingCentral";
   return (
     <section className="new-customer debt-screen" dir="rtl" aria-label="تأجيل دفع للزبون">
-      <ScreenHeader title="تأجيل دفع للزبون" onBack={onBack} />
+      <ScreenHeader title="تأجيل دفع" onBack={onBack} />
       <div className="pos-desktop-shell debt-layout">
         <div className="pos-main-workspace debt-main">
           <div className="debt-facts">
@@ -163,7 +172,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
           </div>
           <div className="debt-controls">
             <div className="debt-amount"><span>القيمة المؤجلة</span><input aria-label="القيمة المؤجلة" inputMode="decimal" value={shownDeferred} onChange={(event) => { setTouched(true); setDeferredInput(event.target.value.replace(/[^\d.]/g, "")); }} /></div>
-            <button type="button" className="debt-register" disabled={busy || Boolean(block) || deferred === null || pending || state === "Completed" || state === "ReconciliationRequired"} onClick={() => void confirm()}>تسجيل الدين</button>
+            <button type="button" className="debt-register" disabled={busy || Boolean(block) || deferred === null || pending || state === "ReconciliationRequired"} onClick={() => void confirm()}>تسجيل الدين</button>
             <div className="debt-metric"><span>الحد الائتماني</span><strong>{money(policy?.creditLimit)}</strong></div>
             <div className="debt-metric is-available"><span>المتبقي المتاح</span><strong>{money(policy?.available)}</strong></div>
             <div className="debt-metric is-debt"><span>مجموع الديون</span><strong>{money(policy?.outstanding)}</strong></div>
@@ -208,8 +217,12 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
         </div>
         {desktopKeyboard ? (
           <aside className="pos-sidebar pos-pro" aria-label="لوحة الأرقام">
+            <section className="pos-side-card">
+              <h3>إجراءات سريعة</h3>
+              <div className="pos-quick-grid" />
+            </section>
             <section className="pos-side-card pos-pad-card">
-              <h3>لوحة الأرقام</h3>
+              <h3><Keyboard aria-hidden="true" />لوحة الأرقام</h3>
               <div className="pos-side-pad" dir="ltr">
                 {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
                   <button
@@ -256,9 +269,10 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
     }
     const payload = await response.json() as { centrallyConfirmed?: boolean; reconciliationRequired?: boolean };
     if (payload.centrallyConfirmed) {
-      setState("Completed");
+      setState("");
       setMessage("تم تأكيد الدين.");
-      onCompleted();
+      await loadHistory(0);
+      onPosted();
     } else if (payload.reconciliationRequired) {
       setState("ReconciliationRequired");
       setMessage("العملية بحاجة إلى مراجعة مالية.");

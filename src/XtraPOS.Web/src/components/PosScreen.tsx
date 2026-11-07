@@ -1219,7 +1219,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />
+      {creditOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
@@ -1450,7 +1450,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           canCreate={user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer")}
           operationId={creditOperationId}
           onBack={() => setCreditOpen(false)}
-          onCompleted={() => { void persist(clearCart(cart)); setSaleCustomer(null); setCreditOperationId(""); setCreditOpen(false); }}
+          onPosted={() => { void persist({ ...cart, cartId: crypto.randomUUID(), lines: [], failedLineIds: [] }); setCreditOperationId(crypto.randomUUID()); }}
         />
       ) : null}
       {registerOpen ? (

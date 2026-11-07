@@ -62,6 +62,21 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         }
         catch (CreditConflictException exception)
         {
+            if (IsPriceMismatch(exception.Message) && request.DeferredAmount > 0m)
+            {
+                var preview = await credit.PreviewAsync(central, request.CustomerId, request.DeferredAmount, cancellationToken);
+                if (preview.Decision == CreditDecision.LimitExceeded)
+                {
+                    return new CreditSaleOutcomeResult(
+                        CreditSaleOutcome.Refused,
+                        null,
+                        null,
+                        preview.Available,
+                        preview.CreditLimit,
+                        preview.Outstanding);
+                }
+            }
+
             if (replayExists)
             {
                 await MarkOutboxAsync(branch, request.OperationId, "ReconciliationRequired", "Replay payload does not match the priced sale.", cancellationToken);
@@ -406,6 +421,9 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             && Guid.TryParse(parts[2], out branchId)
             && Guid.TryParse(parts[3], out saleId);
     }
+
+    private static bool IsPriceMismatch(string message) =>
+        message is "السعر المرسل لا يطابق سعر الخادم." or "The submitted total does not match the server price.";
 
     private static string ArabicConflict(string message) => message switch
     {

@@ -38,3 +38,9 @@ export function creditEligible(policy: { creditEnabled: boolean; creditStatus: s
   if (policy.available <= 0) return "لا يوجد رصيد ائتمان متاح.";
   return null;
 }
+
+export function creditLimitMessage(available: number, deferred: number): string | null {
+  if (!Number.isFinite(available) || !Number.isFinite(deferred) || deferred <= available) return null;
+  const amount = available.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `القيمة المؤجلة تتجاوز الحد الائتماني المسموح لهذا الزبون. يمكنك تأجيل مبلغ أقصاه ${amount} شيكل.`;
+}

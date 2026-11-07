@@ -455,6 +455,30 @@ public sealed class CheckoutService(
         return value is Guid id ? id : null;
     }
 
+    private static async Task<Guid?> FindClaimedOpenSessionIdAsync(
+        SqlConnection connection,
+        PosDeviceContext actor,
+        Guid claimedSessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT CashSessionID
+            FROM dbo.POSCashSessions
+            WHERE CashSessionID = @session
+              AND BranchID = @branch
+              AND Status = N'Open'
+              AND (DeviceID = @device OR POSStationID = @station);
+            """,
+            connection);
+        command.Parameters.AddWithValue("@session", claimedSessionId);
+        command.Parameters.AddWithValue("@branch", actor.BranchId);
+        command.Parameters.AddWithValue("@device", actor.DeviceId);
+        command.Parameters.AddWithValue("@station", actor.StationId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is Guid id ? id : null;
+    }
+
     private static async Task<long> InsertSaleAsync(
         StockPostingSession session,
         PosDeviceContext actor,
@@ -517,6 +541,11 @@ public sealed class CheckoutService(
         }
 
         var sessionId = await FindOpenSessionIdAsync(connection, null, actor, cancellationToken);
+        if (sessionId is null && claimedSessionId != Guid.Empty)
+        {
+            sessionId = await FindClaimedOpenSessionIdAsync(connection, actor, claimedSessionId, cancellationToken);
+        }
+
         if (sessionId is null && requireOpenSession)
         {
             throw new CheckoutException(CheckoutCodes.CashSessionRequired, "يجب فتح الصندوق أولاً.", StatusCodes.Status409Conflict);

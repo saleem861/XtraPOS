@@ -31,6 +31,7 @@
 .debt-pending { background: #fef3c7; border-radius: 10px; padding: 8px; }
 .debt-note { color: #334155; }
 .debt-fact.is-danger strong { color: #dc2626; }
+.debt-screen .pos-quick-grid:empty { min-height: 72px; }
 .debt-screen .numeric-keypad { align-self: start; }
 .debt-receipt-sheet { display: none; width: 72mm; margin: 0 auto; color: #111; background: #fff; }
 .debt-receipt-sheet h1 { font-size: 16px; text-align: center; }
