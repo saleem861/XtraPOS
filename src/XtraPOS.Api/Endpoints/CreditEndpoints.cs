@@ -10,8 +10,8 @@ public static class CreditEndpoints
 {
     public static void MapCreditEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/pos/credit-sales/enabled", (IConfiguration configuration) =>
-            Results.Ok(new { enabled = configuration.GetValue("CreditSales:Enabled", false) }));
+        app.MapGet("/api/pos/credit-sales/enabled", (IConfiguration configuration, IHostEnvironment environment) =>
+            Results.Ok(new { enabled = CreditSalesEnabled(configuration, environment) }));
         app.MapPost("/api/pos/credit-sales", InitiateAsync);
         app.MapGet("/api/pos/credit-sales/{operationId:guid}", StatusAsync);
         app.MapGet("/api/pos/credit-sales", ListAsync);
@@ -23,6 +23,7 @@ public static class CreditEndpoints
         AuthService auth,
         PermissionService permissions,
         IConfiguration configuration,
+        IHostEnvironment environment,
         SqlConnectionFactory connections,
         SyncEndpointStore centralStore,
         CreditSaleCoordinator coordinator,
@@ -37,7 +38,7 @@ public static class CreditEndpoints
         var origin = FinancialRequestGuard.RejectUntrusted(http, configuration);
         if (origin is not null) return origin;
 
-        if (!configuration.GetValue("CreditSales:Enabled", false))
+        if (!CreditSalesEnabled(configuration, environment))
         {
             return Results.Json(new { code = "CREDIT_DISABLED", message = "البيع بالدين غير مفعّل." }, statusCode: StatusCodes.Status403Forbidden);
         }
@@ -158,6 +159,9 @@ public static class CreditEndpoints
             _ => Results.Json(body, statusCode: StatusCodes.Status202Accepted),
         };
     }
+
+    private static bool CreditSalesEnabled(IConfiguration configuration, IHostEnvironment environment) =>
+        configuration.GetValue<bool?>("CreditSales:Enabled") ?? environment.IsStaging();
 
     private static async Task<(PosDeviceContext? Context, IResult? Error)> ActorAsync(HttpContext http, AuthService auth, PermissionService permissions, string permission, CancellationToken cancellationToken)
     {
