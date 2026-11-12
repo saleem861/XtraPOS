@@ -1,4 +1,4 @@
-# Build the local XtraPOS release and copy it to staging over SSH.
+﻿# Build the local XtraPOS release and copy it to staging over SSH.
 # This script does not use GitHub. It stops when the staging account still
 # cannot write /opt/xtrapos-staging or the isolated central database is not selected.
 param(
@@ -62,7 +62,7 @@ if (Test-Path $setupPublish) { Remove-Item $setupPublish -Recurse -Force }
 dotnet publish (Join-Path $root "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release -r win-x64 --self-contained false -o $agentPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent publish failed." }
 Get-ChildItem $agentPublish -Filter "appsettings.*.json" | Remove-Item -Force
-dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false -o $setupPublish
+dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true /p:EnableCompressionInSingleFile=true -o $setupPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent installer publish failed." }
 $zip = Join-Path $downloads "branch-agent.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -104,3 +104,4 @@ if ($LASTEXITCODE -ne 0) { throw "Activation failed. The helper restores the pre
 & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'sed -i s/not-applied/applied-on-activate/ /opt/xtrapos-staging/current/release.json /opt/xtrapos-staging/current/web/release.json'"
 if ($LASTEXITCODE -ne 0) { throw "The release is active, but release.json still says migrations were not applied." }
 Write-Host "Staging release $version is active. SHA $sha"
+
