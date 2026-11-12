@@ -43,6 +43,10 @@ if (builder.Environment.IsStaging())
 builder.Services.Configure<SqlServerOptions>(builder.Configuration.GetSection(SqlServerOptions.SectionName));
 builder.Services.Configure<LoginProtectionOptions>(builder.Configuration.GetSection(LoginProtectionOptions.SectionName));
 builder.Services.Configure<LegacyImportOptions>(builder.Configuration.GetSection(LegacyImportOptions.SectionName));
+builder.Services.AddSingleton<OperationalBranchConnection>();
+builder.Services.AddSingleton<OperationalBranchConnectionStore>();
+builder.Services.AddSingleton<SchemaPropagationService>();
+builder.Services.AddHostedService<SchemaPropagationWorker>();
 builder.Services.AddSingleton<SqlConnectionFactory>();
 builder.Services.AddSingleton<DeviceDatabaseDirectory>();
 builder.Services.AddSingleton<MigrationRunner>();
@@ -54,8 +58,14 @@ builder.Services.AddDbContext<BranchDbContext>((services, options) =>
     options.UseSqlServer(branchConnection ?? sql.CreateMasterConnectionString());
 });
 builder.Services.AddSingleton<PasswordService>();
+builder.Services.AddScoped<SelectedDatabaseProvisioner>();
+builder.Services.AddScoped<BranchDestinationRouter>();
 builder.Services.AddScoped<SetupService>();
 builder.Services.AddSingleton<DevicePairingService>();
+builder.Services.AddSingleton<BranchAgentRegistry>();
+builder.Services.AddSingleton<BranchAgentRelay>();
+builder.Services.AddSingleton<BranchAgentWorker>();
+builder.Services.AddScoped<BranchAgentExecutor>();
 builder.Services.AddScoped<DeviceService>();
 builder.Services.AddScoped<SecondaryDeviceRegistration>();
 builder.Services.AddScoped<LocalDeviceRecovery>();
@@ -361,6 +371,10 @@ if (args.Any(arg => string.Equals(arg, "--apply-central-migrations", StringCompa
         await UserAdministrationLiveCommand.PrintCountsAsync(centralConnection, "CentralAfter", false, Console.Out, CancellationToken.None);
         Console.WriteLine($"Central migrations completed for database '{confirmedCentral}'.");
     }
+    catch (Exception exception) when (BranchMigrationCommand.IsCatalogUnavailable(exception))
+    {
+        Console.WriteLine($"Central database '{confirmedCentral}' is not available to the saved login. No database was created and no migration was applied.");
+    }
     catch (Exception exception)
     {
         Console.WriteLine(exception.Message);
@@ -422,6 +436,10 @@ if (BranchMigrationCommand.IsRequested(args))
             true,
             Console.Out,
             CancellationToken.None);
+    }
+    catch (Exception exception) when (BranchMigrationCommand.IsCatalogUnavailable(exception))
+    {
+        Console.WriteLine($"Branch database '{confirmed}' is not available to the staging login. No database was created and no migration was applied.");
     }
     catch (Exception exception)
     {
@@ -785,6 +803,12 @@ if (args.Any(arg => string.Equals(arg, "import-legacy-items", StringComparison.O
 
 var app = builder.Build();
 
+var savedBranch = await app.Services.GetRequiredService<OperationalBranchConnectionStore>().ReadAsync(CancellationToken.None);
+if (savedBranch is not null && OperationalDatabaseGuard.IsProductionCatalog(savedBranch.DatabaseName))
+{
+    app.Services.GetRequiredService<OperationalBranchConnection>().Replace(savedBranch);
+}
+
 if (app.Environment.IsStaging())
 {
     var forwarded = new ForwardedHeadersOptions
@@ -899,10 +923,12 @@ app.MapPricingEndpoints();
 app.MapCashSessionEndpoints();
 app.MapCheckoutEndpoints();
 app.MapHeldSaleEndpoints();
+app.MapSalesInquiryEndpoints();
 app.MapCreditEndpoints();
 app.MapCreditCollectionEndpoints();
 app.MapCreditReversalEndpoints();
 app.MapCreditHistoryEndpoints();
+app.MapOperationLogEndpoints();
 app.MapCentralEndpoints();
 
 if (args.Any(arg => string.Equals(arg, "--ensure-customer-replica", StringComparison.Ordinal)))
@@ -951,6 +977,40 @@ if (app.Environment.IsStaging())
     {
         Console.WriteLine($"StagingCatalogSeedFailed={exception.GetType().Name}");
     }
+}
+
+if (args.Any(arg => string.Equals(arg, "--branch-agent", StringComparison.Ordinal)))
+{
+    string? agentServer = null;
+    string? pairingCode = null;
+    for (var index = 0; index < args.Length - 1; index++)
+    {
+        if (string.Equals(args[index], "--server", StringComparison.Ordinal))
+        {
+            agentServer = args[index + 1];
+        }
+
+        if (string.Equals(args[index], "--pairing-code", StringComparison.Ordinal))
+        {
+            pairingCode = args[index + 1];
+        }
+    }
+
+    if (string.IsNullOrWhiteSpace(agentServer))
+    {
+        Console.WriteLine("Branch agent requires --server.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    using var agentStop = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        agentStop.Cancel();
+    };
+    await app.Services.GetRequiredService<BranchAgentWorker>().RunAsync(agentServer, pairingCode, agentStop.Token);
+    return;
 }
 
 app.Run();

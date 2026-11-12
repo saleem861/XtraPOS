@@ -81,6 +81,20 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string BranchCreditPolicyMigrationName = "Branch customer credit policies";
     public const string BranchFinancialInboxMigrationId = "038_BranchFinancialInbox";
     public const string BranchFinancialInboxMigrationName = "Branch financial inbox";
+    public const string BranchOperationLogMigrationId = "039_BranchOperationLog";
+    public const string BranchOperationLogMigrationName = "Branch operation log";
+    public const string BranchCreditLedgerMigrationId = "040_BranchCreditLedger";
+    public const string BranchCreditLedgerMigrationName = "Branch credit ledger";
+    public const string OptionalCollectionSessionMigrationId = "041_OptionalCollectionSession";
+    public const string OptionalCollectionSessionMigrationName = "Optional collection cash session";
+    public const string CashboxMigrationId = "042_CashboxesAndSchemaHistory";
+    public const string CashboxMigrationName = "Cashboxes and schema update history";
+    public const string UnifiedSchemaMigrationId = "043_UnifiedSchemaObjects";
+    public const string UnifiedSchemaMigrationName = "Unified schema objects";
+    public const string UnifiedChecksMigrationId = "044_UnifiedSchemaChecks";
+    public const string UnifiedChecksMigrationName = "Unified schema checks";
+    public const string ItemPriceUniquenessMigrationId = "045_ItemPriceUniqueness";
+    public const string ItemPriceUniquenessMigrationName = "Item price default and branch uniqueness";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -243,6 +257,34 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             BranchFinancialInboxMigrationId,
             BranchFinancialInboxMigrationName,
             "XtraPOS.Api.Data.Migrations.038_BranchFinancialInbox.sql"),
+        new(
+            BranchOperationLogMigrationId,
+            BranchOperationLogMigrationName,
+            "XtraPOS.Api.Data.Migrations.039_BranchOperationLog.sql"),
+        new(
+            BranchCreditLedgerMigrationId,
+            BranchCreditLedgerMigrationName,
+            "XtraPOS.Api.Data.Migrations.040_BranchCreditLedger.sql"),
+        new(
+            OptionalCollectionSessionMigrationId,
+            OptionalCollectionSessionMigrationName,
+            "XtraPOS.Api.Data.Migrations.041_OptionalCollectionSession.sql"),
+        new(
+            CashboxMigrationId,
+            CashboxMigrationName,
+            "XtraPOS.Api.Data.Migrations.042_CashboxesAndSchemaHistory.sql"),
+        new(
+            UnifiedSchemaMigrationId,
+            UnifiedSchemaMigrationName,
+            "XtraPOS.Api.Data.Migrations.043_UnifiedSchemaObjects.sql"),
+        new(
+            UnifiedChecksMigrationId,
+            UnifiedChecksMigrationName,
+            "XtraPOS.Api.Data.Migrations.044_UnifiedSchemaChecks.sql"),
+        new(
+            ItemPriceUniquenessMigrationId,
+            ItemPriceUniquenessMigrationName,
+            "XtraPOS.Api.Data.Migrations.045_ItemPriceUniqueness.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)
@@ -524,6 +566,8 @@ public sealed class SchemaInspection(
         "SaleItems",
         "POSCashSessions",
         "SalePayments",
+        "Cashboxes",
+        "SchemaUpdateHistory",
     ];
 
     public bool IsValid { get; } =

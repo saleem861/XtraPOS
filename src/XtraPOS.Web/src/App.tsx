@@ -36,6 +36,8 @@ import {
   type SetupStepState,
   type SetupStreamEvent,
 } from "./types/setup";
+import { readSetupProgress } from "./setup/setupProgress";
+import { visibleSteps } from "./setup/wizardFlow";
 
 type Phase =
   | { kind: "loading" }
@@ -107,8 +109,31 @@ function readOnboardingAuthorization() {
 }
 
 export default function App() {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+      if (target.type === "button" || target.type === "submit" || target.type === "checkbox") return;
+      if (target.closest(".pos-screen") && !target.closest(".debt-screen")) return;
+      const root = target.closest("form, section, .card") ?? document.body;
+      const fields = [...root.querySelectorAll<HTMLElement>("input, select, textarea")].filter((field) => {
+        if (field instanceof HTMLInputElement && (field.type === "hidden" || field.type === "button" || field.type === "submit")) return false;
+        return !field.hasAttribute("disabled") && field.tabIndex !== -1;
+      });
+      const index = fields.indexOf(target);
+      const next = fields[index + 1];
+      if (!next) return;
+      event.preventDefault();
+      next.focus();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [draft, setDraft] = useState<BranchSetupInput>(emptyBranchSetup);
+  const [wizardIndex, setWizardIndex] = useState(0);
   const setupAuthorization = useRef("");
   const onboardingAuthorization = useRef(readOnboardingAuthorization());
   const organizationReady = useRef(false);
@@ -148,13 +173,22 @@ export default function App() {
 
       const ready = status.status === "Configured" || status.status === "ConfiguredButAdminMissing";
       organizationReady.current = ready;
-      if (stored.kind === "none") {
-        setPhase(ready ? { kind: "unregistered", intent: "join" } : { kind: "choice" });
+      if (status.status === "NotConfigured") {
+        const saved = readSetupProgress();
+        if (saved) {
+          const steps = visibleSteps(saved.draft);
+          const index = Math.max(0, steps.indexOf(saved.step));
+          setDraft(saved.draft);
+          setWizardIndex(index);
+          setPhase({ kind: "wizard" });
+          return;
+        }
+        setPhase({ kind: "choice" });
         return;
       }
 
-      if (status.status === "NotConfigured") {
-        setPhase({ kind: "choice" });
+      if (stored.kind === "none") {
+        setPhase(ready ? { kind: "unregistered", intent: "join" } : { kind: "choice" });
         return;
       }
 
@@ -252,7 +286,15 @@ export default function App() {
   }
 
   function applySetupEvent(event: SetupStreamEvent) {
-    if (event.type === "completed") {
+      if (event.type === "completed") {
+        if (event.remoteAgent) {
+          setPhase((current) =>
+            current.kind === "progress"
+              ? { ...current, running: false, error: "", existingBranch: null }
+              : current,
+          );
+          return;
+        }
       if (event.alreadyConfigured) {
         setPhase((current) =>
           current.kind === "progress"
@@ -467,6 +509,7 @@ export default function App() {
               }
 
               setDraft({ ...emptyBranchSetup, deviceRole: "MainBranch", roleLocked: true });
+              setWizardIndex(0);
               setPhase({ kind: "wizard" });
             }}
             onPoint={() => setPhase({ kind: "unregistered", intent: "join" })}
@@ -476,6 +519,7 @@ export default function App() {
         {phase.kind === "wizard" ? (
           <SetupWizard
             value={draft}
+            initialIndex={wizardIndex}
             onChange={setDraft}
             onCancel={() => setPhase({ kind: "choice" })}
             onSubmit={(input) => void startSetup(input)}

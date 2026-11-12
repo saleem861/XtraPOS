@@ -22,12 +22,16 @@ public sealed class SetupService(
     CentralDatabaseService centralDatabases,
     SharedDataSync sharedData,
     SyncEndpointStore endpoints,
+    SelectedDatabaseProvisioner databases,
+    CentralPosRegistryService registry,
     LocalDeviceRecovery recovery,
     IHostEnvironment environment,
     IConfiguration configuration,
-    ILogger<SetupService> logger)
+    ILogger<SetupService> logger,
+    BranchDestinationRouter? destinations = null)
 {
     public static Func<CancellationToken, Task>? FailAfterTables { get; set; }
+    private int? pendingCashboxNumber;
     public async Task<SetupStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
     {
         if (coordinator.IsConfiguring)
@@ -110,7 +114,24 @@ public sealed class SetupService(
                 }
             }
 
-            return new SetupStatusResponse { Status = status };
+            try
+            {
+                var current = await recovery.GetContextAsync(cancellationToken);
+                return new SetupStatusResponse
+                {
+                    Status = status,
+                    BusinessId = current.BusinessId,
+                    BusinessName = current.BusinessName,
+                    BranchId = current.BranchId,
+                    BranchName = current.BranchName,
+                    BranchCode = current.BranchCode,
+                    Stations = current.Stations,
+                };
+            }
+            catch (SetupRejectedException)
+            {
+                return new SetupStatusResponse { Status = status };
+            }
         }
         catch (SqlException exception) when (!installationConfigured && exception.Number == 208)
         {
@@ -141,6 +162,7 @@ public sealed class SetupService(
             return;
         }
 
+        pendingCashboxNumber = topology?.CashboxNumber;
         if (!coordinator.TryEnter())
         {
             await emit(SetupEvent.Failed("الإعداد قيد التنفيذ. أعد المحاولة بعد قليل."), cancellationToken);
@@ -149,23 +171,92 @@ public sealed class SetupService(
 
         try
         {
-            await emit(SetupEvent.Progress(SetupSteps.CheckServer, "started"), cancellationToken);
-            await CheckServerAsync(cancellationToken);
-            await emit(SetupEvent.Progress(SetupSteps.CheckServer, "succeeded"), cancellationToken);
+            var selected = topology?.OperationalBranch;
+            var catalogReady = false;
+            if (selected is not null)
+            {
+                if (!OperationalDatabaseGuard.IsProductionCatalog(selected.DatabaseName))
+                {
+                    throw new SetupRejectedException("اسم قاعدة البيانات غير صالح.");
+                }
+
+                await emit(SetupEvent.Progress(SetupSteps.CheckServer, "started"), cancellationToken);
+                await databases.ProbeAsync(selected, cancellationToken);
+                await emit(SetupEvent.Progress(SetupSteps.CheckServer, "succeeded"), cancellationToken);
+
+                await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "started"), cancellationToken);
+                await databases.EnsureCatalogAsync(selected, cancellationToken, topology?.BranchDataDirectory);
+                destinations?.Bind(selected);
+                catalogReady = true;
+                await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "succeeded"), cancellationToken);
+            }
+            else if (environment.IsStaging())
+            {
+                throw new SetupRejectedException("اسم قاعدة البيانات غير صالح.");
+            }
+            else
+            {
+                await emit(SetupEvent.Progress(SetupSteps.CheckServer, "started"), cancellationToken);
+                await CheckServerAsync(cancellationToken);
+                await emit(SetupEvent.Progress(SetupSteps.CheckServer, "succeeded"), cancellationToken);
+            }
 
             if (await HasExistingBranchAsync(cancellationToken))
             {
                 var existing = await LoadExistingAsync(cancellationToken);
+                var needsSync = false;
+                if (topology?.LinkToCentral == true && topology.Central is not null)
+                {
+                    var replicaState = await sharedData.ReadReplicaStateAsync(cancellationToken);
+                    needsSync = InitialSyncGuard.NeedsInitialSync(replicaState)
+                        || await sharedData.CatalogMissingAsync(topology.Central, cancellationToken);
+                    if (needsSync)
+                    {
+                        await ApplyTopologyAsync(topology, existing, registerInCentral: true, emit, cancellationToken);
+                    }
+                }
+
+                if (needsSync || !await connections.HasCompletedSetupAsync(cancellationToken))
+                {
+                    var token = DeviceTokenService.Generate();
+                    var device = await db.Devices.SingleAsync(item => item.DeviceId == existing.DeviceId, cancellationToken);
+                    device.DeviceTokenHash = DeviceTokenService.Hash(token);
+                    await db.SaveChangesAsync(cancellationToken);
+                    existing = existing with { Token = token };
+                    await MarkCompletedAsync(existing, cancellationToken);
+                    await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: false), cancellationToken);
+                    return;
+                }
+
+                if (destinations is not null)
+                {
+                    await destinations.CommitAsync(cancellationToken);
+                }
+
                 await emit(SetupEvent.Completed(ToResponse(existing), alreadyConfigured: true), cancellationToken);
                 return;
             }
 
-            await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "started"), cancellationToken);
-            await connections.EnsureBranchDatabaseAsync(cancellationToken);
-            await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "succeeded"), cancellationToken);
+            if (!catalogReady)
+            {
+                await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "started"), cancellationToken);
+                await connections.EnsureBranchDatabaseAsync(cancellationToken);
+                await emit(SetupEvent.Progress(SetupSteps.CreateDatabase, "succeeded"), cancellationToken);
+            }
 
             await emit(SetupEvent.Progress(SetupSteps.CreateTables, "started"), cancellationToken);
-            await migrations.ApplyPendingAsync(cancellationToken);
+            try
+            {
+                await migrations.ApplyPendingAsync(cancellationToken);
+            }
+            catch (SetupRejectedException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                throw new SetupRejectedException("تعذر تطبيق تحديثات قاعدة البيانات. لم يتم حذف القاعدة.");
+            }
             var inspection = await migrations.InspectAsync(cancellationToken);
             if (!inspection.IsValid)
             {
@@ -223,15 +314,19 @@ public sealed class SetupService(
         }
         catch (OperationCanceledException)
         {
+            destinations?.Abandon();
             throw;
         }
         catch (SetupRejectedException exception)
         {
+            destinations?.Abandon();
             logger.LogWarning("Branch setup was rejected: {Reason}", exception.Message);
-            await emit(SetupEvent.Failed(exception.Message), cancellationToken);
+            var id = SetupLog.Write(environment.ContentRootPath, environment.EnvironmentName, "setup", exception.Message);
+            await emit(SetupEvent.Failed(exception.Message + " رمز التشخيص: " + id), cancellationToken);
         }
         catch (Exception exception)
         {
+            destinations?.Abandon();
             logger.LogError(exception, "Branch setup failed.");
             var branchWasSaved = false;
             try
@@ -243,10 +338,12 @@ public sealed class SetupService(
                 logger.LogDebug(statusException, "Could not check whether branch setup had already saved a business.");
             }
 
+            var reason = SqlEndpointSettings.DescribeConnectionFailure(exception);
+            var id = SetupLog.Fail(environment.ContentRootPath, environment.EnvironmentName, "setup", exception);
             await emit(
                 SetupEvent.Failed(branchWasSaved
-                    ? "تعذر إكمال نسخ بيانات الإدارة المركزية. بيانات الفرع محفوظة، ويمكنك إعادة المحاولة."
-                    : "تعذر إكمال الإعداد. لم يتم حفظ بيانات الفرع. يمكنك المحاولة مرة أخرى."),
+                    ? "تعذر إكمال نسخ بيانات الإدارة المركزية. بيانات الفرع محفوظة، ويمكنك إعادة المحاولة. " + reason
+                    : reason + " لم يتم حفظ بيانات الفرع. " + id),
                 cancellationToken);
         }
         finally
@@ -264,14 +361,6 @@ public sealed class SetupService(
     {
         if (topology.Central is not null && string.Equals(topology.OperatingMode, "CentralManagement", StringComparison.Ordinal))
         {
-            if (environment.IsStaging())
-            {
-                topology = topology with
-                {
-                    Central = StagingCentral(topology.Central),
-                    CreateCentral = false,
-                };
-            }
             if (topology.CreateCentral)
             {
                 await centralDatabases.CreateIfMissingAsync(topology.Central, cancellationToken);
@@ -325,7 +414,23 @@ public sealed class SetupService(
 
         if (topology.BranchRemote is not null)
         {
+            await databases.ProvisionSchemaAsync(topology.BranchRemote, cancellationToken, topology.RemoteDataDirectory);
+            await SchemaPropagationService.RecordAsync(
+                topology.BranchRemote.BuildConnectionString(topology.BranchRemote.DatabaseName),
+                topology.BranchRemote.DatabaseName,
+                "Applied",
+                SchemaConvergence.ApprovedVersion,
+                cancellationToken);
             await endpoints.SaveAsync(topology.BranchRemote, SqlEndpointSettings.PendingRemoteSync, cancellationToken);
+            var registered = await registry.RegisterSynchronizationDatabaseAsync(
+                topology.SyncPosNumber.GetValueOrDefault(),
+                installed.BranchId,
+                topology.BranchRemote.DatabaseName,
+                cancellationToken);
+            if (!registered.Ok)
+            {
+                throw new SetupRejectedException(registered.Message);
+            }
         }
 
         if (!topology.LinkToCentral)
@@ -335,29 +440,75 @@ public sealed class SetupService(
         }
     }
 
-    private SqlEndpointSettings StagingCentral(SqlEndpointSettings central)
+    private async Task RegisterCashboxAsync(
+        Guid businessId,
+        Guid branchId,
+        Guid deviceId,
+        string displayName,
+        CancellationToken cancellationToken)
     {
-        InitialSyncGuard.RefuseOperationalCentral(true, InitialSyncGuard.ApprovedExistingCentral);
-        var server = configuration["CentralSql:Server"];
-        var user = configuration["CentralSql:User"];
-        var password = configuration["CentralSql:Password"];
-        if (string.IsNullOrWhiteSpace(server) || string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
         {
-            throw new SetupRejectedException("اتصال القاعدة المركزية غير مكتمل على الخادم.");
+            await connection.OpenAsync(cancellationToken);
         }
 
-        return central with
+        await using var read = connection.CreateCommand();
+        read.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
+        read.CommandText = "SELECT CashboxNumber FROM dbo.Cashboxes WHERE BranchID = @branch;";
+        var branchParameter = read.CreateParameter();
+        branchParameter.ParameterName = "@branch";
+        branchParameter.Value = branchId;
+        read.Parameters.Add(branchParameter);
+        var used = new List<int>();
+        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
         {
-            Server = server.Trim(),
-            InstanceName = null,
-            Port = null,
-            DatabaseName = InitialSyncGuard.ApprovedExistingCentral,
-            AuthenticationType = SqlEndpointSettings.SqlLogin,
-            Username = user,
-            Password = password,
-            Encrypt = true,
-            TrustServerCertificate = true,
-        };
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                used.Add(reader.GetInt32(0));
+            }
+        }
+
+        var requested = pendingCashboxNumber.GetValueOrDefault();
+        if (requested <= 0)
+        {
+            requested = PosNumberAllocator.SuggestNext(used);
+        }
+        else if (!PosNumberAllocator.IsAvailable(used, requested))
+        {
+            throw new SetupRejectedException($"رقم الصندوق مستخدم. الرقم المتاح هو {PosNumberAllocator.SuggestNext(used)}.");
+        }
+
+        await using var insert = connection.CreateCommand();
+        insert.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
+        insert.CommandText = """
+            INSERT INTO dbo.Cashboxes
+                (CashboxID, BusinessID, BranchID, CashboxNumber, DisplayName, DeviceID, Status)
+            VALUES
+                (@id, @business, @branch, @number, @name, @device, N'Active');
+            """;
+        Add(insert, "@id", Guid.NewGuid());
+        Add(insert, "@business", businessId);
+        Add(insert, "@branch", branchId);
+        Add(insert, "@number", requested);
+        Add(insert, "@name", string.IsNullOrWhiteSpace(displayName) ? "صندوق " + requested : displayName.Trim());
+        Add(insert, "@device", deviceId);
+        try
+        {
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqlException exception) when (exception.Number is 2601 or 2627)
+        {
+            throw new SetupRejectedException($"رقم الصندوق مستخدم. الرقم المتاح هو {PosNumberAllocator.SuggestNext(used.Append(requested))}.");
+        }
+
+        static void Add(System.Data.Common.DbCommand command, string name, object value)
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
     }
 
     private async Task CheckServerAsync(CancellationToken cancellationToken)
@@ -474,6 +625,21 @@ public sealed class SetupService(
             }
 
             await emit(SetupEvent.Progress(SetupSteps.CreateStation, "started"), cancellationToken);
+            var usedStationNumbers = await db.PosStations
+                .Where(item => item.BranchId == branchId)
+                .Select(item => item.StationNumber)
+                .ToListAsync(cancellationToken);
+            if (usedStationNumbers.Contains(input.StationNumber))
+            {
+                var available = 1;
+                while (usedStationNumbers.Contains(available))
+                {
+                    available++;
+                }
+
+                throw new SetupRejectedException($"رقم نقطة البيع مستخدم. الرقم المتاح هو {available}.");
+            }
+
             var station = new PosStation
             {
                 BranchId = branchId,
@@ -501,7 +667,8 @@ public sealed class SetupService(
             db.Devices.Add(device);
             await db.SaveChangesAsync(cancellationToken);
             EnsureGenerated(device.DeviceId, "DeviceID");
-            await DeviceConfigurationWriter.SaveAsync(db, device.DeviceId, branchId, input.DeviceName, input.StationNumber, cancellationToken);
+            await DeviceConfigurationWriter.SaveAsync(db, device.DeviceId, branchId, input.DeviceName, input.StationNumber, cancellationToken, pendingCashboxNumber);
+            await RegisterCashboxAsync(businessId, branchId, device.DeviceId, input.DeviceName, cancellationToken);
 
             await emit(SetupEvent.Progress(SetupSteps.CreateAdmin, "started"), cancellationToken);
             if (linkedBusiness is null)
@@ -1262,6 +1429,11 @@ public sealed class SetupService(
 
     private async Task MarkCompletedAsync(InstalledBranch installed, CancellationToken cancellationToken)
     {
+        if (destinations is not null)
+        {
+            await destinations.CommitAsync(cancellationToken);
+        }
+
         await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
         await connection.OpenAsync(cancellationToken);
         await using var command = new SqlCommand(

@@ -9,7 +9,7 @@ import { appendDeferred, creditEligible, creditLimitMessage, splitDeferred } fro
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
-import { NumericKeypad } from "./NumericKeypad";
+import { PosNumberPad } from "./PosNumberPad";
 import { ScreenHeader } from "./ScreenHeader";
 import "./debtScreens.css";
 
@@ -36,7 +36,7 @@ const typeLabel: Record<string, string> = {
   Adjustment: "تصحيح",
 };
 
-export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack, onPosted }: {
+export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack }: {
   session: DeviceSession;
   cart: CartDraft;
   customerName: string;
@@ -46,8 +46,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   userName: string;
   canCreate: boolean;
   operationId: string;
-  onBack: () => void;
-  onPosted: () => void;
+  onBack: (posted: boolean) => void;
 }) {
   const customers = createCustomerClient(session);
   const saleCartId = useRef(crypto.randomUUID());
@@ -64,6 +63,8 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   const [totalCount, setTotalCount] = useState(0);
   const [document, setDocument] = useState<DebtDocument | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [posted, setPosted] = useState(false);
   const total = Number(cartTotals(cart).total);
   const shownDeferred = touched ? deferredInput : (deferredInput || String(total));
   const split = splitDeferred(total, Number(shownDeferred || "0"));
@@ -120,19 +121,22 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
       });
       const payload = await response.json() as { state?: string; message?: string };
       setState(payload.state ?? "");
-      if (payload.state === "Completed") {
-        setState("");
-        setTouched(false);
-        setMessage("تم تأكيد الدين.");
-        await Promise.all([
-          loadHistory(0),
-          customers.creditPolicy(cart.customerId).then(setPolicy).catch(() => setMessage("تم تأكيد الدين. تعذر تحديث الحد الائتماني.")),
-        ]);
-        onPosted();
+      if (payload.state === "PendingCentral") {
+        setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
         return;
       }
-      if (payload.state === "PendingCentral") setMessage("العملية محفوظة محلياً وقيد التأكيد المركزي. ليست ديناً مؤكداً بعد.");
-      else if (payload.state === "ReconciliationRequired") setMessage("العملية بحاجة إلى مراجعة مالية.");
+      if (payload.state === "Completed") {
+        setState("");
+        setPosted(true);
+        setSuccessOpen(true);
+        setMessage("");
+        await Promise.all([
+          loadHistory(0),
+          customers.creditPolicy(cart.customerId).then(setPolicy).catch(() => undefined),
+        ]);
+        return;
+      }
+      if (payload.state === "ReconciliationRequired") setMessage("العملية بحاجة إلى مراجعة مالية.");
       else setMessage(payload.message ?? "تم رفض البيع بالدين. السلة ما زالت موجودة.");
     } catch {
       setMessage("العملية قيد التأكيد.");
@@ -160,7 +164,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   const pending = state === "PendingCentral";
   return (
     <section className="new-customer debt-screen" dir="rtl" aria-label="تأجيل دفع للزبون">
-      <ScreenHeader title="تأجيل دفع" onBack={onBack} />
+      <ScreenHeader title="تأجيل دفع" onBack={() => onBack(posted)} />
       <div className="pos-desktop-shell debt-layout">
         <div className="pos-main-workspace debt-main">
           <div className="debt-facts">
@@ -222,22 +226,30 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
             </section>
             <section className="pos-side-card debt-keypad-card">
               <h3>لوحة الأرقام</h3>
-              <NumericKeypad
-                allowDecimal
-                onDigit={(digit) => pressDebtPad(digit)}
-                onClear={() => pressDebtPad("Del")}
-              />
+              <PosNumberPad onKey={pressDebtPad} />
             </section>
           </aside>
         ) : null}
       </div>
-      <button type="button" className="debt-close" onClick={onBack}>إغلاق</button>
+      <button type="button" className="debt-close" onClick={() => onBack(posted)}>إغلاق</button>
+      {successOpen ? (
+        <div className="pos-overlay" role="dialog" aria-label="نجاح تسجيل الدين">
+          <div className="pos-modal">
+            <h3>تم تسجيل الدين بنجاح</h3>
+            <button className="primary-button" type="button" onClick={() => setSuccessOpen(false)}>موافق</button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 
   function pressDebtPad(key: string) {
     if (key === "Enter") {
-      void confirm();
+      const current = window.document.activeElement;
+      const root = current instanceof HTMLElement ? current.closest(".debt-screen") : null;
+      const fields = [...(root?.querySelectorAll<HTMLElement>("input, select") ?? [])];
+      const next = fields[fields.indexOf(current as HTMLElement) + 1];
+      next?.focus();
       return;
     }
     if (key === "/" || key === "*" || key === "-" || key === "+") return;
@@ -263,9 +275,10 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
     const payload = await response.json() as { centrallyConfirmed?: boolean; reconciliationRequired?: boolean };
     if (payload.centrallyConfirmed) {
       setState("");
-      setMessage("تم تأكيد الدين.");
+      setPosted(true);
+      setSuccessOpen(true);
+      setMessage("");
       await loadHistory(0);
-      onPosted();
     } else if (payload.reconciliationRequired) {
       setState("ReconciliationRequired");
       setMessage("العملية بحاجة إلى مراجعة مالية.");

@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Operations;
 
 namespace XtraPOS.Api.Credit;
 
@@ -102,22 +103,40 @@ public sealed class CreditOutboxProcessor(CreditSaleCoordinator coordinator)
 
     private static async Task<Guid?> ClaimAsync(SqlConnection branch, string workerId, CancellationToken cancellationToken)
     {
+        object? candidate;
+        await using (var peek = new SqlCommand(
+            """
+            SELECT TOP (1) CreditOperationID
+            FROM dbo.BranchFinancialOutbox
+            WHERE Status = N'Pending'
+            ORDER BY CreatedAt;
+            """,
+            branch))
+        {
+            candidate = await peek.ExecuteScalarAsync(cancellationToken);
+        }
+
+        if (candidate is not Guid head || !await BranchOperationLog.IsExecutableHeadAsync(branch, head, cancellationToken))
+        {
+            return null;
+        }
+
         await using var transaction = (SqlTransaction)await branch.BeginTransactionAsync(cancellationToken);
         await using var command = new SqlCommand(
             """
-            ;WITH nextRow AS (
-                SELECT TOP (1) OutboxEventID
-                FROM dbo.BranchFinancialOutbox WITH (UPDLOCK, READPAST, ROWLOCK)
-                WHERE Status = N'Pending'
-                  AND NextRetryAt <= DATEADD(second, 1, SYSUTCDATETIME())
-                  AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME())
-                ORDER BY CreatedAt
-            )
-            UPDATE box
+            DECLARE @id uniqueidentifier, @lease datetime2(0);
+            SELECT TOP (1) @id = CreditOperationID, @lease = LeaseUntil
+            FROM dbo.BranchFinancialOutbox WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+            WHERE Status = N'Pending'
+            ORDER BY CreatedAt;
+            IF @id IS NULL OR (@lease IS NOT NULL AND @lease >= SYSUTCDATETIME())
+                RETURN;
+            UPDATE dbo.BranchFinancialOutbox
             SET LeaseOwner = @owner, LeaseUntil = DATEADD(second, 45, SYSUTCDATETIME())
             OUTPUT inserted.CreditOperationID
-            FROM dbo.BranchFinancialOutbox AS box
-            INNER JOIN nextRow ON nextRow.OutboxEventID = box.OutboxEventID;
+            WHERE CreditOperationID = @id
+              AND Status = N'Pending'
+              AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME());
             """,
             branch,
             transaction);

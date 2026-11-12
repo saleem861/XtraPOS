@@ -65,12 +65,52 @@ public sealed class SharedDataSync(
         var hasItemSearch = await CentralColumnExistsAsync(central, "Items", "ItemNameSearchStrict", cancellationToken);
         var itemSearchStrict = hasItemSearch ? "source.ItemNameSearchStrict" : "CAST(NULL AS nvarchar(500))";
         var itemSearchLoose = hasItemSearch ? "source.ItemNameSearchLoose" : "CAST(NULL AS nvarchar(500))";
+        var hasItemPriceBranch = await CentralColumnExistsAsync(central, "ItemPrices", "BranchID", cancellationToken);
+        var itemPriceBranch = hasItemPriceBranch ? "source.BranchID" : "CAST(NULL AS uniqueidentifier)";
+        var itemPriceBranchMatch = hasItemPriceBranch
+            ? "(target.BranchID = source.BranchID OR (target.BranchID IS NULL AND source.BranchID IS NULL))"
+            : "target.BranchID IS NULL";
+        var itemPriceBranchFilter = hasItemPriceBranch
+            ? "(source.BranchID IS NULL OR EXISTS (SELECT 1 FROM dbo.Branches AS branch WHERE branch.BranchID = source.BranchID))"
+            : "1 = 1";
+        var ledgerObject = source == "#"
+            ? "tempdb..#CustomerCreditLedger"
+            : centralName.Replace("'", "''", StringComparison.Ordinal) + ".dbo.CustomerCreditLedger";
+        var receivableCopy = $"""
+            INSERT INTO dbo.CustomerReceivables (
+                ReceivableID, CustomerID, SourceSaleID, SourceBranchID, SourcePOSID,
+                OriginalAmount, OutstandingAmount, DueDate, CurrencyCode, Status, CreatedAt, SourceSaleNumber)
+            SELECT
+                source.ReceivableID, source.CustomerID, source.SourceSaleID, source.SourceBranchID, source.SourcePOSID,
+                source.OriginalAmount, source.OutstandingAmount, source.DueDate, source.CurrencyCode, source.Status,
+                source.CreatedAt, source.SourceSaleNumber
+            FROM {source}CustomerReceivables AS source
+            WHERE EXISTS (SELECT 1 FROM dbo.Customers AS customer WHERE customer.CustomerID = source.CustomerID)
+              AND NOT EXISTS (
+                SELECT 1 FROM dbo.CustomerReceivables AS target WHERE target.ReceivableID = source.ReceivableID);
+
+            IF OBJECT_ID(N'{ledgerObject}', N'U') IS NOT NULL
+            INSERT INTO dbo.CustomerCreditLedger (
+                LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode,
+                SourceBranchID, SourceSaleID, PaymentID, OccurredAt, CreatedBy, ReversalReference, IdempotencyKey)
+            SELECT
+                source.LedgerEntryID, source.CustomerID, source.TransactionID, source.TransactionType, source.Amount,
+                source.CurrencyCode, source.SourceBranchID, source.SourceSaleID, source.PaymentID, source.OccurredAt,
+                source.CreatedBy, source.ReversalReference, source.IdempotencyKey
+            FROM {source}CustomerCreditLedger AS source
+            WHERE EXISTS (SELECT 1 FROM dbo.Customers AS customer WHERE customer.CustomerID = source.CustomerID)
+              AND NOT EXISTS (
+                SELECT 1 FROM dbo.CustomerCreditLedger AS target WHERE target.LedgerEntryID = source.LedgerEntryID);
+            """;
         if (source == "#")
         {
-            await StageRemoteCatalogAsync(central, connection, transaction, hasBusinessDescription, hasItemSearch, cancellationToken);
+            await StageRemoteCatalogAsync(central, connection, transaction, hasBusinessDescription, hasItemSearch, hasItemPriceBranch, cancellationToken);
         }
 
-        await using var command = new SqlCommand(BootstrapSql(source, businessDescription, itemSearchStrict, itemSearchLoose), connection, transaction) { CommandTimeout = 600 };
+        await using var command = new SqlCommand(
+            BootstrapSql(source, businessDescription, itemSearchStrict, itemSearchLoose, itemPriceBranch, itemPriceBranchMatch, itemPriceBranchFilter, receivableCopy),
+            connection,
+            transaction) { CommandTimeout = 600 };
         var items = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
         await transaction.CommitAsync(cancellationToken);
         if (!hasItemSearch)
@@ -128,6 +168,20 @@ public sealed class SharedDataSync(
             : ReplicaNotInitialized;
     }
 
+    public async Task<bool> CatalogMissingAsync(SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
+        await branch.OpenAsync(cancellationToken);
+        if (await CountAsync(branch, "SELECT COUNT(*) FROM dbo.Items;", cancellationToken) > 0)
+        {
+            return false;
+        }
+
+        await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await remote.OpenAsync(cancellationToken);
+        return await CountAsync(remote, "SELECT COUNT(*) FROM dbo.Items;", cancellationToken) > 0;
+    }
+
     public async Task SetReplicaStateAsync(string state, CancellationToken cancellationToken)
     {
         await using var connection = new SqlConnection(branchConnections.CreateBranchConnectionString());
@@ -151,6 +205,7 @@ public sealed class SharedDataSync(
         await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
         await remote.OpenAsync(cancellationToken);
         await branch.OpenAsync(cancellationToken);
+        await SyncPriceTypesAsync(remote, branch, cancellationToken);
         var priceTypes = await ReadPriceTypesAsync(remote, branch, cancellationToken);
         await CopyClassificationsAsync(remote, branch, priceTypes, cancellationToken);
         await CopyCustomersAsync(remote, branch, priceTypes, cancellationToken);
@@ -415,6 +470,52 @@ public sealed class SharedDataSync(
     private bool SharesInstance(SqlEndpointSettings central)
     {
         return CentralRoute.SameInstance(branchConnections.ConfiguredServer, central);
+    }
+
+    public async Task SyncPriceTypesAsync(SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
+        await remote.OpenAsync(cancellationToken);
+        await branch.OpenAsync(cancellationToken);
+        await SyncPriceTypesAsync(remote, branch, cancellationToken);
+    }
+
+    private static async Task SyncPriceTypesAsync(SqlConnection remote, SqlConnection branch, CancellationToken cancellationToken)
+    {
+        var rows = new List<(Guid Id, string Code, string Name, int Sort, bool Active, DateTime CreatedAt)>();
+        await using (var read = new SqlCommand(
+            "SELECT PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt FROM dbo.PriceTypes;",
+            remote))
+        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetBoolean(4), reader.GetDateTime(5)));
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            await using var upsert = new SqlCommand(
+                """
+                IF EXISTS (SELECT 1 FROM dbo.PriceTypes WHERE PriceCode = @code)
+                    UPDATE dbo.PriceTypes
+                    SET PriceName = @name, SortOrder = @sort, IsActive = @active
+                    WHERE PriceCode = @code;
+                ELSE IF NOT EXISTS (SELECT 1 FROM dbo.PriceTypes WHERE PriceTypeID = @id)
+                    INSERT INTO dbo.PriceTypes (PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt)
+                    VALUES (@id, @code, @name, @sort, @active, @created);
+                """,
+                branch);
+            upsert.Parameters.AddWithValue("@id", row.Id);
+            upsert.Parameters.AddWithValue("@code", row.Code);
+            upsert.Parameters.AddWithValue("@name", row.Name);
+            upsert.Parameters.AddWithValue("@sort", row.Sort);
+            upsert.Parameters.AddWithValue("@active", row.Active);
+            upsert.Parameters.AddWithValue("@created", row.CreatedAt);
+            await upsert.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task<SyncRunResult> PullAsync(Guid endpointId, SqlEndpointSettings central, CancellationToken cancellationToken)
@@ -740,7 +841,15 @@ public sealed class SharedDataSync(
         SELECT COUNT(*) FROM [{central}].dbo.Items;
         """;
 
-    private static string BootstrapSql(string source, string businessDescription, string itemSearchStrict, string itemSearchLoose) =>
+    private static string BootstrapSql(
+        string source,
+        string businessDescription,
+        string itemSearchStrict,
+        string itemSearchLoose,
+        string itemPriceBranch,
+        string itemPriceBranchMatch,
+        string itemPriceBranchFilter,
+        string receivableCopy) =>
         $"""
         INSERT INTO dbo.Businesses (BusinessID, BusinessName, BusinessDisplayName, Phone, Description, Address, IsActive, CreatedAt, UpdatedAt)
         SELECT BusinessID, BusinessName, BusinessDisplayName, Phone, {businessDescription}, Address, IsActive, CreatedAt, UpdatedAt
@@ -869,13 +978,14 @@ public sealed class SharedDataSync(
         WHERE NOT EXISTS (SELECT 1 FROM dbo.ItemUnits AS target WHERE target.ItemUnitID = source.ItemUnitID);
 
         INSERT INTO dbo.ItemPrices (ItemPriceID, ItemID, PriceTypeID, BranchID, Price, IsActive, CreatedAt, UpdatedAt)
-        SELECT NEWID(), source.ItemID, localPrice.PriceTypeID, NULL, source.Price, source.IsActive, source.CreatedAt, source.UpdatedAt
+        SELECT NEWID(), source.ItemID, localPrice.PriceTypeID, {itemPriceBranch}, source.Price, source.IsActive, source.CreatedAt, source.UpdatedAt
         FROM {source}ItemPrices AS source
         INNER JOIN {source}PriceTypes AS sourcePrice ON sourcePrice.PriceTypeID = source.PriceTypeID
         INNER JOIN dbo.PriceTypes AS localPrice ON localPrice.PriceCode = sourcePrice.PriceCode
-        WHERE NOT EXISTS (
+        WHERE {itemPriceBranchFilter}
+          AND NOT EXISTS (
             SELECT 1 FROM dbo.ItemPrices AS target
-            WHERE target.ItemID = source.ItemID AND target.PriceTypeID = localPrice.PriceTypeID AND target.BranchID IS NULL);
+            WHERE target.ItemID = source.ItemID AND target.PriceTypeID = localPrice.PriceTypeID AND {itemPriceBranchMatch});
 
         UPDATE target
         SET Price = source.Price, IsActive = source.IsActive, UpdatedAt = source.UpdatedAt
@@ -883,10 +993,11 @@ public sealed class SharedDataSync(
         INNER JOIN dbo.PriceTypes AS localPrice ON localPrice.PriceTypeID = target.PriceTypeID
         INNER JOIN {source}PriceTypes AS sourcePrice ON sourcePrice.PriceCode = localPrice.PriceCode
         INNER JOIN {source}ItemPrices AS source
-            ON source.ItemID = target.ItemID AND source.PriceTypeID = sourcePrice.PriceTypeID
-        WHERE target.BranchID IS NULL;
+            ON source.ItemID = target.ItemID AND source.PriceTypeID = sourcePrice.PriceTypeID AND {itemPriceBranchMatch};
 
         {CustomerMasterCopySql(source, "dbo")}
+
+        {receivableCopy}
 
         SELECT COUNT(*) FROM dbo.Items;
         """;
@@ -1030,12 +1141,26 @@ public sealed class SharedDataSync(
         return length is not null and not DBNull;
     }
 
+    private static async Task<bool> CentralTableExistsAsync(
+        SqlEndpointSettings central,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand("SELECT OBJECT_ID(@name, N'U');", connection);
+        command.Parameters.AddWithValue("@name", "dbo." + tableName);
+        var id = await command.ExecuteScalarAsync(cancellationToken);
+        return id is not null and not DBNull;
+    }
+
     private static async Task StageRemoteCatalogAsync(
         SqlEndpointSettings central,
         SqlConnection branch,
         SqlTransaction transaction,
         bool hasBusinessDescription,
         bool hasItemSearch,
+        bool hasItemPriceBranch,
         CancellationToken cancellationToken)
     {
         await using var source = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
@@ -1144,10 +1269,38 @@ public sealed class SharedDataSync(
             CREATE TABLE #ItemPrices (
                 ItemID uniqueidentifier NOT NULL,
                 PriceTypeID uniqueidentifier NOT NULL,
+                BranchID uniqueidentifier NULL,
                 Price decimal(19, 4) NOT NULL,
                 IsActive bit NOT NULL,
                 CreatedAt datetime2(0) NOT NULL,
                 UpdatedAt datetime2(0) NOT NULL);
+            CREATE TABLE #CustomerReceivables (
+                ReceivableID uniqueidentifier NOT NULL,
+                CustomerID uniqueidentifier NOT NULL,
+                SourceSaleID uniqueidentifier NULL,
+                SourceBranchID uniqueidentifier NULL,
+                SourcePOSID uniqueidentifier NULL,
+                OriginalAmount decimal(19, 4) NOT NULL,
+                OutstandingAmount decimal(19, 4) NOT NULL,
+                DueDate date NULL,
+                CurrencyCode nvarchar(3) COLLATE DATABASE_DEFAULT NOT NULL,
+                Status nvarchar(32) COLLATE DATABASE_DEFAULT NOT NULL,
+                CreatedAt datetime2(0) NOT NULL,
+                SourceSaleNumber nvarchar(50) COLLATE DATABASE_DEFAULT NULL);
+            CREATE TABLE #CustomerCreditLedger (
+                LedgerEntryID uniqueidentifier NOT NULL,
+                CustomerID uniqueidentifier NOT NULL,
+                TransactionID uniqueidentifier NOT NULL,
+                TransactionType nvarchar(30) COLLATE DATABASE_DEFAULT NOT NULL,
+                Amount decimal(19, 4) NOT NULL,
+                CurrencyCode nvarchar(3) COLLATE DATABASE_DEFAULT NOT NULL,
+                SourceBranchID uniqueidentifier NOT NULL,
+                SourceSaleID uniqueidentifier NULL,
+                PaymentID uniqueidentifier NULL,
+                OccurredAt datetime2(0) NOT NULL,
+                CreatedBy uniqueidentifier NOT NULL,
+                ReversalReference uniqueidentifier NULL,
+                IdempotencyKey nvarchar(80) COLLATE DATABASE_DEFAULT NOT NULL);
             CREATE TABLE #CustomerClassifications (
                 CustomerClassificationID uniqueidentifier NOT NULL,
                 BusinessID uniqueidentifier NOT NULL,
@@ -1191,9 +1344,15 @@ public sealed class SharedDataSync(
         var itemSearchColumns = hasItemSearch ? "ItemNameSearchStrict, ItemNameSearchLoose, " : "";
         await CopyAsync(source, branch, transaction, "SELECT ItemID, ItemNumber, ItemName, " + itemSearchColumns + "ItemType, Manufacturer, Color, Taste, Size, Packing, Classification, CountryOfOrigin, ProductType, ParentItemID, IsProhibited, IsPublishedOnline, IsActive, CreatedAt, UpdatedAt FROM dbo.Items;", "#Items", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT ItemUnitID, ItemID, UnitsPerPackage, InternalUnitItemID, InternalUnitItemNumber, InternalUnitItemName, IsBaseUnit, IsActive, CreatedAt, UpdatedAt FROM dbo.ItemUnits;", "#ItemUnits", cancellationToken);
-        await CopyAsync(source, branch, transaction, "SELECT ItemID, PriceTypeID, Price, IsActive, CreatedAt, UpdatedAt FROM dbo.ItemPrices;", "#ItemPrices", cancellationToken);
+        var priceBranch = hasItemPriceBranch ? "BranchID" : "CAST(NULL AS uniqueidentifier) AS BranchID";
+        await CopyAsync(source, branch, transaction, "SELECT ItemID, PriceTypeID, " + priceBranch + ", Price, IsActive, CreatedAt, UpdatedAt FROM dbo.ItemPrices;", "#ItemPrices", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT CustomerClassificationID, BusinessID, Code, Name, DefaultPriceTypeID, DefaultVariableValueDiscountPercent, IsDefault, IsActive, CreatedAt, UpdatedAt FROM dbo.CustomerClassifications;", "#CustomerClassifications", cancellationToken);
         await CopyAsync(source, branch, transaction, "SELECT CustomerID, BusinessID, CustomerNumber, Name, Phone, NormalizedPhone, SecondaryPhone, SecondaryNormalizedPhone, CustomerClassificationID, PriceTypeID, VariableValueDiscountPercent, IsActive, Notes, LegacySource, LegacyCustomerKey, CreatedAt, UpdatedAt FROM dbo.Customers;", "#Customers", cancellationToken);
+        await CopyAsync(source, branch, transaction, "SELECT ReceivableID, CustomerID, SourceSaleID, SourceBranchID, SourcePOSID, OriginalAmount, OutstandingAmount, DueDate, CurrencyCode, Status, CreatedAt, SourceSaleNumber FROM dbo.CustomerReceivables;", "#CustomerReceivables", cancellationToken);
+        if (await CentralTableExistsAsync(central, "CustomerCreditLedger", cancellationToken))
+        {
+            await CopyAsync(source, branch, transaction, "SELECT LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, SourceSaleID, PaymentID, OccurredAt, CreatedBy, ReversalReference, IdempotencyKey FROM dbo.CustomerCreditLedger;", "#CustomerCreditLedger", cancellationToken);
+        }
     }
 
     private static async Task CopyAsync(

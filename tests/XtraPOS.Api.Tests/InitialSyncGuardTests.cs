@@ -25,21 +25,19 @@ public class InitialSyncGuardTests
     }
 
     [Fact]
-    public void Staging_refuses_operational_central_database()
+    public void Staging_accepts_the_central_database_entered_during_setup()
     {
-        var error = Assert.Throws<SetupRejectedException>(() =>
-            InitialSyncGuard.RefuseOperationalCentral(staging: true, "XtraPOS_Central_Test_Staging"));
-        Assert.Contains("XtraPOS_Central", error.Message);
         InitialSyncGuard.RefuseOperationalCentral(staging: true, "XtraPOS_Central");
+        InitialSyncGuard.RefuseOperationalCentral(staging: true, "XtraPOS_Central_Test_Staging");
         InitialSyncGuard.RefuseOperationalCentral(staging: false, "XtraPOS_Central");
     }
 
     [Fact]
-    public void Empty_staging_central_can_be_initialized_without_touching_production()
+    public void Setup_can_create_a_missing_central_database()
     {
         Assert.Null(InitialSyncGuard.StagingCentralRejection(true, "XtraPOS_Central"));
-        Assert.NotNull(InitialSyncGuard.RejectCentralCreation(true, true, "XtraPOS_Central"));
-        Assert.NotNull(InitialSyncGuard.StagingCentralRejection(true, "XtraPOS_Central_Test_Staging"));
+        Assert.Null(InitialSyncGuard.RejectCentralCreation(true, true, "XtraPOS_Central"));
+        Assert.Null(InitialSyncGuard.StagingCentralRejection(true, "XtraPOS_Central_Test_Staging"));
         Assert.True(InitialSyncGuard.CanInitializeExistingEmpty(true, true, 0, true));
         Assert.False(InitialSyncGuard.CanInitializeExistingEmpty(true, true, 12, true));
         Assert.False(InitialSyncGuard.CanInitializeExistingEmpty(true, true, 0, false));

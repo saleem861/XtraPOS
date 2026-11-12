@@ -35,7 +35,12 @@ public sealed record TopologyPlan(
     bool LinkToCentral,
     SqlEndpointSettings? Central,
     SqlEndpointSettings? BranchRemote,
-    Guid? CentralAdminUserId = null);
+    Guid? CentralAdminUserId = null,
+    int? SyncPosNumber = null,
+    int? CashboxNumber = null,
+    SqlEndpointSettings? OperationalBranch = null,
+    string? BranchDataDirectory = null,
+    string? RemoteDataDirectory = null);
 
 public sealed class CreateBranchRequest
 {
@@ -76,6 +81,19 @@ public sealed class CreateBranchRequest
     public string? BranchRemoteAuthentication { get; set; }
     public string? BranchRemoteUsername { get; set; }
     public string? BranchRemotePassword { get; set; }
+    public string? BranchRemoteInstance { get; set; }
+    public int? SyncPosNumber { get; set; }
+    public int? CashboxNumber { get; set; }
+    public string? BranchServer { get; set; }
+    public int? BranchPort { get; set; }
+    public string? BranchInstance { get; set; }
+    public string? BranchDatabaseName { get; set; }
+    public string? BranchAuthentication { get; set; }
+    public string? BranchUsername { get; set; }
+    public string? BranchPassword { get; set; }
+    public string? BranchDataDirectory { get; set; }
+    public string? RemoteDataDirectory { get; set; }
+    public string? BranchAgentId { get; set; }
     public string? CentralAdminUserId { get; set; }
     public bool ReplaceExisting { get; set; }
 }
@@ -115,6 +133,7 @@ public sealed class SetupEvent
         new() { Type = "failed", Message = message };
 
     public bool AlreadyConfigured { get; init; }
+    public bool RemoteAgent { get; init; }
 
     public static SetupEvent Completed(DeviceRegistrationResponse device, bool alreadyConfigured = false) =>
         new() { Type = "completed", Device = device, AlreadyConfigured = alreadyConfigured };

@@ -264,6 +264,7 @@ public sealed class CreditReversalFixture : IAsyncLifetime
 
     public async Task<ReversalSeed> SeedCompletedAsync(decimal amount)
     {
+        await ExecuteAsync(Collecting, "UPDATE dbo.BranchOperationLog SET Status = N'Cancelled' WHERE Status NOT IN (N'Completed', N'Cancelled');");
         var seed = new ReversalSeed(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CollectingBranchId, SessionId);
         await ExecuteAsync(Central, """
             INSERT INTO dbo.Customers (CustomerID, BusinessID, Name, IsActive, CreatedAt, UpdatedAt) VALUES (@customer, @business, N'زبون الدين', 1, SYSUTCDATETIME(), SYSUTCDATETIME());

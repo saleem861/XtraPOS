@@ -120,8 +120,14 @@ public sealed class CustomerMasterService(
 
     public async Task<IReadOnlyList<CustomerPriceTypeRecord>> ListPriceTypesAsync(CancellationToken cancellationToken)
     {
+        var connectionString = connections.TryCreateBranchConnectionString();
         var central = await LinkedCentralAsync(cancellationToken);
-        var connectionString = central?.BuildConnectionString(central.DatabaseName) ?? connections.CreateBranchConnectionString();
+        connectionString ??= central?.BuildConnectionString(central.DatabaseName);
+        if (connectionString is null)
+        {
+            return [];
+        }
+
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         var rows = new List<CustomerPriceTypeRecord>();
@@ -162,9 +168,14 @@ public sealed class CustomerMasterService(
             {
                 await EnsureActorAsync(connection, transaction, actorUserId, cancellationToken);
                 var businessId = await BusinessIdAsync(connection, transaction, cancellationToken);
-                await EnsurePriceTypeAsync(connection, transaction, draft.PriceTypeId, cancellationToken);
-                await EnsureClassificationAsync(connection, transaction, businessId, draft.ClassificationId, cancellationToken);
-                await EnsureCustomerNumberAvailableAsync(connection, transaction, businessId, draft.CustomerNumber, cancellationToken);
+                var writeDraft = draft with
+                {
+                    PriceTypeId = await ResolveWritePriceTypeAsync(connection, transaction, draft.PriceTypeId, cancellationToken),
+                    ClassificationId = await ResolveWriteClassificationAsync(connection, transaction, draft.ClassificationId, cancellationToken),
+                };
+                await EnsurePriceTypeAsync(connection, transaction, writeDraft.PriceTypeId, cancellationToken);
+                await EnsureClassificationAsync(connection, transaction, businessId, writeDraft.ClassificationId, cancellationToken);
+                await EnsureCustomerNumberAvailableAsync(connection, transaction, businessId, writeDraft.CustomerNumber, cancellationToken);
                 var verifiedPhone = claimedCustomerId is null && !membershipVerified
                     ? await LockRegistrationAsync(connection, transaction, request, businessId, draft.CustomerNumber, draft.WhatsAppPhoneE164, cancellationToken)
                     : null;
@@ -183,7 +194,7 @@ public sealed class CustomerMasterService(
                         @discount, @active, @notes, @whatsApp, @phoneStatus, CASE WHEN @phoneStatus = N'Verified' THEN SYSUTCDATETIME() ELSE NULL END, @verifiedPhone, CASE WHEN @consent = 1 THEN SYSUTCDATETIME() ELSE NULL END,
                         SYSUTCDATETIME(), SYSUTCDATETIME());
                     """);
-                AddCustomer(command, customerId, businessId, draft);
+                AddCustomer(command, customerId, businessId, writeDraft);
                 command.Parameters.AddWithValue("@phoneStatus", verifiedPhone is null ? "Unverified" : "Verified");
                 command.Parameters.AddWithValue("@verifiedPhone", (object?)verifiedPhone ?? DBNull.Value);
                 await command.ExecuteNonQueryAsync(cancellationToken);
@@ -433,7 +444,7 @@ public sealed class CustomerMasterService(
             await change(branch, transaction);
             if (central is not null)
             {
-                await cardSync.EnqueueAsync(branch, transaction, BranchCardOutboxSync.Customers, customerId, cancellationToken);
+                await EnqueueCustomerRelayAsync(branch, transaction, actorUserId, customerId, cancellationToken);
             }
 
             await transaction.CommitAsync(cancellationToken);
@@ -458,19 +469,32 @@ public sealed class CustomerMasterService(
             throw new CustomerMasterException("تعذر حفظ بيانات الزبون.", StatusCodes.Status503ServiceUnavailable);
         }
 
-        if (central is not null)
+        logger.LogInformation("Customer master change completed for {CustomerId} by {ActorUserId}.", customerId, actorUserId);
+    }
+
+    private static async Task EnqueueCustomerRelayAsync(SqlConnection branch, SqlTransaction transaction, Guid actorUserId, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var table = new SqlCommand("SELECT OBJECT_ID(N'dbo.BranchOperationLog', N'U');", branch, transaction);
+        if (await table.ExecuteScalarAsync(cancellationToken) is null or DBNull)
         {
-            try
-            {
-                await cardSync.FlushAsync(cancellationToken);
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning(exception, "Customer {CustomerId} stayed pending until central is reachable.", customerId);
-            }
+            return;
         }
 
-        logger.LogInformation("Customer master change completed for {CustomerId} by {ActorUserId}.", customerId, actorUserId);
+        await using var branchId = new SqlCommand("SELECT TOP (1) BranchID FROM dbo.Branches;", branch, transaction);
+        var origin = await branchId.ExecuteScalarAsync(cancellationToken) is Guid id ? id : Guid.Empty;
+        await using var name = new SqlCommand("SELECT Name FROM dbo.Customers WHERE CustomerID = @id;", branch, transaction);
+        name.Parameters.AddWithValue("@id", customerId);
+        var customerName = await name.ExecuteScalarAsync(cancellationToken) as string ?? "";
+        await XtraPOS.Api.Operations.BranchOperationLog.EnqueueAsync(branch, transaction, new XtraPOS.Api.Operations.BranchOperationDraft(
+            Guid.NewGuid(),
+            "CustomerUpsert",
+            customerId.ToString("N"),
+            string.IsNullOrWhiteSpace(customerName) ? "حفظ زبون" : "حفظ زبون " + customerName,
+            "Customers",
+            customerId,
+            origin,
+            actorUserId,
+            null), cancellationToken);
     }
 
     public async Task ReapplyBranchCopyAsync(Guid customerId, CancellationToken cancellationToken)
@@ -991,8 +1015,9 @@ public sealed class CustomerMasterService(
         CancellationToken cancellationToken)
     {
         var priceTypeId = await ResolveWritePriceTypeAsync(connection, transaction, draft.PriceTypeId, cancellationToken);
+        var classificationId = await ResolveWriteClassificationAsync(connection, transaction, draft.ClassificationId, cancellationToken);
         var version = await ResolveWriteVersionAsync(customerId, existing.RowVersion, draft.RowVersion, cancellationToken);
-        return draft with { PriceTypeId = priceTypeId, RowVersion = version };
+        return draft with { PriceTypeId = priceTypeId, ClassificationId = classificationId, RowVersion = version };
     }
 
     private async Task<Guid?> ResolveWritePriceTypeAsync(
@@ -1011,25 +1036,104 @@ public sealed class CustomerMasterService(
             return priceTypeId;
         }
 
-        string? branchCode = null;
-        try
-        {
-            await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
-            await branch.OpenAsync(cancellationToken);
-            branchCode = await PriceCodeAsync(branch, null, priceTypeId.Value, cancellationToken);
-        }
-        catch (SqlException exception)
-        {
-            logger.LogWarning(exception, "Could not resolve customer price type {PriceTypeId} from the branch database.", priceTypeId);
-        }
-
-        if (string.IsNullOrWhiteSpace(branchCode))
+        var code = await PriceCodeFromOtherDatabaseAsync(priceTypeId.Value, cancellationToken);
+        if (string.IsNullOrWhiteSpace(code))
         {
             throw new CustomerMasterException("التسعيرة المحددة غير صالحة.");
         }
 
-        return await PriceTypeIdByCodeAsync(connection, transaction, branchCode, cancellationToken)
+        return await PriceTypeIdByCodeAsync(connection, transaction, code, cancellationToken)
             ?? throw new CustomerMasterException("التسعيرة المحددة غير صالحة.");
+    }
+
+    private async Task<Guid?> ResolveWriteClassificationAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        Guid? classificationId,
+        CancellationToken cancellationToken)
+    {
+        if (classificationId is null)
+        {
+            return null;
+        }
+
+        var businessId = await BusinessIdAsync(connection, transaction, cancellationToken);
+        if (await ClassificationExistsAsync(connection, transaction, businessId, classificationId.Value, cancellationToken))
+        {
+            return classificationId;
+        }
+
+        string? name = null;
+        try
+        {
+            await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+            await branch.OpenAsync(cancellationToken);
+            name = await ClassificationNameAsync(branch, null, classificationId.Value, cancellationToken);
+        }
+        catch (SqlException exception)
+        {
+            logger.LogWarning(exception, "Could not resolve customer classification {ClassificationId} from the branch database.", classificationId);
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new CustomerMasterException("نوع الزبون غير صالح.");
+        }
+
+        return await ClassificationIdByNameAsync(connection, transaction, businessId, name, cancellationToken)
+            ?? throw new CustomerMasterException("نوع الزبون غير صالح.");
+    }
+
+    private static async Task<bool> ClassificationExistsAsync(
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        Guid businessId,
+        Guid classificationId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = Command(
+            connection,
+            transaction,
+            "SELECT COUNT(*) FROM dbo.CustomerClassifications WHERE CustomerClassificationID = @id AND BusinessID = @business;");
+        command.Parameters.AddWithValue("@id", classificationId);
+        command.Parameters.AddWithValue("@business", businessId);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
+    }
+
+    private static async Task<string?> ClassificationNameAsync(
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        Guid classificationId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = Command(
+            connection,
+            transaction,
+            "SELECT Name FROM dbo.CustomerClassifications WHERE CustomerClassificationID = @id;");
+        command.Parameters.AddWithValue("@id", classificationId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
+    }
+
+    private static async Task<Guid?> ClassificationIdByNameAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        Guid businessId,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        await using var command = Command(
+            connection,
+            transaction,
+            """
+            SELECT TOP (1) CustomerClassificationID
+            FROM dbo.CustomerClassifications
+            WHERE BusinessID = @business AND Name = @name
+            ORDER BY IsActive DESC, CustomerClassificationID;
+            """);
+        command.Parameters.AddWithValue("@business", businessId);
+        command.Parameters.AddWithValue("@name", name);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is Guid classificationId ? classificationId : null;
     }
 
     private async Task<byte[]> ResolveWriteVersionAsync(
@@ -1053,6 +1157,42 @@ public sealed class CustomerMasterService(
         }
 
         throw new CustomerMasterException("تم تعديل الزبون من جهة أخرى. أعد التحميل ثم حاول مرة أخرى.", StatusCodes.Status409Conflict);
+    }
+
+    private async Task<string?> PriceCodeFromOtherDatabaseAsync(Guid priceTypeId, CancellationToken cancellationToken)
+    {
+        var candidates = new List<string>();
+        var central = await LinkedCentralAsync(cancellationToken);
+        if (central is not null)
+        {
+            candidates.Add(central.BuildConnectionString(central.DatabaseName));
+        }
+
+        var branch = connections.TryCreateBranchConnectionString();
+        if (branch is not null)
+        {
+            candidates.Add(branch);
+        }
+
+        foreach (var connectionString in candidates)
+        {
+            try
+            {
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken);
+                var code = await PriceCodeAsync(connection, null, priceTypeId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    return code;
+                }
+            }
+            catch (SqlException exception)
+            {
+                logger.LogWarning(exception, "Could not resolve customer price type {PriceTypeId}.", priceTypeId);
+            }
+        }
+
+        return null;
     }
 
     private static async Task<string?> PriceCodeAsync(

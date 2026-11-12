@@ -1,0 +1,744 @@
+# XtraPOS — PROJECT HANDOVER
+**Date:** 02 November 2026  
+**Project:** XtraPOS — New POS System  
+**Current Focus:** Staging Deployment, Customer Management, Android Passkey & WebAuthn  
+**Status:** Staging deployed successfully; customer dropdown and Passkey issues not yet verified as resolved.
+
+---
+
+## 1. تعليمات للمساعد في المحادثة الجديدة
+
+هذا الملف يمثل التسليم المرجعي للمحادثة السابقة.
+
+المطلوب:
+
+- متابعة المشروع من الحالة الحالية، وليس البدء من الصفر.
+- عدم افتراض أن الإصلاحات نجحت دون اختبارات فعلية.
+- العمل بخطوات متسلسلة، ويفضل خطوة تنفيذية واحدة في كل مرة.
+- تقديم تعليمات دقيقة وجاهزة للنسخ إلى Cursor عند الحاجة.
+- التمييز بين Frontend وBackend وDatabase وDeployment.
+- عدم إجراء تغييرات على الإنتاج.
+- اعتماد Resource-Saving Mode: نطاق محدود، لا Refactoring شامل، واختبارات مركزة.
+- عدم طلب كلمات مرور أو إظهار أسرار في السجلات.
+- الاعتماد على تقرير Cursor الفعلي قبل اعتماد أي إصلاح.
+- عدم الخلط بين XtraPOS الجديد ومشروع XtraPOS Inventory القديم.
+
+**الهدف الحالي:** تشغيل تسجيل الزبون والتحقق من هويته باستخدام Passkey على هاتف Android، مع ظهور بيانات أنواع الزبائن والتسعير بصورة صحيحة.
+
+---
+
+## 2. البنية التقنية
+
+### Local Development
+
+| Component | Value |
+|---|---|
+| Project path | `D:\Google\XtraPOS` |
+| Frontend | React + TypeScript + Vite |
+| Backend | ASP.NET Core / .NET 8 |
+| Database | Microsoft SQL Server |
+| Deployment | Windows PowerShell → Direct SSH |
+| GitHub deployment | غير مستخدم |
+
+### Staging Server
+
+| Component | Value |
+|---|---|
+| URL | `https://test-pos.sharbelfashion.com` |
+| SSH | `administrator@69.197.178.239` |
+| Linux service | `xtrapos-staging.service` |
+| Local API | `http://127.0.0.1:5088` |
+| Application directory | `/opt/xtrapos-staging` |
+| Environment | `/etc/xtrapos/staging.env` |
+| Activation helper | `/usr/local/sbin/xtrapos-staging-activate` |
+| Shared Data Protection keys | `/opt/xtrapos-staging/shared/data-protection-keys` |
+
+### SQL Server
+
+Server: `69.30.235.148,10173`
+
+| Database | Name | Login |
+|---|---|---|
+| Branch Staging | `XtraPOS_Branch_Test_Staging` | `xtrapos_staging` |
+| Central Staging | `XtraPOS_Central_Test_Staging` | `xtrapos_staging_central` |
+
+تم سابقًا التحقق من عزل الحسابات التجريبية عن قاعدة المركز التشغيلية.
+
+**تحذير:** لا يُسمح بحذف أي قاعدة بيانات أو استبدالها أو استيراد بيانات الإنتاج دون قرار صريح.
+
+---
+
+## 3. آخر حالة نشر مؤكدة
+
+آخر تقرير نشر وصل من المستخدم:
+
+```text
+ACTIVATE_OK
+Staging Release: 20261102-124008-aaba7df
+```
+
+النتائج:
+
+- نجاح عملية تفعيل Staging.
+- نجاح فحص صحة الخدمة.
+- Migration الفرع `034_CustomerReferenceData` مطبقة.
+- Migration المركز `016_CustomerReferenceData` مطبقة.
+- إجمالي Branch Migrations: 34.
+- إجمالي Central Migrations: 16.
+- تم الإبلاغ بأن خدمة الإنتاج لم تُمس.
+
+مهم: إصدار النشر المذكور هو آخر إصدار أُبلغ عنه، وليس تأكيدًا بأنه لا يوجد إصدار أحدث حاليًا.
+
+النجاح هنا يعني أن النشر والتفعيل نجحا، **ولا يعني أن وظائف Passkey وقوائم الزبائن نجحت**.
+
+---
+
+## 4. طريقة النشر المعتمدة
+
+من Windows PowerShell:
+
+```powershell
+cd D:\Google\XtraPOS
+$env:Path = "$env:LOCALAPPDATA\Programs\Python\Python314;$env:Path"
+.\deploy\Deploy-StagingDirect.ps1
+```
+
+عندما يكون Python متاحًا في PATH يمكن الاكتفاء بـ:
+
+```powershell
+.\deploy\Deploy-StagingDirect.ps1
+```
+
+لا تستخدم `-WriteCentral` في النشر المعتاد.
+
+يُستخدم الخيار فقط في إجراءات إعداد أو تحديث اتصال المركز عند الحاجة، وبعد التحقق من نطاق العملية.
+
+**لا يتم النشر تلقائيًا قبل إتمام الاختبارات والحصول على الموافقة.**
+
+---
+
+## 5. مشكلة Passkey الحالية
+
+### السلوك الملاحظ
+
+عند فتح رابط تسجيل Passkey على هاتف Android باستخدام Chrome:
+
+1. كان المتصفح يعرض خيارات USB Security Key وNFC وجهاز آخر.
+2. عُدلت إعدادات التسجيل لطلب Platform Authenticator.
+3. استمر الفشل على الهاتف.
+4. ظهرت رسالة: «فشل التحقق على هذا الجهاز».
+5. لم يتوفر حتى الآن دليل تشخيصي يحدد المرحلة التي تفشل فيها العملية.
+
+### ملفات Frontend المعروفة
+
+```text
+src/XtraPOS.Web/src/passkey/phonePasskey.ts
+src/XtraPOS.Web/src/components/PasskeyPhonePage.tsx
+src/XtraPOS.Web/src/passkey/phonePasskey.test.ts
+```
+
+### الإعدادات التي سبق تعديلها
+
+```typescript
+authenticatorSelection: {
+  authenticatorAttachment: "platform",
+  residentKey: "required",
+  userVerification: "required"
+}
+```
+
+مع استمرار:
+
+- ES256.
+- Attestation = none.
+- التحقق من RP ID.
+- التحقق من Origin.
+- التحقق من Challenge.
+- التحقق من User Verification.
+- التحقق من التوقيع على Backend.
+
+### الإعدادات المتوقعة للموقع التجريبي
+
+```text
+RP ID:
+test-pos.sharbelfashion.com
+
+Origin:
+https://test-pos.sharbelfashion.com
+```
+
+هذه هي القيم المتوقعة ويجب التحقق من القيم الفعلية أثناء التشغيل.
+
+### المطلوب تشخيصه
+
+تتبع العملية الكاملة:
+
+```text
+POS
+  ↓
+Create Enrollment Session
+  ↓
+Generate QR
+  ↓
+Open on Android Chrome
+  ↓
+Retrieve Registration Options
+  ↓
+navigator.credentials.create()
+  ↓
+Android Authenticator Prompt
+  ↓
+Credential Response
+  ↓
+Backend Validation
+  ↓
+Store Public Key Credential
+  ↓
+Bind Credential to Customer
+  ↓
+Return Verified Enrollment Result
+```
+
+في كل مرحلة يجب تحديد:
+
+- هل نُفذت؟
+- هل نجحت؟
+- ما الاستجابة؟
+- ما الخطأ الدقيق؟
+- هل المشكلة Frontend أم Backend أم Browser/Device أم Database؟
+
+ممنوع اعتماد تشخيص تخميني دون أدلة.
+
+---
+
+## 6. متطلبات Passkey الأمنية والتشغيلية
+
+### التسجيل الأول
+
+لا يكفي أن يمسح الشخص QR ليصبح صاحب الحساب.
+
+يجب التحقق من ملكية الحساب عبر آلية معتمدة، مثل OTP للهاتف المسجل، أو وسيلة موثوقة مكافئة.
+
+بعد ذلك يمكن تسجيل Passkey وربطه بالزبون الصحيح.
+
+### التحقق لاحقًا
+
+في الزيارات التالية:
+
+1. يحدد الكاشير حساب الزبون.
+2. يُنشئ النظام طلب تحقق جديدًا.
+3. يستخدم الزبون Passkey المسجل.
+4. ينفذ الهاتف التحقق المحلي.
+5. يتحقق Backend من التوقيع وChallenge والهوية.
+6. يعود إلى POS تأكيد موثوق لهوية الزبون.
+
+لا يكفي نجاح البصمة على الهاتف دون تأكيد Backend.
+
+### حالات يجب منعها
+
+- استخدام Passkey زبون للتحقق من زبون آخر.
+- إعادة استخدام Challenge قديم.
+- استعمال QR منتهي الصلاحية.
+- ربط Credential بحساب غير صحيح.
+- اعتبار QR وحده إثباتًا للهوية.
+- تخطي التحقق عند انقطاع الإنترنت.
+- حفظ بيانات البصمة نفسها داخل XtraPOS.
+
+### وضع Offline
+
+المبيعات دون إنترنت مطلوبة في XtraPOS.
+
+لكن التحقق الاعتيادي باستخدام WebAuthn مع الخادم يحتاج اتصالًا بالجهة التي تتحقق من التوقيع.
+
+أي تصميم للتحقق Offline يحتاج آلية أمنية مستقلة، ولا يُضاف اختصار غير موثوق.
+
+---
+
+## 7. مشكلة قوائم الزبائن
+
+القائمتان المتأثرتان:
+
+- نوع الزبون.
+- نوع التسعيرة (كود النظام).
+
+### Endpoints
+
+```http
+GET /api/customers/classifications
+GET /api/customers/price-types
+```
+
+كلاهما يتطلب الصلاحية المناسبة `CustomersView`.
+
+### السبب المعروف
+
+عندما يرتبط الفرع بالمركز، تُقرأ القيم المرجعية من قاعدة المركز.
+
+المشكلة التي كشفها Cursor:
+
+```text
+Central Businesses = 0
+```
+
+لذلك لم تُنشأ أنواع الزبائن.
+
+Migration `016` تضيف أنواع الزبائن فقط للمنشآت الموجودة وقت تطبيقها.
+
+وبما أن الترحيل سُجل كمطبق، فإن إنشاء المنشأة لاحقًا لا يعيد تشغيله تلقائيًا.
+
+### التصنيفات السبعة المعتمدة
+
+1. عادي
+2. برونزي
+3. فضي
+4. ذهبي
+5. محل تجاري
+6. زبون مميز
+7. مستهلك كبير
+
+### ملفات سبق تعديلها
+
+```text
+src/XtraPOS.Api/Data/Central/Migrations/016_CustomerReferenceData.sql
+src/XtraPOS.Api/Data/Migrations/034_CustomerReferenceData.sql
+src/XtraPOS.Api/Data/Central/CentralMigrationRunner.cs
+src/XtraPOS.Api/Data/Migrations/MigrationRunner.cs
+src/XtraPOS.Api/XtraPOS.Api.csproj
+tests/XtraPOS.Api.Tests/CustomerReferenceDataTests.cs
+deploy/staging-central-provision.sql
+```
+
+### المطلوب
+
+1. فحص عدد المنشآت والفروع الفعلي.
+2. فحص ربط الفرع التجريبي بالمركز.
+3. التأكد من تهيئة بيانات المؤسسة بطريقة صحيحة.
+4. إضافة المرجعيات للمنشأة التجريبية عبر عملية آمنة وIdempotent.
+5. ضمان تهيئة المرجعيات عند إنشاء منشأة جديدة مستقبلًا.
+6. ضمان عدم تكرار السجلات.
+7. التأكد من أن API يعيد 7 تصنيفات حقيقية.
+8. التأكد من عرضها داخل الواجهة وحفظ الاختيار.
+
+ممنوع إنشاء معرفات منشآت عشوائية أو استيراد بيانات إنتاج.
+
+---
+
+## 8. مشكلة تفاعل Dropdown
+
+ظهرت أيضًا مشكلة واجهة:
+
+عند النقر على «نوع الزبون» تبدو القائمة كأنها تفتح، لكن لا تظهر الخيارات.
+
+قد تكون المشكلة ناتجة عن البيانات الفارغة، لكن يجب أيضًا فحص:
+
+- React state.
+- Loading state.
+- Empty/error state.
+- z-index.
+- overflow clipping.
+- Modal stacking.
+- RTL layout.
+- Pointer events.
+- Focus handling.
+- Touch interaction.
+- Keyboard navigation.
+- Selected value persistence.
+
+لا يجوز افتراض أن قاعدة البيانات هي السبب الوحيد للمشكلة المرئية.
+
+يجب نجاح الاختبار على Desktop وTablet/Touch.
+
+---
+
+## 9. اتصال قاعدة المركز
+
+في سجلات إصدارات سابقة ظهر:
+
+```text
+Login failed for user 'xtrapos_staging_central'
+SQL Error 18456
+```
+
+قد يكون هذا خطأ قديمًا مرتبطًا بإصدار سابق أو بيانات اتصال مشفرة قبل تحديث كلمة المرور.
+
+**لا يوجد إثبات حديث بأن الخطأ ما زال قائمًا.**
+
+المطلوب:
+
+- فحص سجلات الإصدار النشط فقط.
+- اختبار اتصال SQL بالمركز والفرع.
+- التحقق من استمرارية بيانات الاتصال المشفرة بعد إعادة التشغيل.
+- التحقق من استمرار Data Protection keys.
+- فحص Customer Replica Sync.
+- فحص Credit Outbox Worker.
+- منع أي اتصال غير مقصود بقواعد الإنتاج.
+
+لا تُطبع كلمات المرور في التقرير.
+
+---
+
+## 10. مشكلة Staging Activation Helper
+
+حدث سابقًا فشل نشر بسبب تنفيذ Health Check مباشرة بعد Restart قبل اكتمال تشغيل التطبيق.
+
+تم تعديل المساعد محليًا ليحاول التحقق كل ثانيتين ولمدة تصل إلى 90 ثانية.
+
+الملف المحلي:
+
+```text
+deploy/staging-activate-helper.sh
+```
+
+رُفع سابقًا إلى:
+
+```text
+/tmp/xtrapos-staging-activate.new
+```
+
+لكن آخر تقرير أفاد بأن تثبيت التحديث لم يكتمل بسبب الحاجة إلى صلاحيات root، واستُخدم المساعد المثبت مسبقًا.
+
+نجح النشر الأخير مع المساعد القديم.
+
+المطلوب لاحقًا:
+
+- التحقق من نسخة المساعد المثبتة.
+- مقارنة المساعد المحلي والمثبت.
+- تثبيت النسخة الجديدة بطريقة آمنة بعد مراجعتها والحصول على الصلاحيات المناسبة.
+- اختبار Retry وRollback.
+- عدم لمس خدمة الإنتاج.
+
+---
+
+## 11. مشكلة هوية الإصدار
+
+ظهرت معرفات Release مختلفة مع Git SHA متماثل:
+
+```text
+aaba7df3f412dbf59c699ffdbff32ee345f861e2
+```
+
+يجب فحص ما إذا كان النشر يضم تعديلات محلية غير محفوظة في Commit.
+
+المطلوب تسجيل:
+
+- Git SHA.
+- حالة Dirty Working Tree.
+- Artifact checksum.
+- Release ID.
+- Frontend bundle identity.
+- Backend version.
+
+لا يجوز اعتبار تطابق Git SHA دليلًا على تطابق محتويات الحزم إذا كانت هناك تعديلات محلية غير ملتزم بها.
+
+---
+
+## 12. الاختبارات السابقة
+
+### اختبارات نجحت وفق تقارير سابقة
+
+- تشغيل وبناء Backend.
+- اختبارات Frontend سابقة: 191/191.
+- أربعة اختبارات API مرتبطة بإصلاح المرجعيات وPasskey.
+- اختبار Frontend إضافي.
+- تطبيق ترحيلات Branch وCentral.
+- نجاح `ACTIVATE_OK`.
+- نجاح Staging Health Check.
+
+هذه نتائج أُبلغ عنها في مراحل مختلفة، وليست ضمانًا بأن جميعها أُعيد تشغيلها على آخر إصدار.
+
+### اختبارات لم يثبت نجاحها
+
+- تسجيل Passkey فعلي على هاتف Android.
+- استخدام Passkey المسجل في زيارة لاحقة.
+- ظهور سبعة أنواع زبائن في Dropdown.
+- حفظ وإعادة فتح نوع الزبون.
+- تكامل بيانات المنشأة التجريبية مع الفرع.
+- سيناريو Wrong Customer.
+- Replay Protection end-to-end.
+- اختبار انتهاء صلاحية QR.
+- اختبار فقدان الاتصال أثناء التحقق.
+- اختبار تحديث Activation Helper وRollback.
+
+لا يُسمح بوضع PASS لهذه الاختبارات دون تنفيذ فعلي وأدلة.
+
+---
+
+## 13. خطة Cursor المعتمدة
+
+في المحادثة السابقة تم إعداد تعليمات تشخيص وإصلاح شاملة على مرحلتين.
+
+الخطة المطلوبة:
+
+### Phase 1 — Read-only diagnosis
+
+- قراءة الملفات المرتبطة بالمشكلات فقط.
+- فحص حالة Runtime.
+- فحص قواعد البيانات دون تعديل.
+- تحديد المرحلة التي يفشل فيها Passkey.
+- تحديد سبب عدم وجود خيارات في القوائم.
+- فحص إصدار التطبيق الفعلي.
+- تجميع السجلات اللازمة دون أسرار.
+
+### Phase 2 — Root-cause analysis
+
+لكل مشكلة:
+
+- Observed symptom.
+- Confirmed cause.
+- Evidence.
+- Affected component.
+- Proposed fix.
+- Security impact.
+- Regression test.
+
+### Phase 3 — Focused implementation
+
+- تعديل أقل نطاق ممكن.
+- عدم تغيير معماريات غير مرتبطة.
+- المحافظة على قواعد البيانات.
+- عدم تعطيل تحقق WebAuthn.
+- استخدام Idempotent provisioning للمرجعيات.
+- إضافة اختبارات تمنع عودة المشكلة.
+
+### Phase 4 — Automated verification
+
+- Backend unit tests.
+- Frontend unit tests.
+- API integration tests.
+- Database integration tests.
+- WebAuthn binary encoding tests.
+- Security/replay tests.
+- Production isolation checks.
+- Build and release scan.
+
+### Phase 5 — Staging deployment
+
+بعد الموافقة فقط:
+
+- النشر المباشر عبر SSH.
+- التحقق من الترحيلات.
+- التحقق من الإصدار الفعلي.
+- التحقق من Health.
+- فحص التطبيقات والـAPI.
+- عدم لمس الإنتاج.
+
+### Phase 6 — Physical Android verification
+
+اختبار هاتف حقيقي، وليس Mock فقط.
+
+---
+
+## 14. اختبارات القبول الإلزامية
+
+### Passkey
+
+| ID | Test | Expected |
+|---|---|---|
+| P01 | First enrollment | إنشاء Passkey وحفظه على الجهاز المدعوم |
+| P02 | Later authentication | التحقق بالمفتاح نفسه |
+| P03 | User cancellation | إلغاء آمن |
+| P04 | Expired QR | رفض الطلب |
+| P05 | Replay | رفض إعادة الاستخدام |
+| P06 | Wrong customer | رفض الحساب الخاطئ |
+| P07 | Unsupported device | رسالة صحيحة دون نجاح وهمي |
+| P08 | Network failure | عدم اعتماد تحقق غير مؤكد |
+| P09 | Multiple devices | ربط آمن لجهاز ثانٍ |
+| P10 | Browser restart | استمرار عمل Passkey |
+
+### Customer Management
+
+| ID | Test | Expected |
+|---|---|---|
+| C01 | Customer classifications | ظهور 7 خيارات |
+| C02 | Price types | ظهور أكواد التسعير |
+| C03 | Save/reopen | حفظ واسترجاع القيم |
+| C04 | Permissions | صلاحيات صحيحة |
+| C05 | Touch/RTL | تفاعل سليم |
+
+### Deployment
+
+| ID | Test | Expected |
+|---|---|---|
+| D01 | Normal deploy | ACTIVATE_OK |
+| D02 | Repeat deploy | لا تكرار أو فقد بيانات |
+| D03 | Startup delay | Retry صحيح |
+| D04 | Production isolation | عدم تغيير الإنتاج |
+
+**النتائج المقبولة:** PASS / FAIL / BLOCKED / PENDING MANUAL.
+
+كل PASS يحتاج دليلًا.
+
+---
+
+## 15. معايير النجاح النهائية
+
+### Gate 1 — Database
+
+- منشأة تجريبية صحيحة.
+- فرع مرتبط بها.
+- التصنيفات السبعة موجودة.
+- أكواد التسعير موجودة.
+- عدم تكرار السجلات.
+
+### Gate 2 — Backend
+
+- نجاح الاختبارات.
+- سلامة WebAuthn.
+- نجاح تخزين Credential.
+- عدم وجود أخطاء اتصال مركز متكررة غير مفسرة.
+
+### Gate 3 — Frontend
+
+- القوائم تفتح فعليًا.
+- الخيارات تظهر وتُحفظ.
+- رسائل Passkey تميز مراحل الفشل.
+- الواجهة متوافقة مع RTL.
+
+### Gate 4 — Android
+
+- تسجيل Passkey حقيقي.
+- تحقق لاحق باستخدامه.
+- رفض Wrong Customer.
+- رفض Replay.
+
+### Gate 5 — Deployment
+
+- نشر مباشر يعمل.
+- إصدار صحيح.
+- Health ناجح.
+- Rollback موثوق.
+- الإنتاج معزول.
+
+**لا يعتبر المشروع مقبولًا لهذه المرحلة دون استكمال جميع المتطلبات الإلزامية ذات الصلة.**
+
+---
+
+## 16. معايير واجهة XtraPOS
+
+مرجع التصميم:
+
+`XTRAPOS_UI_STANDARD v1.1`
+
+المتطلبات الأساسية:
+
+- Arabic RTL.
+- Full-screen screens.
+- Header Navy.
+- Desktop full keyboard عند الحاجة.
+- Shared Numeric Keypad لجميع الإدخالات الرقمية فقط.
+- Tablet system keyboard مع منع التداخل.
+- عدم إنشاء لوحة مفاتيح مكررة لكل شاشة.
+- المحافظة على سلوك البيع الأساسي.
+- إعادة تعيين العميل إلى Walk-in بعد إتمام البيع، وفق التصميم المعتمد.
+- دعم Offline Sales دون استخدامه كذريعة لتجاوز التحقق الأمني من الهوية.
+
+---
+
+## 17. تحذيرات تقنية إضافية للمراجعة
+
+في نطاق مرتبط بالمشكلة فقط، راجع:
+
+- تحذيرات Nullability في `PhoneVerificationService.cs`.
+- React controlled/uncontrolled inputs.
+- npm security advisories.
+- Data Protection key persistence and protection at rest.
+- Vite large-bundle warnings.
+- Browser/service-worker caching.
+- Frontend/API version mismatch.
+
+صنّف التحذيرات ولا تنفذ ترقيات واسعة غير مرتبطة بالمهمة.
+
+---
+
+## 18. ضوابط التنفيذ
+
+### ممنوع
+
+- تعديل قواعد الإنتاج.
+- Restart لخدمة `xtrapos-api.service`.
+- حذف أو إعادة إنشاء قواعد البيانات.
+- كشف كلمات مرور SQL.
+- استيراد زبائن الإنتاج.
+- تعطيل WebAuthn signature validation.
+- تعطيل Origin / RP ID / Challenge checks.
+- تسجيل الزبون اعتمادًا على QR فقط.
+- اعتماد النجاح بناءً على Unit Tests فقط.
+- نشر التعديلات دون موافقة.
+- إدخال GitHub في مسار النشر.
+- إعادة هيكلة المشروع بالكامل دون حاجة.
+
+### مطلوب
+
+- Root-cause evidence.
+- اختبارات مركزة.
+- تشخيص قبل الإصلاح.
+- استمرارية بيانات الزبائن.
+- Idempotent migrations/provisioning.
+- توثيق واضح.
+- حماية الإنتاج.
+- تقرير نهائي قابل للمراجعة.
+
+---
+
+## 19. الحالة الفعلية عند الانتقال
+
+**آخر ما حدث:**
+
+1. نُشر تحديث على Staging.
+2. نجح تفعيل الخدمة.
+3. استمرت مشكلة Passkey على Android.
+4. استمرت مشكلة عدم ظهور نوع الزبون.
+5. كُشف أن قاعدة المركز لا تحتوي على منشآت.
+6. أُعدت تعليمات Cursor شاملة لتشخيص كل الأسباب وإصلاحها واختبارها.
+7. لم يصل بعد تقرير تنفيذ نهائي لهذه التعليمات الشاملة.
+
+**لا نفترض أن Cursor أنهى المهمة الشاملة، ولا نفترض أن المشكلات حُلّت.**
+
+---
+
+## 20. أول مهمة في المحادثة الجديدة
+
+استكمال تشخيص XtraPOS من هذه النقطة.
+
+### الأولوية الأولى
+
+الحصول على تقرير Cursor بعد تنفيذ مرحلة التشخيص الشامل، ثم مراجعة:
+
+- مكان فشل Passkey بالضبط.
+- سبب فشل Platform Authenticator.
+- حالة بيانات المنشأة وتصنيفات الزبائن.
+- حالة اتصال Central.
+- حالة إصدار Staging.
+- الإصلاحات المقترحة.
+- نتائج الاختبارات الفعلية.
+
+### الأولوية الثانية
+
+مراجعة الإصلاحات قبل النشر.
+
+### الأولوية الثالثة
+
+نشر Staging بعد الموافقة.
+
+### الأولوية الرابعة
+
+اختبارات Android العملية وقوائم الزبائن.
+
+### الأولوية الخامسة
+
+اعتماد المرحلة فقط عندما تتحقق معايير النجاح.
+
+---
+
+## 21. أول رد مطلوب من المساعد الجديد
+
+بعد قراءة هذا Handover:
+
+1. أكد استيعاب حالة المشروع.
+2. لا تعيد شرح الماضي إلا عند الحاجة.
+3. لا تفترض أن الاختبارات غير المنفذة قد نجحت.
+4. ابدأ من آخر تقرير Cursor أو نتائج الاختبار التي سيقدمها المستخدم.
+5. أعطِ الخطوة التالية فقط وفق النتائج.
+6. حافظ على جميع قيود الأمان والنشر السابقة.
+
+**End of Handover — XtraPOS / 2026-11-02**

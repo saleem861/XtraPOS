@@ -97,39 +97,8 @@ public sealed class CentralDatabaseCatalog(IOptions<SqlServerOptions> options)
 
     private static async Task<bool> IsCompatibleCentralAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
-        var blocked = await ScalarAsync(
-            connection,
-            """
-            SELECT CASE
-                WHEN OBJECT_ID(N'dbo.ItemBranchInventory', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.BranchStockBalances', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.StockMovements', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.POSStations', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.Devices', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.Customers', N'U') IS NOT NULL
-                 AND COL_LENGTH(N'dbo.Customers', N'CustomerID') IS NULL THEN 1
-                ELSE 0
-            END;
-            """,
-            cancellationToken);
-        if (blocked is int flag && flag == 1)
-        {
-            return false;
-        }
-
-        if (!await TableExistsAsync(connection, "DatabaseSchemaHistory", cancellationToken))
-        {
-            return false;
-        }
-
-        var migrations = await ScalarAsync(
-            connection,
-            """
-            SELECT COUNT(*) FROM dbo.DatabaseSchemaHistory
-            WHERE MigrationID IN (N'001_CentralFoundation', N'002_ItemOwnership', N'003_BranchCodeUniqueness');
-            """,
-            cancellationToken);
-        return migrations is int count && count == 3;
+        var compatible = await ScalarAsync(connection, SchemaConvergence.CentralStructureCompatibleSql, cancellationToken);
+        return compatible is int flag && flag == 1;
     }
 
     private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName, CancellationToken cancellationToken)

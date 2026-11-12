@@ -5,7 +5,7 @@ namespace XtraPOS.Api.Devices;
 
 public static class DeviceConfigurationWriter
 {
-    public static async Task SaveAsync(BranchDbContext db, Guid deviceId, Guid branchId, string deviceName, int? posNumber, CancellationToken cancellationToken)
+    public static async Task SaveAsync(BranchDbContext db, Guid deviceId, Guid branchId, string deviceName, int? posNumber, CancellationToken cancellationToken, int? cashboxNumber = null)
     {
         var json = DeviceConfigDocument.Merge(null, new Dictionary<string, string?>
         {
@@ -13,6 +13,7 @@ public static class DeviceConfigurationWriter
             ["branchId"] = branchId.ToString(),
             ["posName"] = deviceName,
             ["posNumber"] = posNumber?.ToString(),
+            ["cashboxNumber"] = cashboxNumber?.ToString(),
         });
         await db.Database.ExecuteSqlInterpolatedAsync(
             $"""

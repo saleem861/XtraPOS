@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Configuration;
+using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Data;
 
@@ -10,13 +11,41 @@ public sealed class SqlConnectionFactory
 {
     private readonly SqlServerOptions _options;
     private readonly IHostEnvironment? _environment;
+    private readonly Setup.OperationalBranchConnection? _operational;
     private readonly string _databaseName;
 
-    public SqlConnectionFactory(IOptions<SqlServerOptions> options, IHostEnvironment? environment = null)
+    public SqlConnectionFactory(
+        IOptions<SqlServerOptions> options,
+        IHostEnvironment? environment = null,
+        Setup.OperationalBranchConnection? operational = null)
     {
         _options = options.Value;
         _environment = environment;
+        _operational = operational;
         _databaseName = _options.Database?.Trim() ?? "";
+    }
+
+    private SqlEndpointSettings? ActiveOperational()
+    {
+        var selected = _operational?.Current;
+        if (selected is null)
+        {
+            return null;
+        }
+
+        return Setup.OperationalDatabaseGuard.IsProductionCatalog(selected.DatabaseName) ? selected : null;
+    }
+
+    public bool MatchesConfigured(SqlEndpointSettings selected)
+    {
+        if (!string.Equals(selected.DatabaseName.Trim(), _databaseName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var requested = Setup.OperationalBranchAddress.Normalize(
+            new SqlConnectionStringBuilder(selected.BuildConnectionString(selected.DatabaseName)).DataSource);
+        return requested == Setup.OperationalBranchAddress.Normalize(_options.Server);
     }
 
     public bool IsSafeConfiguration(out string? problem)
@@ -74,7 +103,9 @@ public sealed class SqlConnectionFactory
     }
 
     public string EffectiveDatabase =>
-        BranchDatabaseOverride.Database is string selected && CanOpen(selected) ? selected : _databaseName;
+        BranchDatabaseOverride.Database is string selected && CanOpen(selected)
+            ? selected
+            : ActiveOperational()?.DatabaseName ?? _databaseName;
 
     public string CreateBranchConnectionString()
     {
@@ -93,7 +124,13 @@ public sealed class SqlConnectionFactory
 
     private bool CanOpen(string catalog)
     {
-        return string.Equals(catalog, _databaseName, StringComparison.Ordinal) || BranchDatabase.IsTestName(catalog);
+        if (string.Equals(catalog, _databaseName, StringComparison.Ordinal) || BranchDatabase.IsTestName(catalog))
+        {
+            return true;
+        }
+
+        var active = ActiveOperational();
+        return active is not null && string.Equals(catalog, active.DatabaseName, StringComparison.Ordinal);
     }
 
     public string ConfiguredServer => _options.Server.Trim();
@@ -123,7 +160,7 @@ public sealed class SqlConnectionFactory
             WHERE name = @name;
             """,
             connection);
-        command.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = _databaseName;
+        command.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = EffectiveDatabase;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -205,6 +242,11 @@ public sealed class SqlConnectionFactory
 
     public async Task EnsureBranchDatabaseAsync(CancellationToken cancellationToken)
     {
+        if (ActiveOperational() is not null)
+        {
+            return;
+        }
+
         await using var connection = new SqlConnection(CreateMasterConnectionString());
         await connection.OpenAsync(cancellationToken);
 
@@ -236,6 +278,11 @@ public sealed class SqlConnectionFactory
         bool isDevelopment,
         CancellationToken cancellationToken)
     {
+        if (ActiveOperational() is not null)
+        {
+            throw new InvalidOperationException("Refusing to drop a database while a selected operational branch destination is active.");
+        }
+
         if (!DevelopmentDatabaseReset.TryAuthorize(isDevelopment, _databaseName, authorization.ConfirmedDatabaseName, out var denial))
         {
             throw new InvalidOperationException(denial);
@@ -262,6 +309,11 @@ public sealed class SqlConnectionFactory
 
     public async Task DropConfiguredInstallationAsync(CancellationToken cancellationToken)
     {
+        if (ActiveOperational() is not null)
+        {
+            throw new InvalidOperationException("Refusing to drop a database while a selected operational branch destination is active.");
+        }
+
         if (!XtraPOS.Api.Devices.ProtectedDatabasePolicy.AllowsInstallationReset(_databaseName))
         {
             throw new InvalidOperationException("Refusing to drop a protected or shared database.");
@@ -310,7 +362,7 @@ public sealed class SqlConnectionFactory
             WHERE name = @name;
             """,
             connection);
-        command.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = _databaseName;
+        command.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = EffectiveDatabase;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -342,6 +394,17 @@ public sealed class SqlConnectionFactory
         if (catalog != "master" && !CanOpen(catalog))
         {
             throw new InvalidOperationException("Refusing to open a database other than an allowed XtraPOS branch database.");
+        }
+
+        var active = ActiveOperational();
+        if (active is not null)
+        {
+            var selected = new SqlConnectionStringBuilder(active.BuildConnectionString(catalog))
+            {
+                ConnectTimeout = _options.ConnectTimeoutSeconds,
+                ApplicationName = "XtraPOS.Api",
+            };
+            return selected.ConnectionString;
         }
 
         var builder = new SqlConnectionStringBuilder

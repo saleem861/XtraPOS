@@ -111,6 +111,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [discount, setDiscount] = useState("");
   const storedPriceMissing = useRef(false);
   const loadedPriceCode = useRef("");
+  const loadedClassificationName = useRef("");
+  const loadedCredit = useRef({ enabled: false, limit: "0", terms: "30", status: "Inactive" });
   const [notes, setNotes] = useState("");
   const [recordVersion, setRecordVersion] = useState("");
   const [verifiedDestination, setVerifiedDestination] = useState<string | null>(null);
@@ -183,6 +185,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
         setDiscount(row.variableValueDiscountPercent == null || row.variableValueDiscountPercent === "" ? "" : String(row.variableValueDiscountPercent));
         setNotes(row.notes ?? "");
         setRecordVersion(row.rowVersion ?? "");
+        loadedClassificationName.current = row.classificationName ?? "";
         const phone = row.whatsAppPhoneE164 || row.phone || "";
         const split = splitPastedCallingCode(phone, codes);
         const loadedCode = split?.countryCode ?? countryCode;
@@ -213,6 +216,13 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     const defaults = selected ? customerTypeDefault(selected.name, priceTypes) : null;
     if (defaults?.priceTypeId) setPriceTypeId(defaults.priceTypeId);
   }, [customerId, classificationId, classifications, priceTypes, priceTypeId]);
+
+  useEffect(() => {
+    if (!customerId || classifications.length === 0 || !classificationId) return;
+    if (classifications.some((row) => row.customerClassificationId === classificationId)) return;
+    const match = classifications.find((row) => row.name === loadedClassificationName.current);
+    if (match) setClassificationId(match.customerClassificationId);
+  }, [customerId, classificationId, classifications]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -387,6 +397,12 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     setCreditAvailableAmount(policy.available);
     setCreditAvailable(policy.centralReachable);
     setCreditNotice(policy.centralReachable ? "" : "تعذر الاتصال بجهة الائتمان المركزية.");
+    loadedCredit.current = {
+      enabled: policy.creditEnabled,
+      limit: String(policy.creditLimit),
+      terms: String(policy.paymentTermDays),
+      status: policy.creditStatus,
+    };
   }
 
   function loadCreditPolicy(id: string) {
@@ -458,7 +474,11 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     const activation = creditSwitchState(creditEnabled, creditStatus);
     const limit = Number(creditLimit);
     const terms = Number(paymentTermDays);
-    const changed = activation.enabled || limit > 0 || terms !== 30 || activation.status !== "Inactive" || Boolean(customerId);
+    const loaded = loadedCredit.current;
+    const changed = activation.enabled !== loaded.enabled
+      || activation.status !== loaded.status
+      || Number(creditLimit) !== Number(loaded.limit)
+      || Number(paymentTermDays) !== Number(loaded.terms);
     if (canManageCredit && changed) {
       const problem = creditActivationError({ enabled: activation.enabled, limit: creditLimit, paymentTermDays, status: activation.status });
       if (problem) {
@@ -487,53 +507,84 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
     setMessage("");
     try {
       const sent = body();
-      const saved = await customers.saveCustomer(sent, savedCustomerId);
-      setSavedCustomerId(saved.customerId);
-      const pending = sessionStorage.getItem(pendingEnrollmentKey);
-      if (pending) {
-        const committed = await fetch("/api/membership/enrollment/commit", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
-          body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
-        });
-        if (!committed.ok) {
-          const failure = await committed.json().catch(() => ({})) as { code?: string };
+      const existingId = customerId || savedCustomerId || "";
+      let saved: Awaited<ReturnType<typeof customers.saveCustomer>> | null = null;
+      let customerFailure = "";
+      try {
+        saved = await customers.saveCustomer(sent, savedCustomerId);
+        setSavedCustomerId(saved.customerId);
+      } catch (error) {
+        const text = error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.";
+        if (!existingId) {
           setSaveUi("idle");
-          if (failure.code === "MEMBERSHIP_PROVIDER_CONFLICT") {
+          if (text.includes("مستخدم بالفعل") || text.includes("تتعارض")) {
+            setDuplicateNotice(text.includes("رقم الزبون") ? "رقم الزبون مستخدم بالفعل." : text.includes("هاتف") ? "رقم الهاتف مستخدم بالفعل." : "مفتاح التعريف مستخدم بالفعل.");
+            return;
+          }
+          setMessage(text);
+          return;
+        }
+        customerFailure = text;
+      }
+      const creditCustomerId = saved?.customerId || existingId;
+      if (saved) {
+        const pending = sessionStorage.getItem(pendingEnrollmentKey);
+        if (pending) {
+          const committed = await fetch("/api/membership/enrollment/commit", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
+            body: JSON.stringify({ attemptId: pending, customerId: saved.customerId }),
+          });
+          if (!committed.ok) {
+            const failure = await committed.json().catch(() => ({})) as { code?: string };
+            if (failure.code === "MEMBERSHIP_PROVIDER_CONFLICT") {
+              sessionStorage.removeItem(pendingEnrollmentKey);
+              setPendingEnrollment("");
+              setMembershipDisplay("");
+            }
+            customerFailure = failure.code === "MEMBERSHIP_PROVIDER_CONFLICT"
+              ? "مفتاح التعريف مستخدم بالفعل."
+              : "تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.";
+          } else {
+            clearNewCustomerDraft();
             sessionStorage.removeItem(pendingEnrollmentKey);
             setPendingEnrollment("");
-            setMembershipDisplay("");
           }
-          setDuplicateNotice(failure.code === "MEMBERSHIP_PROVIDER_CONFLICT"
-            ? "مفتاح التعريف مستخدم بالفعل."
-            : "تم حفظ الزبون، ولم يُربط حساب العضوية. أعد المحاولة دون إنشاء زبون آخر.");
-          return;
-        } else {
-          clearNewCustomerDraft();
-          sessionStorage.removeItem(pendingEnrollmentKey);
-          setPendingEnrollment("");
+        }
+        if (!customerId && skipMembership && !customerFailure) {
+          await fetch(`/api/customers/${saved.customerId}/membership/exception`, { method: "POST", credentials: "same-origin" });
         }
       }
-      if (!customerId && skipMembership) {
-        await fetch(`/api/customers/${saved.customerId}/membership/exception`, { method: "POST", credentials: "same-origin" });
+      let creditFailure = "";
+      if (canManageCredit && changed && creditCustomerId) {
+        try {
+          await saveCredit(creditCustomerId, activation, limit, terms);
+        } catch (error) {
+          creditFailure = error instanceof SetupClientError ? error.message : "تعذر حفظ إعدادات الائتمان.";
+        }
+      }
+      if (customerFailure || creditFailure) {
+        setSaveUi("idle");
+        const creditNote = changed && canManageCredit && !creditFailure ? "تم حفظ إعدادات الائتمان." : "";
+        const customerNote = !customerFailure && creditFailure ? "تم حفظ بيانات الزبون." : "";
+        const notice = [creditNote, customerNote, customerFailure, creditFailure].filter(Boolean).join(" ");
+        if (customerFailure.includes("مفتاح التعريف مستخدم بالفعل") || customerFailure.includes("مستخدم بالفعل")) {
+          setDuplicateNotice(notice);
+          return;
+        }
+        setMessage(notice);
+        return;
+      }
+      if (!saved) {
+        setSaveUi("idle");
+        return;
       }
       const selectedPriceCode = priceTypes.find((price) => price.priceTypeId === sent.priceTypeId)?.priceCode ?? null;
       if (customerId && !customerSaveConfirmed(sent, saved, selectedPriceCode)) {
         setSaveUi("idle");
-        setMessage("تعذر تأكيد حفظ التعديلات.");
+        setMessage(changed && canManageCredit ? "تم حفظ إعدادات الائتمان. تعذر تأكيد حفظ التعديلات." : "تعذر تأكيد حفظ التعديلات.");
         return;
-      }
-      if (canManageCredit && changed) {
-        try {
-          await saveCredit(saved.customerId, activation, limit, terms);
-        } catch (error) {
-          setSaveUi("idle");
-          const creditMessage = error instanceof SetupClientError ? error.message : "تعذر حفظ إعدادات الائتمان.";
-          setMessage(customerId ? `تم حفظ تعديلات الزبون. ${creditMessage}` : creditMessage);
-          if (customerId) onSaved(saved.customerId);
-          return;
-        }
       }
       if (customerId) {
         const fresh = await customers.get(saved.customerId);
@@ -543,12 +594,6 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
       }
       setSaveUi("success");
     } catch (error) {
-      const text = error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.";
-      if (text.includes("مستخدم بالفعل") || text.includes("تتعارض")) {
-        setSaveUi("idle");
-        setDuplicateNotice(text.includes("رقم الزبون") ? "رقم الزبون مستخدم بالفعل." : text.includes("هاتف") ? "رقم الهاتف مستخدم بالفعل." : "مفتاح التعريف مستخدم بالفعل.");
-        return;
-      }
       setSaveUi("idle");
       setMessage(error instanceof SetupClientError ? error.message : "تعذر حفظ الزبون.");
     }
@@ -679,8 +724,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
               </span>
             </span>
           </label>
-          <label><span>الحد الأقصى للاستدانة</span><input aria-label="الحد الأقصى للاستدانة" inputMode="decimal" value={creditLimit} disabled={!canManageCredit} onChange={(event) => setCreditLimit(event.target.value.replace(/[^\d.]/g, ""))} onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })} /></label>
-          <label><span>مدة السداد الافتراضية</span><input aria-label="مدة السداد الافتراضية" inputMode="numeric" value={paymentTermDays} disabled={!canManageCredit} onChange={(event) => setPaymentTermDays(event.target.value.replace(/\D/g, ""))} onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })} /></label>
+          <label><span>الحد الأقصى للاستدانة</span><input aria-label="الحد الأقصى للاستدانة" inputMode="decimal" value={creditLimit} disabled={!canManageCredit || !creditEnabled} onChange={(event) => setCreditLimit(event.target.value.replace(/[^\d.]/g, ""))} onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })} /></label>
+          <label><span>مدة السداد الافتراضية</span><input aria-label="مدة السداد الافتراضية" inputMode="numeric" value={paymentTermDays} disabled={!canManageCredit || !creditEnabled} onChange={(event) => setPaymentTermDays(event.target.value.replace(/\D/g, ""))} onFocus={(event) => event.currentTarget.scrollIntoView({ block: "nearest" })} /></label>
           <label><span>حالة الحساب الائتماني</span>
             <FieldCombo id="credit-status" label="حالة الحساب الائتماني" value={creditEnabled ? "Active" : creditStatus === "Suspended" ? "Suspended" : "Inactive"} placeholder="غير مفعّل" options={[{ value: "Inactive", label: "غير مفعّل" }, { value: "Active", label: "مفعّل" }, { value: "Suspended", label: "موقوف" }]} onChange={(value) => {
               if (!canSuspendCredit) return;

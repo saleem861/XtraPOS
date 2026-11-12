@@ -60,8 +60,19 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
             return;
         }
 
-        if (state is SharedDataSync.ReplicaNotInitialized or SharedDataSync.ReplicaBootstrapping)
+        try
         {
+            await sync.SyncPriceTypesAsync(settings, stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Price list sync from central did not finish.");
+        }
+
+        if (state is SharedDataSync.ReplicaNotInitialized or SharedDataSync.ReplicaBootstrapping
+            || await sync.CatalogMissingAsync(settings, stoppingToken))
+        {
+            await sync.BootstrapAsync(settings, stoppingToken);
             state = await sync.EnsureCustomerReplicaAsync(view.EndpointId, settings, stoppingToken);
             logger.LogInformation("Central customer replica resumed at state {State}.", state);
         }

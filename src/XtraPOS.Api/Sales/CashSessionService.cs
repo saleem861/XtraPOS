@@ -47,21 +47,47 @@ public sealed class CashSessionService(SqlConnectionFactory connections)
         }
 
         var id = Guid.NewGuid();
+        var hasCashbox = false;
+        await using (var probe = new SqlCommand("SELECT COL_LENGTH(N'dbo.POSCashSessions', N'CashboxID');", connection))
+        {
+            hasCashbox = await probe.ExecuteScalarAsync(cancellationToken) is not null and not DBNull;
+        }
+
         try
         {
             await using var command = new SqlCommand(
-                """
-                INSERT INTO dbo.POSCashSessions
-                (
-                    CashSessionID, BusinessID, BranchID, POSStationID, DeviceID,
-                    OpenedByUserID, OpenedAt, OpeningCashAmount, Status
-                )
-                VALUES
-                (
-                    @id, @business, @branch, @station, @device,
-                    @user, SYSUTCDATETIME(), @opening, N'Open'
-                );
-                """,
+                hasCashbox
+                    ? """
+                      DECLARE @cashbox uniqueidentifier =
+                      (
+                          SELECT TOP (1) CashboxID
+                          FROM dbo.Cashboxes
+                          WHERE BranchID = @branch AND DeviceID = @device AND Status = N'Active'
+                          ORDER BY CashboxNumber
+                      );
+                      INSERT INTO dbo.POSCashSessions
+                      (
+                          CashSessionID, BusinessID, BranchID, POSStationID, DeviceID,
+                          OpenedByUserID, OpenedAt, OpeningCashAmount, Status, CashboxID
+                      )
+                      VALUES
+                      (
+                          @id, @business, @branch, @station, @device,
+                          @user, SYSUTCDATETIME(), @opening, N'Open', @cashbox
+                      );
+                      """
+                    : """
+                      INSERT INTO dbo.POSCashSessions
+                      (
+                          CashSessionID, BusinessID, BranchID, POSStationID, DeviceID,
+                          OpenedByUserID, OpenedAt, OpeningCashAmount, Status
+                      )
+                      VALUES
+                      (
+                          @id, @business, @branch, @station, @device,
+                          @user, SYSUTCDATETIME(), @opening, N'Open'
+                      );
+                      """,
                 connection);
             command.Parameters.AddWithValue("@id", id);
             command.Parameters.AddWithValue("@business", actor.BusinessId);

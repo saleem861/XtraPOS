@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SetupWizard } from "./SetupWizard";
 import { emptyBranchSetup, type BranchSetupInput } from "../types/setup";
 import { isWizardRouteDeterministic, stepCounterLabel, visibleSteps } from "../setup/wizardFlow";
-import { mainBranchReview, reviewText, setupTopology } from "../setup/wizardReview";
+import { authoritativeBranchReview, mainBranchReview, reviewText, setupTopology } from "../setup/wizardReview";
 import { PREVIEW_MANY_LOCAL_CENTRALS } from "../setup/setupPreview";
 
 afterEach(() => cleanup());
@@ -68,6 +68,13 @@ describe("setup review", () => {
     expect(text).not.toContain("Admin1234");
     expect(text).not.toContain("Server=");
     expect(setupTopology(linked)).toEqual(["XtraPOS_Central", "مفرق المقاطعة Local", "مفرق المقاطعة Remote Copy"]);
+  });
+
+  it("shows the saved branch code instead of an unsaved edit", () => {
+    const reviewed = authoritativeBranchReview({ ...linked, branchCode: "92", branchName: "اسم غير محفوظ" }, { branchCode: "91", branchName: "فرع التحقق" });
+    expect(reviewText(mainBranchReview(reviewed))).toContain("رمز الفرع 91");
+    expect(reviewText(mainBranchReview(reviewed))).toContain("اسم الفرع فرع التحقق");
+    expect(reviewText(mainBranchReview(authoritativeBranchReview(linked, null)))).toContain("رمز الفرع 01");
   });
 
   it("omits the central section for a standalone branch and marks the remote copy off", () => {

@@ -1,3 +1,5 @@
+using Microsoft.Data.SqlClient;
+
 namespace XtraPOS.Api.Data;
 
 public static class BranchMigrationCommand
@@ -6,6 +8,29 @@ public static class BranchMigrationCommand
 
     public static bool IsRequested(IReadOnlyList<string> args) =>
         args.Any(arg => string.Equals(arg, CommandName, StringComparison.Ordinal));
+
+    public static bool IsCatalogUnavailable(Exception exception)
+    {
+        if (exception is not SqlException sql)
+        {
+            return false;
+        }
+
+        if (sql.Number is 4060 or 911)
+        {
+            return true;
+        }
+
+        foreach (SqlError error in sql.Errors)
+        {
+            if (error.Number is 4060 or 911)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public static bool TryAuthorize(string? configuredDatabase, string? confirmedDatabase, out string denial)
     {
@@ -34,6 +59,7 @@ public static class BranchMigrationCommand
     {
         await output.WriteLineAsync(
             $"Applying branch migrations on server '{connections.ConfiguredServer}' database '{confirmedDatabase}'. No database will be dropped or recreated.");
+        await connections.EnsureBranchDatabaseAsync(cancellationToken);
         await migrations.ApplyPendingAsync(cancellationToken);
         var pending = await migrations.ListPendingAsync(cancellationToken);
         if (pending.Count > 0)

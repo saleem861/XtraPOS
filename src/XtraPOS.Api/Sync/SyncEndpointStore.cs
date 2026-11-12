@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Hosting;
-using XtraPOS.Api.Configuration;
 using XtraPOS.Api.Data;
 
 namespace XtraPOS.Api.Sync;
@@ -176,15 +175,6 @@ public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataPro
             }
         }
 
-        if (string.Equals(role, DatabaseRole.Central, StringComparison.Ordinal) && environment.IsStaging())
-        {
-            var saved = await centralFile.ReadAsync(cancellationToken);
-            if (SavedCentralAllowed(saved, null))
-            {
-                return saved;
-            }
-        }
-
         if (string.Equals(role, DatabaseRole.Central, StringComparison.Ordinal))
         {
             var saved = await centralFile.ReadAsync(cancellationToken);
@@ -230,12 +220,6 @@ public sealed class SyncEndpointStore(SqlConnectionFactory connections, IDataPro
         if (saved?.Password is null || !string.Equals(saved.DatabaseRole, DatabaseRole.Central, StringComparison.Ordinal))
         {
             return false;
-        }
-
-        if (environment.IsStaging())
-        {
-            return string.Equals(saved.DatabaseName, StagingSqlDefaults.CentralDatabaseName, StringComparison.OrdinalIgnoreCase)
-                && (endpointDatabase is null || string.Equals(endpointDatabase, saved.DatabaseName, StringComparison.OrdinalIgnoreCase));
         }
 
         return endpointDatabase is not null

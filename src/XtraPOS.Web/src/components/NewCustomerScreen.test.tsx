@@ -273,4 +273,30 @@ describe("إضافة زبون جديد", () => {
     expect(screen.queryByRole("button", { name: "حفظ الزبون" })).toBeNull();
     expect(screen.queryByRole("button", { name: "إرسال رمز التحقق" })).toBeNull();
   });
+
+  it("locks inactive credit amounts and still saves credit when the customer update is rejected", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/classifications")) return json({ classifications: [{ customerClassificationId: "central-class", name: "عادي" }] });
+      if (String(url).endsWith("/price-types")) return json([{ priceTypeId: "price", priceCode: "Price0", priceName: "السعر" }]);
+      if (String(url).endsWith("/calling-codes")) return json([{ code: "972", name: "إسرائيل" }]);
+      if (String(url).includes("special-prices")) return json([]);
+      if (String(url).includes("credit-policy") && init?.method === "PUT") return json({ creditEnabled: true, creditLimit: 100, paymentTermDays: 15, creditStatus: "Active", rowVersion: "bb", configured: true, outstanding: 0, available: 100, centralReachable: true });
+      if (String(url).includes("credit-policy")) return json({ creditEnabled: false, creditLimit: 0, paymentTermDays: 30, creditStatus: "Inactive", rowVersion: "aa", configured: true, outstanding: 0, available: 0, centralReachable: true });
+      if (init?.method === "PUT") return json({ message: "نوع الزبون غير صالح." }, false);
+      return json({ customerId: "customer-1", name: "سليم", customerNumber: "0592594777", customerClassificationId: "branch-class", classificationName: "عادي", priceTypeId: "price", priceCode: "Price0", rowVersion: "AQIDBAUGBwg=", phoneVerificationStatus: "Verified", whatsAppPhoneE164: "+972592594777" });
+    }));
+    render(<NewCustomerScreen session={session} customerId="customer-1" permissions={["Credit.ManageLimit", "Customers.Manage"]} onBack={() => undefined} onSaved={() => undefined} />);
+    const limit = await screen.findByLabelText("الحد الأقصى للاستدانة");
+    const terms = screen.getByLabelText("مدة السداد الافتراضية");
+    expect((limit as HTMLInputElement).disabled).toBe(true);
+    expect((terms as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("switch", { name: "السماح بالبيع بالدين" }));
+    expect((limit as HTMLInputElement).disabled).toBe(false);
+    fireEvent.change(limit, { target: { value: "100" } });
+    fireEvent.change(terms, { target: { value: "15" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "حفظ" })); });
+    expect(await screen.findByText(/تم حفظ إعدادات الائتمان/)).toBeTruthy();
+    const creditPut = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => String(call[0]).includes("credit-policy") && call[1]?.method === "PUT");
+    expect(JSON.parse(String(creditPut?.[1].body))).toMatchObject({ creditEnabled: true, creditLimit: 100, paymentTermDays: 15, creditStatus: "Active" });
+  });
 });

@@ -57,6 +57,8 @@ describe("connection context", () => {
     expect(suggestNewBranchDatabaseName("04")).not.toBe("XtraPOS_Central");
     expect(branchDatabaseNameReady("XtraPOS_Central")).toBe(false);
     expect(branchDatabaseNameReady("XtraPOS_Branch_04")).toBe(true);
+    expect(branchDatabaseNameReady("XtraPOS_Branch_Test_Staging")).toBe(false);
+    expect(branchDatabaseNameReady("XtraPOS_Branch_Demo")).toBe(false);
     expect(branchDatabaseNameReady("XtraPOS_Branch", ["XtraPOS_Branch"])).toBe(false);
   });
 

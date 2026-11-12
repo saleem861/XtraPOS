@@ -20,9 +20,13 @@ export function suggestNewBranchDatabaseName(branchCode: string): string {
   return `XtraPOS_Branch_${padded}`;
 }
 
+export function isNonProductionDatabaseName(name: string): boolean {
+  return /test|demo|integration|temporary|staging/i.test(name);
+}
+
 export function branchDatabaseNameReady(name: string, taken: readonly string[] = []): boolean {
   const trimmed = name.trim();
-  if (!isSafeDatabaseIdentifier(trimmed) || isCentralCatalogName(trimmed)) {
+  if (!isSafeDatabaseIdentifier(trimmed) || isCentralCatalogName(trimmed) || isNonProductionDatabaseName(trimmed)) {
     return false;
   }
   return !taken.some((item) => item.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase());
@@ -85,6 +89,7 @@ export function connectionContextKey(draft: BranchSetupInput, target: "central" 
     draft.branchLocation === "Remote" ? draft.branchServer.trim() : "local",
     draft.branchPort.trim(),
     draft.branchInstance.trim(),
+    draft.branchAgentId.trim(),
     draft.branchAuthentication === "Sql" ? `sql:${draft.branchUsername.trim()}:${draft.branchPassword}` : "integrated",
   ];
   if (target === "branch") {
@@ -147,6 +152,7 @@ export function clearedBranchIdentity(): Partial<BranchSetupInput> {
     branchServer: "",
     branchPort: "",
     branchInstance: "",
+    branchAgentId: "",
     branchAuthentication: "Integrated",
     branchUsername: "",
     branchPassword: "",

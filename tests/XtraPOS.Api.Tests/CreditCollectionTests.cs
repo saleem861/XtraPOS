@@ -111,7 +111,10 @@ public sealed class CreditCollectionTests
             Assert.Equal(CreditCollectionOutcome.Unauthorized, await service.CollectAsync(central, otherDb, Request(other, customer, 10m, null) with { ActorUserId = other.DeniedUserId }, true, false, false, CancellationToken.None));
             Assert.Equal(CreditCollectionOutcome.Refused, await service.CollectAsync(central, otherDb, Request(other, customer, 10m, null) with { CashSessionId = Guid.NewGuid() }, true, false, false, CancellationToken.None));
             Assert.Equal(CreditCollectionOutcome.Refused, await service.CollectAsync(central, otherDb, Request(other, customer, 10m, null) with { DeviceId = other.ClosedDeviceId }, true, false, false, CancellationToken.None));
-            Assert.Equal(CreditCollectionOutcome.CentralUnavailable, await service.CollectAsync(central, otherDb, Request(other, customer, 10m, null), false, false, false, CancellationToken.None));
+            var offlineCollection = Request(other, customer, 10m, null);
+            Assert.Equal(CreditCollectionOutcome.PendingCentral, await service.CollectAsync(central, otherDb, offlineCollection, false, false, false, CancellationToken.None));
+            Assert.Equal(1, await IntAsync(otherName, "SELECT COUNT(*) FROM dbo.BranchDebtCollections WHERE CollectionOperationID = '" + offlineCollection.OperationId + "';"));
+            Assert.Equal(CreditCollectionOutcome.Completed, await service.RecoverOnceAsync(central, otherDb, "worker-offline", CancellationToken.None));
 
             var rolled = Request(other, customer, 10m, null);
             Assert.Equal(CreditCollectionOutcome.LocalRolledBack, await service.CollectAsync(central, otherDb, rolled, true, true, false, CancellationToken.None));

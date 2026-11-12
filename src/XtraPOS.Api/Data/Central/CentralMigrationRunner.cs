@@ -59,6 +59,16 @@ public sealed class CentralMigrationRunner
     public const string MembershipCounterDayMigrationName = "Daily POS membership counter code";
     public const string CreditFinancialEventMigrationId = "026_CreditFinancialEvents";
     public const string CreditFinancialEventMigrationName = "Credit financial events";
+    public const string SyncPointMigrationId = "027_SyncPointRegistry";
+    public const string SyncPointMigrationName = "Synchronization point registry";
+    public const string SchemaHistoryMigrationId = "028_SchemaUpdateHistory";
+    public const string SchemaHistoryMigrationName = "Schema update history and cashbox structure";
+    public const string UnifiedSchemaMigrationId = "029_UnifiedSchemaObjects";
+    public const string UnifiedSchemaMigrationName = "Unified schema objects";
+    public const string UnifiedChecksMigrationId = "030_UnifiedSchemaChecks";
+    public const string UnifiedChecksMigrationName = "Unified schema checks";
+    public const string ItemPriceUniquenessMigrationId = "031_ItemPriceUniqueness";
+    public const string ItemPriceUniquenessMigrationName = "Item price default and branch uniqueness";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -88,6 +98,11 @@ public sealed class CentralMigrationRunner
         (MembershipCounterMigrationId, MembershipCounterMigrationName, "XtraPOS.Api.Data.Central.Migrations.024_MembershipCounterCode.sql"),
         (MembershipCounterDayMigrationId, MembershipCounterDayMigrationName, "XtraPOS.Api.Data.Central.Migrations.025_MembershipCounterDay.sql"),
         (CreditFinancialEventMigrationId, CreditFinancialEventMigrationName, "XtraPOS.Api.Data.Central.Migrations.026_CreditFinancialEvents.sql"),
+        (SyncPointMigrationId, SyncPointMigrationName, "XtraPOS.Api.Data.Central.Migrations.027_SyncPointRegistry.sql"),
+        (SchemaHistoryMigrationId, SchemaHistoryMigrationName, "XtraPOS.Api.Data.Central.Migrations.028_SchemaUpdateHistory.sql"),
+        (UnifiedSchemaMigrationId, UnifiedSchemaMigrationName, "XtraPOS.Api.Data.Central.Migrations.029_UnifiedSchemaObjects.sql"),
+        (UnifiedChecksMigrationId, UnifiedChecksMigrationName, "XtraPOS.Api.Data.Central.Migrations.030_UnifiedSchemaChecks.sql"),
+        (ItemPriceUniquenessMigrationId, ItemPriceUniquenessMigrationName, "XtraPOS.Api.Data.Central.Migrations.031_ItemPriceUniqueness.sql"),
     ];
 
     private static readonly string ApplicationVersion =

@@ -33,7 +33,6 @@ import {
   Undo2,
   UserRound,
   UserRoundSearch,
-  WalletCards,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -48,6 +47,8 @@ import { createCustomerClient, type CustomerListItem } from "../api/customers";
 import { NewCustomerScreen } from "./NewCustomerScreen";
 import { ScreenHeader } from "./ScreenHeader";
 import { CreditSaleScreen } from "./CreditSaleScreen";
+import { PosCollectionScreen } from "./PosCollectionScreen";
+import { SalesInquiryScreen } from "./SalesInquiryScreen";
 import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
 import { deviceHeaders } from "../api/client";
@@ -96,7 +97,6 @@ interface PosScreenProps {
 }
 
 const QUICK_ACTIONS: { label: string; icon: LucideIcon; title: string }[] = [
-  { label: "الديون", icon: WalletCards, title: "الديون" },
   { label: "إيصال", icon: ReceiptText, title: "إيصال" },
   { label: "استرجاع", icon: Undo2, title: "استرجاع" },
   { label: "المبيعات", icon: ChartNoAxesColumnIncreasing, title: "المبيعات" },
@@ -195,6 +195,11 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [customerOpen, setCustomerOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [creditOpen, setCreditOpen] = useState(false);
+  const [collectOpen, setCollectOpen] = useState(false);
+  const [salesOpen, setSalesOpen] = useState(false);
+  const [customerTarget, setCustomerTarget] = useState<"sale" | "collection">("sale");
+  const [collectionPick, setCollectionPick] = useState<CustomerListItem | null>(null);
+  const [invoicePrompt, setInvoicePrompt] = useState(false);
   const [creditEnabled, setCreditEnabled] = useState(false);
   const [creditOperationId, setCreditOperationId] = useState("");
   const [collectionEnabled, setCollectionEnabled] = useState(false);
@@ -785,6 +790,12 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   }
 
   function chooseCustomer(customer: CustomerListItem, verified = false) {
+    if (customerTarget === "collection") {
+      setCollectionPick(customer);
+      setCustomerOpen(false);
+      setCustomerTarget("sale");
+      return;
+    }
     holdSaleCustomer.current = true;
     regularPricingRef.current = false;
     setRegularPricing(false);
@@ -1219,7 +1230,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      {creditOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
+      {creditOpen || collectOpen || salesOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
@@ -1366,19 +1377,26 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
             <button type="button" title="المحفوظات" onClick={() => setHeldOpen(true)}><Archive aria-hidden="true" /><span>المحفوظات</span></button>
             {QUICK_ACTIONS.map(({ label, icon: Icon, title }) => {
               const creditAction = label === "تأجيل الدفع";
+              const salesAction = label === "المبيعات";
               const creditAllowed = creditEnabled && (user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer"));
+              const collectionAllowed = collectionEnabled && (user.permissions.includes("Credit.Collect") || user.permissions.includes("System.Administer"));
               return (
-                <button key={label} type="button" disabled={!creditAction || !creditAllowed} title={title} onClick={() => {
-                  if (!creditAction || !creditAllowed) return;
-                  if (!creditOperationId) setCreditOperationId(crypto.randomUUID());
-                  setCreditOpen(true);
-                }}><Icon aria-hidden="true" /><span>{label}</span></button>
+                <span key={label} style={{ display: "contents" }}>
+                  <button type="button" disabled={salesAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
+                    if (salesAction) { setSalesOpen(true); return; }
+                    if (!creditAction || !creditAllowed) return;
+                    if (!creditOperationId) setCreditOperationId(crypto.randomUUID());
+                    setCreditOpen(true);
+                  }}><Icon aria-hidden="true" /><span>{label}</span></button>
+                  {creditAction ? (
+                    <button type="button" title="تسديد" disabled={!collectionAllowed} onClick={() => setCollectOpen(true)}>
+                      <Banknote aria-hidden="true" /><span>تسديد</span>
+                    </button>
+                  ) : null}
+                </span>
               );
             })}
             <button type="button" disabled title="الجرد"><PackageSearch aria-hidden="true" /><span>الجرد</span></button>
-            <button type="button" className="pos-side-qr" title="رمز العضوية" onClick={() => setMembershipOpen(true)}>
-              {counterQr ? <img src={counterQr} alt="رمز العضوية" /> : <QrCode aria-hidden="true" />}
-            </button>
           </div>
         </section>
         <section className="pos-side-card pos-pad-card">
@@ -1449,9 +1467,43 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           userName={user.displayName}
           canCreate={user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer")}
           operationId={creditOperationId}
-          onBack={() => setCreditOpen(false)}
-          onPosted={() => { void persist({ ...cart, cartId: crypto.randomUUID(), lines: [], failedLineIds: [] }); setCreditOperationId(crypto.randomUUID()); }}
+          onBack={(posted) => { setCreditOpen(false); if (posted) setInvoicePrompt(true); }}
         />
+      ) : null}
+      {salesOpen ? <SalesInquiryScreen session={session} onBack={() => setSalesOpen(false)} /> : null}
+      {collectOpen ? (
+        <PosCollectionScreen
+          session={session}
+          initialCustomerId={saleCustomer?.customerId ?? cart?.customerId ?? null}
+          initialNumber={saleCustomer?.customerNumber ?? null}
+          initialName={saleCustomer?.name ?? null}
+          cashSessionId={cashSession?.cashSessionId ?? null}
+          picked={collectionPick}
+          onSearch={() => { setCustomerTarget("collection"); setCustomerQuery(""); setCustomerOpen(true); }}
+          onBack={() => setCollectOpen(false)}
+        />
+      ) : null}
+      {invoicePrompt && !printSheet ? (
+        <div className="pos-overlay" role="dialog" aria-label="ترحيل الفاتورة">
+          <div className="pos-modal">
+            <h3>تم ترحيل الفاتورة بنجاح</h3>
+            <p>هل ترغب بالطباعة؟</p>
+            <button className="ghost-button" type="button" onClick={() => window.print()}>طباعة وصل</button>
+            <button className="ghost-button" type="button" onClick={openInvoicePreview}>طباعة A4</button>
+            <button className="primary-button" type="button" onClick={() => {
+              setInvoicePrompt(false);
+              if (cart) void persist({ ...clearCart(cart), cartId: crypto.randomUUID(), customerId: null });
+              setCreditOperationId(crypto.randomUUID());
+              regularPricingRef.current = false;
+              setRegularPricing(false);
+              setMembershipOpen(false);
+              setMembershipVerifiedFor(null);
+              setMembershipMark(null);
+              holdSaleCustomer.current = false;
+              setSaleCustomer(null);
+            }}>إغلاق</button>
+          </div>
+        </div>
       ) : null}
       {registerOpen ? (
         <NewCustomerScreen

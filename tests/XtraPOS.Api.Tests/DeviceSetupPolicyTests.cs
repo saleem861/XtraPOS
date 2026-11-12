@@ -1,4 +1,5 @@
 using XtraPOS.Api.Devices;
+using XtraPOS.Api.Setup;
 using Xunit;
 
 namespace XtraPOS.Api.Tests;
@@ -10,6 +11,14 @@ public sealed class DeviceSetupPolicyTests
     {
         Assert.Equal(4, PosNumberAllocator.SuggestNext([1, 2, 3, 5]));
         Assert.False(PosNumberAllocator.IsAvailable([4], 4));
+    }
+
+    [Fact]
+    public void ProductionNamesRejectDemonstrationDatabases()
+    {
+        Assert.True(ProductionDatabaseNames.IsForbidden("XtraPOS_Branch_Test_Staging"));
+        Assert.True(ProductionDatabaseNames.IsForbidden("XtraPOS_Branch_Demo"));
+        Assert.False(ProductionDatabaseNames.IsForbidden("XtraPOS_Branch_04"));
     }
 
     [Fact]

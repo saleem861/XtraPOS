@@ -28,7 +28,7 @@ public class SetupAuthorizationTests
     {
         // Null dependencies deliberately fail if replacement reaches any database/setup work.
         var service = new SetupService(null!, null!, null!, null!, null!, null!, null!,
-            null!, null!, null!, null!, null!, null!);
+            null!, null!, null!, null!, null!, null!, null!, null!);
         var events = new List<SetupEvent>();
 
         await service.RunAsync(null!, (item, _) =>

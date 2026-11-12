@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link2, Package, RotateCcw, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
+import { Link2, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
@@ -10,6 +10,7 @@ import { ScreenHeader } from "./ScreenHeader";
 import { CentralSetupScreen } from "./CentralSetupScreen";
 import { ItemCatalogScreen } from "./ItemCatalogScreen";
 import { PosScreen } from "./PosScreen";
+import { OperationLogScreen } from "./OperationLogScreen";
 import { UserManagementScreen } from "./UserManagementScreen";
 
 interface HomeScreenProps {
@@ -27,6 +28,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showUsers, setShowUsers] = useState(false);
   const [showCentral, setShowCentral] = useState(false);
   const [showCustomers, setShowCustomers] = useState(false);
+  const [showOperationLog, setShowOperationLog] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetError, setResetError] = useState("");
   const [deregisterCentral, setDeregisterCentral] = useState(false);
@@ -103,6 +105,10 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
     return <CustomersMenuScreen session={session} user={user} onBack={() => setShowCustomers(false)} />;
   }
 
+  if (showOperationLog) {
+    return <OperationLogScreen session={session} onBack={() => setShowOperationLog(false)} />;
+  }
+
   if (showSettings) {
     return (
       <section className="card settings-screen">
@@ -140,6 +146,12 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
               <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowUsers(true)}>
                 <span className="home-nav-icon" aria-hidden="true"><Users /></span>
                 <span><strong>إدارة المستخدمين</strong></span>
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowOperationLog(true)}>
+                <span className="home-nav-icon" aria-hidden="true"><ScrollText /></span>
+                <span><strong>سجل الترحيل</strong></span>
               </button>
             ) : null}
             {isAdmin ? (

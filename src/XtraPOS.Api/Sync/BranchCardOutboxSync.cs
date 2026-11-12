@@ -40,6 +40,38 @@ public sealed class BranchCardOutboxSync(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<string?> RelayCustomerAsync(SqlConnection central, SqlConnection branch, CancellationToken cancellationToken)
+    {
+        await using var read = new SqlCommand(
+            """
+            SELECT TOP (1) OperationID, SourceEntityID
+            FROM dbo.BranchOperationLog
+            WHERE Status NOT IN (N'Completed', N'Cancelled') AND OperationType = N'CustomerUpsert'
+            ORDER BY Serial;
+            """,
+            branch);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var operationId = reader.GetGuid(0);
+        var customerId = reader.GetGuid(1);
+        await reader.CloseAsync();
+        try
+        {
+            await UploadCustomerAsync(central, branch, customerId, cancellationToken);
+            await XtraPOS.Api.Operations.BranchOperationLog.MarkAsync(branch, null, operationId, "Completed", "تم حفظ الزبون على المركز.", cancellationToken);
+            return "Completed";
+        }
+        catch (Exception exception) when (IsConnectivity(exception))
+        {
+            await XtraPOS.Api.Operations.BranchOperationLog.MarkAsync(branch, null, operationId, "Blocked", "المركز غير متاح لحفظ الزبون.", cancellationToken);
+            return "Blocked";
+        }
+    }
+
     public async Task FlushAsync(CancellationToken cancellationToken)
     {
         SyncEndpointView? endpoint;
@@ -84,6 +116,32 @@ public sealed class BranchCardOutboxSync(
                 logger.LogWarning(exception, "Customer card outbox row {EntityType} {EntityId} stayed pending.", row.EntityType, row.EntityId);
             }
         }
+    }
+
+    private async Task UploadCustomerAsync(SqlConnection central, SqlConnection branch, Guid customerId, CancellationToken cancellationToken)
+    {
+        var local = await CustomerMasterService.ReadPayloadAsync(branch, null, customerId, cancellationToken);
+        if (local is null)
+        {
+            return;
+        }
+
+        var remoteUpdated = await ReadUpdatedAtAsync(central, "dbo.Customers", "CustomerID", customerId, cancellationToken);
+        var payload = CentralChangeApply.Serialize(local);
+        if (remoteUpdated is not null && local.UpdatedAt < remoteUpdated.Value)
+        {
+            return;
+        }
+
+        await using var transaction = (SqlTransaction)await central.BeginTransactionAsync(cancellationToken);
+        await CentralChangeApply.ApplyAsync(central, transaction, Customers, customerId, payload, cancellationToken, authoritative: true);
+        var after = await ReadUpdatedAtAsync(central, transaction, "dbo.Customers", "CustomerID", customerId, cancellationToken);
+        if (after is not null && after.Value >= local.UpdatedAt)
+        {
+            await InsertChangeLogAsync(central, transaction, Customers, customerId, payload, cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task FlushCustomerAsync(SqlEndpointSettings central, Guid endpointId, Guid customerId, CancellationToken cancellationToken)

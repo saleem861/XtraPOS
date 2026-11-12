@@ -68,6 +68,91 @@ public sealed class CentralPosRegistryService(CentralConnectionFileStore central
         }
     }
 
+    public const string SynchronizationPoint = "SynchronizationDatabase";
+
+    public async Task<(bool Ok, string Message, int Number)> RegisterSynchronizationDatabaseAsync(
+        int requested,
+        Guid branchId,
+        string databaseName,
+        CancellationToken cancellationToken)
+    {
+        var settings = await centrals.ReadAsync(cancellationToken);
+        if (settings is null)
+        {
+            return (false, "المركزية غير متاحة. لم تُسجل قاعدة المزامنة.", 0);
+        }
+
+        await using var connection = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+        await connection.OpenAsync(cancellationToken);
+        await EnsureSyncColumnsAsync(connection, cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var existing = new SqlCommand(
+            """
+            SELECT PosNumber
+            FROM dbo.CentralPosRegistry WITH (UPDLOCK, HOLDLOCK)
+            WHERE PointType = N'SynchronizationDatabase' AND DatabaseName = @database;
+            """,
+            connection,
+            transaction))
+        {
+            existing.Parameters.Add("@database", SqlDbType.NVarChar, 128).Value = databaseName;
+            var found = await existing.ExecuteScalarAsync(cancellationToken);
+            if (found is int number)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return (true, "قاعدة المزامنة مسجلة مسبقاً.", number);
+            }
+        }
+
+        var used = new List<int>();
+        await using (var read = new SqlCommand("SELECT PosNumber FROM dbo.CentralPosRegistry WITH (UPDLOCK, HOLDLOCK);", connection, transaction))
+        {
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                used.Add(reader.GetInt32(0));
+            }
+        }
+
+        var allocated = requested > 0 && PosNumberAllocator.IsAvailable(used, requested)
+            ? requested
+            : PosNumberAllocator.SuggestNext(used);
+        if (requested > 0 && allocated != requested)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return (false, $"رقم نقطة المزامنة مستخدم. الرقم المتاح هو {allocated}.", allocated);
+        }
+
+        await using var insert = new SqlCommand(
+            """
+            INSERT INTO dbo.CentralPosRegistry (PosNumber, BranchID, PosName, Status, PointType, DatabaseName)
+            VALUES (@number, @branch, @name, N'Active', N'SynchronizationDatabase', @database);
+            """,
+            connection,
+            transaction);
+        insert.Parameters.Add("@number", SqlDbType.Int).Value = allocated;
+        insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
+        insert.Parameters.Add("@name", SqlDbType.NVarChar, 200).Value = databaseName;
+        insert.Parameters.Add("@database", SqlDbType.NVarChar, 128).Value = databaseName;
+        await insert.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (true, "تم تسجيل قاعدة المزامنة.", allocated);
+    }
+
+    private static async Task EnsureSyncColumnsAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            IF COL_LENGTH(N'dbo.CentralPosRegistry', N'PointType') IS NULL
+                ALTER TABLE dbo.CentralPosRegistry ADD PointType nvarchar(40) NOT NULL
+                    CONSTRAINT DF_CentralPosRegistry_PointType DEFAULT (N'Sales');
+            IF COL_LENGTH(N'dbo.CentralPosRegistry', N'DatabaseName') IS NULL
+                ALTER TABLE dbo.CentralPosRegistry ADD DatabaseName nvarchar(128) NULL;
+            """,
+            connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> RevokeAsync(int posNumber, CancellationToken cancellationToken)
     {
         var settings = await centrals.ReadAsync(cancellationToken);

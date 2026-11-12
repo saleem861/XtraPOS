@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Operations;
 using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Credit;
@@ -51,13 +52,23 @@ public sealed class CreditOutboxWorker(
         await using var central = new SqlConnection(centralSettings.BuildConnectionString(centralSettings.DatabaseName));
         await branch.OpenAsync(cancellationToken);
         await central.OpenAsync(cancellationToken);
+        await BranchOperationLog.PurgeAsync(branch, cancellationToken);
         var processor = scope.ServiceProvider.GetRequiredService<CreditOutboxProcessor>();
-        var outcome = await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken);
         var collection = scope.ServiceProvider.GetRequiredService<CreditCollectionService>();
-        var collected = await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken);
         var reversal = scope.ServiceProvider.GetRequiredService<CreditReversalService>();
-        var reversed = await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken);
-        if (outcome is null && collected is null && reversed is null)
+        var head = await BranchOperationLog.HeadTypeAsync(branch, cancellationToken);
+        object? outcome = head switch
+        {
+            "CreditSale" => await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken),
+            "DebtCollection" => await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
+            "CollectionReversal" => await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
+            "CustomerUpsert" => await scope.ServiceProvider.GetRequiredService<BranchCardOutboxSync>().RelayCustomerAsync(central, branch, cancellationToken),
+            null => await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken)
+                ?? (object?)await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken)
+                ?? await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
+            _ => null,
+        };
+        if (outcome is null)
         {
             return TimeSpan.FromSeconds(30);
         }

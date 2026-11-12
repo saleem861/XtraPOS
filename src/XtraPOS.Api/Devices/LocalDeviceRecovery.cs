@@ -219,9 +219,23 @@ public sealed class LocalDeviceRecovery(
             return selected;
         }
 
+        var deviceBranches = await db.Devices
+            .Where(item => item.IsActive && item.Branch.IsActive && item.Branch.Business.IsActive)
+            .Select(item => item.BranchId)
+            .Distinct()
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        if (deviceBranches.Count == 1)
+        {
+            return await db.Branches
+                .Include(item => item.Business)
+                .SingleAsync(item => item.BranchId == deviceBranches[0], cancellationToken);
+        }
+
         var branches = await db.Branches
             .Include(item => item.Business)
             .Where(item => item.IsActive && item.Business.IsActive)
+            .Take(2)
             .ToListAsync(cancellationToken);
         if (branches.Count != 1)
         {

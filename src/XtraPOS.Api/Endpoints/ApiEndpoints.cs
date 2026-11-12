@@ -38,6 +38,7 @@ public static class ApiEndpoints
         });
 
         app.MapPost("/api/setup/create-branch", CreateBranchAsync);
+        app.MapBranchAgentEndpoints();
         app.MapPost("/api/setup/create-admin", CreateAdminAsync);
         app.MapGet("/api/setup/local-device-recovery", async (LocalDeviceRecovery recovery, CancellationToken cancellationToken) =>
         {
@@ -500,6 +501,13 @@ public static class ApiEndpoints
         http.Response.ContentType = "application/x-ndjson; charset=utf-8";
         http.Response.Headers.CacheControl = "no-store";
 
+        if (Guid.TryParse(request?.BranchAgentId, out var branchAgentId))
+        {
+            var relay = http.RequestServices.GetRequiredService<BranchAgentRelay>();
+            await relay.StreamAsync(http, request!, branchAgentId, cancellationToken);
+            return;
+        }
+
         TopologyPlan? topology = null;
         if (!string.IsNullOrWhiteSpace(request?.OperatingMode))
         {
@@ -721,7 +729,7 @@ public static class ApiEndpoints
                 Data.DatabaseRole.BranchRemote,
                 SqlEndpointSettings.Remote,
                 string.IsNullOrWhiteSpace(request.BranchRemoteServer) ? "localhost" : request.BranchRemoteServer.Trim(),
-                null,
+                request.BranchRemoteInstance,
                 request.BranchRemotePort,
                 request.BranchRemoteDatabaseName.Trim(),
                 string.Equals(request.BranchRemoteAuthentication, SqlEndpointSettings.SqlLogin, StringComparison.Ordinal) ? SqlEndpointSettings.SqlLogin : SqlEndpointSettings.Integrated,
@@ -737,7 +745,12 @@ public static class ApiEndpoints
             string.Equals(request.LinkToCentral, "yes", StringComparison.OrdinalIgnoreCase),
             central,
             remote,
-            BranchSetupValidator.ReusesCentralAdmin(request, out var centralAdminId) ? centralAdminId : null);
+            BranchSetupValidator.ReusesCentralAdmin(request, out var centralAdminId) ? centralAdminId : null,
+            request.SyncPosNumber,
+            request.CashboxNumber,
+            SelectedBranchTarget.FromRequest(request),
+            request.BranchDataDirectory,
+            request.RemoteDataDirectory);
     }
 
     private static async Task<IResult> CreateAdminAsync(

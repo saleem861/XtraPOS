@@ -28,8 +28,10 @@ import { listCentralAdmins, verifyCentralAdmin, type CentralAdminChoice } from "
 import { readHostDeviceLabel, suggestDeviceName } from "../setup/deviceName";
 import { OFFLINE_ACKNOWLEDGEMENT, OFFLINE_CACHE_STORE, OFFLINE_STOCK_NOTICE } from "../setup/offlineContract";
 import { PREVIEW_MANY_BRANCHES, PREVIEW_ONE_BRANCH, PREVIEW_LOCAL_CENTRALS, PREVIEW_MANY_LOCAL_CENTRALS, PREVIEW_ONE_LOCAL_BRANCH, PREVIEW_MANY_LOCAL_BRANCHES, PREVIEW_STATIONS, previewTopology } from "../setup/setupPreview";
-import { mainBranchReview, secondaryDeviceReview, type ReviewSection } from "../setup/wizardReview";
+import { authoritativeBranchReview, mainBranchReview, secondaryDeviceReview, type ReviewSection } from "../setup/wizardReview";
 import { acceptedLocalBranchDatabases, type BranchDatabaseChoice } from "../setup/branchDiscovery";
+import { decideBranchAgent, localAgentUrl, type LocalAgentStatus } from "../setup/branchAgentLocal";
+import { rememberSetupProgress } from "../setup/setupProgress";
 import {
   branchDatabaseNameReady,
   clearedBranchIdentity,
@@ -46,7 +48,7 @@ import {
   verifySecondaryPairing,
   type SecondaryStation,
 } from "../setup/secondaryDevice";
-import { SetupClientError } from "../api/client";
+import { getSetupStatus, SetupClientError } from "../api/client";
 
 interface SetupWizardProps {
   value: BranchSetupInput;
@@ -150,12 +152,40 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
   const [centralAdmins, setCentralAdmins] = useState<CentralAdminChoice[]>([]);
   const [summary, setSummary] = useState<SecondaryConnectionSummary | null>(null);
   const [message, setMessage] = useState("");
+  const [persistedBranch, setPersistedBranch] = useState<{ branchCode?: string | null; branchName?: string | null } | null>(null);
   const [pending, setPending] = useState(false);
   const [previewCentralScenario, setPreviewCentralScenario] = useState<"" | "one" | "many" | "none">("");
   const steps = visibleSteps(value, branches, centralChoices);
   const step = steps[Math.min(index, steps.length - 1)] ?? "deviceRole";
+  useEffect(() => {
+    if (!preview && step) {
+      rememberSetupProgress(value, step);
+    }
+  }, [preview, step, value]);
   const ready = canAdvance(value, step, branches, centralChoices);
   const finishing = (step === "centralLinked" && value.deviceRole === "CentralOnly") || isFinalStep(step);
+
+  useEffect(() => {
+    if (preview || step !== "execute") {
+      return;
+    }
+
+    let cancelled = false;
+    void getSetupStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setPersistedBranch(status.branchCode?.trim() ? status : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPersistedBranch(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preview, step]);
 
   function update(next: Partial<BranchSetupInput>) {
     onChange({ ...value, ...next });
@@ -809,9 +839,18 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
         {step === "branchConnection" && value.branchIntent === "new" && value.branchLocation === "Local" ? (
           <NewLocalBranchDatabase
             databaseName={value.branchDatabaseName}
+            agentId={value.branchAgentId}
             preview={preview}
             pending={pending}
             onDatabase={(branchDatabaseName) => update({ branchDatabaseName, branchConnectionTested: false, branchVerifiedKey: "" })}
+            onAgent={(branchAgentId, branchInstance) => update({
+              branchAgentId,
+              branchInstance,
+              branchServer: branchInstance,
+              branchConnectionTested: false,
+              branchVerifiedKey: "",
+            })}
+            onMessage={setMessage}
             onSimulate={() => simulateConnection("branch")}
             onConfirm={() => {
               if (!branchDatabaseNameReady(value.branchDatabaseName)) {
@@ -873,6 +912,21 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
                 <span>استخدام نفس خادم الإدارة المركزية</span>
               </label>
             ) : null}
+            {step === "remoteConnection" ? (
+              <label className="field">
+                <span>رقم نقطة المزامنة</span>
+                <input value={value.syncPosNumber} onChange={(event) => update({ syncPosNumber: event.target.value })} />
+              </label>
+            ) : null}
+            <label className="field">
+              <span>مجلد ملفات قاعدة البيانات (اختياري)</span>
+              <input
+                value={step === "remoteConnection" ? (value.remoteDataDirectory ?? "") : (value.branchDataDirectory ?? "")}
+                onChange={(event) => update(step === "remoteConnection"
+                  ? { remoteDataDirectory: event.target.value, remoteCopyTested: false, remoteVerifiedKey: "" }
+                  : { branchDataDirectory: event.target.value, branchConnectionTested: false, branchVerifiedKey: "" })}
+              />
+            </label>
             <ConnectionFields
               server={step === "remoteConnection" ? value.remoteServer : value.branchServer}
               port={step === "remoteConnection" ? value.remotePort : value.branchPort}
@@ -1098,6 +1152,10 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
                   <input value={value.stationNumber} onChange={(event) => update({ stationNumber: event.target.value, stationId: "" })} />
                 </label>
                 <label className="field">
+                  <span>رقم الصندوق</span>
+                  <input value={value.cashboxNumber} onChange={(event) => update({ cashboxNumber: event.target.value })} />
+                </label>
+                <label className="field">
                   <span>اسم نقطة البيع</span>
                   <input value={value.stationName} onChange={(event) => update({ stationName: event.target.value, stationId: "" })} />
                 </label>
@@ -1216,7 +1274,7 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
           })]} />
         ) : null}
         {step === "execute" ? (
-          <ReviewSections sections={mainBranchReview(value)} />
+          <ReviewSections sections={mainBranchReview(authoritativeBranchReview(value, persistedBranch))} />
         ) : null}
         {isFinalStep(step) && step !== "centralReview" ? <TopologyLines lines={previewTopology(value, branches)} upward={false} /> : null}
         {message ? <p>{message}</p> : null}
@@ -1845,23 +1903,176 @@ function BranchManualConnection({
 
 function NewLocalBranchDatabase({
   databaseName,
+  agentId,
   preview,
   pending,
   onDatabase,
+  onAgent,
+  onMessage,
   onSimulate,
   onConfirm,
 }: {
   databaseName: string;
+  agentId: string;
   preview: boolean;
   pending: boolean;
   onDatabase: (value: string) => void;
+  onAgent: (agentId: string, instance: string) => void;
+  onMessage: (message: string) => void;
   onSimulate: () => void;
   onConfirm: () => void;
 }) {
+  const [status, setStatus] = useState<LocalAgentStatus | null>(null);
+  const [expectedVersion, setExpectedVersion] = useState("0.3.0");
+  const [instance, setInstance] = useState("");
+  const [notice, setNotice] = useState("");
+  const [pairAttempt, setPairAttempt] = useState(0);
+  const state = decideBranchAgent(status, window.location.origin, expectedVersion);
   const ready = branchDatabaseNameReady(databaseName, preview ? PREVIEW_TAKEN_BRANCH_DATABASES : []);
+
+  useEffect(() => {
+    if (preview) {
+      return;
+    }
+    let cancelled = false;
+    void fetch("/downloads/branch-agent.json")
+      .then(async (response) => response.ok ? response.json() as Promise<{ version?: string }> : null)
+      .then((body) => {
+        if (!cancelled && body?.version) {
+          setExpectedVersion(body.version);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [preview]);
+
+  useEffect(() => {
+    if (preview) {
+      return;
+    }
+    let cancelled = false;
+    async function probe() {
+      try {
+        const response = await fetch(localAgentUrl("/status"));
+        if (!response.ok) {
+          throw new Error("status");
+        }
+        const body = await response.json() as LocalAgentStatus;
+        if (!cancelled) {
+          setStatus(body);
+        }
+      } catch {
+        if (!cancelled) {
+          setStatus(null);
+        }
+      }
+    }
+    void probe();
+    const timer = window.setInterval(() => void probe(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [preview]);
+
+  useEffect(() => {
+    if (preview || state !== "unpaired") {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const issued = await fetch("/api/setup/branch-agents/pairing-codes", { method: "POST" });
+        if (!issued.ok) {
+          throw new Error("pair-code");
+        }
+        const codeBody = await issued.json() as { code?: string };
+        const paired = await fetch(localAgentUrl("/pair"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: codeBody.code, server: window.location.origin, confirmTransfer: false }),
+        });
+        if (!paired.ok || cancelled) {
+          throw new Error("pair");
+        }
+        setStatus(await paired.json() as LocalAgentStatus);
+        setNotice("");
+      } catch {
+        if (!cancelled) {
+          setNotice("تعذر ربط الخدمة. أعد المحاولة.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [preview, state, pairAttempt]);
+
+  useEffect(() => {
+    if (state === "ready" && status?.agentId && status.instances.length === 1 && agentId !== status.agentId) {
+      setInstance(status.instances[0]);
+      onAgent(status.agentId, status.instances[0]);
+    }
+  }, [agentId, onAgent, state, status]);
+
+  async function transfer() {
+    setNotice("");
+    const issued = await fetch("/api/setup/branch-agents/pairing-codes", { method: "POST" });
+    if (!issued.ok) {
+      setNotice("تعذر إنشاء طلب النقل.");
+      return;
+    }
+    const codeBody = await issued.json() as { code?: string };
+    const paired = await fetch(localAgentUrl("/pair"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: codeBody.code, server: window.location.origin, confirmTransfer: true }),
+    });
+    if (!paired.ok) {
+      setNotice("لم يكتمل نقل الربط.");
+      return;
+    }
+    setStatus(await paired.json() as LocalAgentStatus);
+  }
+
   return (
     <div className="connection-fields">
       <p>اسم قاعدة بيانات الفرع على خادم SQL المحلي. لا يلزم اسم مستخدم أو كلمة مرور.</p>
+      {!preview && state === "missing" ? (
+        <button className="primary-button" type="button" onClick={() => { window.location.href = "/downloads/XtraPOS-BranchAgent-Setup.exe"; }}>تثبيت خدمة XtraPOS على هذا الجهاز</button>
+      ) : null}
+      {!preview && state === "outdated" ? (
+        <button className="primary-button" type="button" onClick={() => { window.location.href = "/downloads/XtraPOS-BranchAgent-Setup.exe"; }}>تحديث خدمة XtraPOS</button>
+      ) : null}
+      {!preview && state === "sql-missing" ? <p className="form-error">لم يتم العثور على SQL Server على هذا الجهاز.</p> : null}
+      {!preview && state === "other-environment" ? (
+        <button className="primary-button" type="button" onClick={() => void transfer()}>نقل الربط إلى هذا الموقع</button>
+      ) : null}
+      {!preview && notice ? <p className="form-error">{notice}</p> : null}
+      {!preview && state === "unpaired" && notice ? (
+        <button className="ghost-button" type="button" onClick={() => { setNotice(""); setPairAttempt((attempt) => attempt + 1); }}>إعادة محاولة الربط</button>
+      ) : null}
+      {!preview && state === "ready" && status && status.instances.length > 1 ? (
+        <div className="choice-list">
+          {status.instances.map((name) => (
+            <button
+              className={instance === name ? "type-option is-selected" : "type-option"}
+              key={name}
+              type="button"
+              onClick={() => {
+                setInstance(name);
+                if (status.agentId) {
+                  onAgent(status.agentId, name);
+                }
+              }}
+            >
+              <strong>{name}</strong>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <label className="field">
         <span>اسم قاعدة البيانات</span>
         <input className="latin-input" value={databaseName} onChange={(event) => onDatabase(event.target.value)} />
@@ -1869,7 +2080,13 @@ function NewLocalBranchDatabase({
       {preview ? (
         <button className="ghost-button" type="button" disabled={!ready} onClick={onSimulate}>محاكاة نجاح الاتصال</button>
       ) : (
-        <button className="ghost-button" type="button" disabled={pending || !ready} onClick={onConfirm}>تأكيد اسم القاعدة</button>
+        <button className="ghost-button" type="button" disabled={pending || !ready || state !== "ready"} onClick={() => {
+          if (!agentId.trim() || !instance.trim()) {
+            onMessage("اختر خادم SQL على هذا الجهاز.");
+            return;
+          }
+          onConfirm();
+        }}>تأكيد اسم القاعدة</button>
       )}
     </div>
   );

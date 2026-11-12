@@ -9,8 +9,8 @@ public static class CreditCollectionEndpoints
 {
     public static void MapCreditCollectionEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/pos/credit-collections/enabled", (IConfiguration configuration) =>
-            Results.Ok(new { enabled = configuration.GetValue("CreditCollections:Enabled", false) }));
+        app.MapGet("/api/pos/credit-collections/enabled", (IConfiguration configuration, IHostEnvironment environment) =>
+            Results.Ok(new { enabled = CollectionsEnabled(configuration, environment) }));
         app.MapGet("/api/pos/credit-collections/customers/{customerId:guid}/summary", SummaryAsync);
         app.MapGet("/api/pos/credit-collections/customers/{customerId:guid}/receivables", ReceivablesAsync);
         app.MapPost("/api/pos/credit-collections/quote", QuoteAsync);
@@ -81,14 +81,14 @@ public static class CreditCollectionEndpoints
         }
     }
 
-    private static async Task<IResult> ConfirmAsync(CollectionBody? request, HttpContext http, AuthService auth, PermissionService permissions, IConfiguration configuration, SqlConnectionFactory connections, SyncEndpointStore centralStore, CreditCollectionService collections, CancellationToken cancellationToken)
+    private static async Task<IResult> ConfirmAsync(CollectionBody? request, HttpContext http, AuthService auth, PermissionService permissions, IConfiguration configuration, IHostEnvironment environment, SqlConnectionFactory connections, SyncEndpointStore centralStore, CreditCollectionService collections, CancellationToken cancellationToken)
     {
         var actor = await ActorAsync(http, auth, permissions, PermissionCodes.CreditCollect, cancellationToken);
         if (actor.Error is not null) return actor.Error;
         var origin = FinancialRequestGuard.RejectUntrusted(http, configuration);
         if (origin is not null) return origin;
 
-        if (!configuration.GetValue("CreditCollections:Enabled", false))
+        if (!CollectionsEnabled(configuration, environment))
         {
             return Results.Json(new { code = "COLLECTION_DISABLED" }, statusCode: StatusCodes.Status403Forbidden);
         }
@@ -99,27 +99,27 @@ public static class CreditCollectionEndpoints
         }
 
         var branchConnection = connections.TryCreateBranchConnectionString();
-        Microsoft.Data.SqlClient.SqlConnection? central;
+        if (branchConnection is null)
+        {
+            return Results.Json(new { centralReachable = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        Microsoft.Data.SqlClient.SqlConnection? central = null;
         try
         {
             central = await OpenCentralAsync(centralStore, cancellationToken);
         }
         catch (Microsoft.Data.SqlClient.SqlException)
         {
-            return Results.Json(new { centralReachable = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        if (branchConnection is null || central is null)
-        {
-            return Results.Json(new { centralReachable = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            central = null;
         }
 
         var context = actor.Context!;
         await using var branch = new Microsoft.Data.SqlClient.SqlConnection(branchConnection);
-        await using (central)
+        await using var centralConnection = central ?? new Microsoft.Data.SqlClient.SqlConnection(branchConnection);
         {
             await branch.OpenAsync(cancellationToken);
-            var outcome = await collections.CollectAsync(central, branch, new CreditCollectionRequest(operationId, customerId, context.BranchId, context.DeviceId, context.UserId, request.CashSessionId ?? Guid.Empty, amount, request.PaymentMethod ?? "Cash", request.ReceivableId), true, false, false, cancellationToken);
+            var outcome = await collections.CollectAsync(centralConnection, branch, new CreditCollectionRequest(operationId, customerId, context.BranchId, context.DeviceId, context.UserId, request.CashSessionId ?? Guid.Empty, amount, request.PaymentMethod ?? "Cash", request.ReceivableId, request.AllowWithoutSession), central is not null, false, false, cancellationToken);
             var body = new { operationId, state = outcome.ToString() };
             return outcome switch
             {
@@ -177,6 +177,9 @@ public static class CreditCollectionEndpoints
         return connection;
     }
 
+    private static bool CollectionsEnabled(IConfiguration configuration, IHostEnvironment environment) =>
+        configuration.GetValue<bool?>("CreditCollections:Enabled") ?? environment.IsStaging();
+
     private static async Task<(PosDeviceContext? Context, IResult? Error)> ActorAsync(HttpContext http, AuthService auth, PermissionService permissions, string permission, CancellationToken cancellationToken)
     {
         var current = await auth.GetCurrentAsync(http, cancellationToken);
@@ -194,5 +197,6 @@ public static class CreditCollectionEndpoints
         public Guid? ReceivableId { get; init; }
         public decimal? Amount { get; init; }
         public string? PaymentMethod { get; init; }
+        public bool AllowWithoutSession { get; init; }
     }
 }

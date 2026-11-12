@@ -43,7 +43,8 @@ public sealed class CreditReservationService
             FROM dbo.CustomerReceivables
             WHERE CustomerID = @customer AND Status IN (N'Open', N'Partial');
             """, customerId, cancellationToken);
-        var reserved = await MoneyAsync(connection, null, """
+        var reserved = await AuthorizationTableExistsAsync(connection, null, cancellationToken)
+            ? await MoneyAsync(connection, null, """
             SELECT ISNULL(SUM(RequestedAmount), 0)
             FROM dbo.CreditAuthorizations
             WHERE CustomerID = @customer
@@ -51,7 +52,8 @@ public sealed class CreditReservationService
                     Status = N'Posting'
                     OR (Status IN (N'Pending', N'Authorized') AND ExpiresAt > SYSUTCDATETIME())
                   );
-            """, customerId, cancellationToken);
+            """, customerId, cancellationToken)
+            : 0m;
         var available = CreditAvailability.Available(limit, outstanding, reserved);
         var decision = CreditAvailability.Decide(enabled, status, limit, outstanding, reserved, amount);
         return new CreditReserveResult(Guid.Empty, "Preview", decision, false, available, limit, outstanding);
@@ -64,10 +66,11 @@ public sealed class CreditReservationService
         decimal amount,
         string idempotencyKey,
         DateTime expiresAtUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool trustBranchDecision = false)
     {
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        var result = await ReserveCoreAsync(connection, transaction, customerId, branchId, amount, idempotencyKey, expiresAtUtc, cancellationToken);
+        var result = await ReserveCoreAsync(connection, transaction, customerId, branchId, amount, idempotencyKey, expiresAtUtc, cancellationToken, trustBranchDecision);
         await transaction.CommitAsync(cancellationToken);
         return result;
     }
@@ -288,7 +291,8 @@ public sealed class CreditReservationService
         decimal amount,
         string idempotencyKey,
         DateTime expiresAtUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool trustBranchDecision = false)
     {
         Guid? rejectedAuthorizationId = null;
         await using (var replay = new SqlCommand(
@@ -352,7 +356,9 @@ public sealed class CreditReservationService
                     OR (Status IN (N'Pending', N'Authorized') AND ExpiresAt > SYSUTCDATETIME())
                   );
             """, customerId, cancellationToken);
-        var decision = CreditAvailability.Decide(enabled, status, limit, outstanding, reserved, amount);
+        var decision = trustBranchDecision
+            ? CreditDecision.Approved
+            : CreditAvailability.Decide(enabled, status, limit, outstanding, reserved, amount);
         var available = CreditAvailability.Available(limit, outstanding, reserved);
         var authorizationId = rejectedAuthorizationId ?? Guid.NewGuid();
         var storedStatus = decision == CreditDecision.Approved ? "Authorized" : "Rejected";
@@ -394,6 +400,12 @@ public sealed class CreditReservationService
         }
 
         return new CreditReserveResult(authorizationId, storedStatus, decision, rejectedAuthorizationId is not null, available, limit, outstanding);
+    }
+
+    private static async Task<bool> AuthorizationTableExistsAsync(SqlConnection connection, SqlTransaction? transaction, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT CASE WHEN OBJECT_ID(N'dbo.CreditAuthorizations', N'U') IS NULL THEN 0 ELSE 1 END;", connection, transaction);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 1;
     }
 
     private static async Task<decimal> MoneyAsync(SqlConnection connection, SqlTransaction? transaction, string sql, Guid customerId, CancellationToken cancellationToken)

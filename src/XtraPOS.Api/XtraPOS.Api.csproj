@@ -186,6 +186,27 @@
     <EmbeddedResource Include="Data\Migrations\038_BranchFinancialInbox.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.038_BranchFinancialInbox.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\039_BranchOperationLog.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.039_BranchOperationLog.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\040_BranchCreditLedger.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.040_BranchCreditLedger.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\041_OptionalCollectionSession.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.041_OptionalCollectionSession.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\042_CashboxesAndSchemaHistory.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.042_CashboxesAndSchemaHistory.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\043_UnifiedSchemaObjects.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.043_UnifiedSchemaObjects.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\044_UnifiedSchemaChecks.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.044_UnifiedSchemaChecks.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\045_ItemPriceUniqueness.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.045_ItemPriceUniqueness.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>
@@ -221,6 +242,21 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\026_CreditFinancialEvents.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.026_CreditFinancialEvents.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\027_SyncPointRegistry.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.027_SyncPointRegistry.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\028_SchemaUpdateHistory.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.028_SchemaUpdateHistory.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\029_UnifiedSchemaObjects.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.029_UnifiedSchemaObjects.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\030_UnifiedSchemaChecks.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.030_UnifiedSchemaChecks.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\031_ItemPriceUniqueness.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.031_ItemPriceUniqueness.sql</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

@@ -1,5 +1,7 @@
 using System.Data;
+using System.Globalization;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Operations;
 using XtraPOS.Api.Sales;
 using XtraPOS.Api.Security;
 
@@ -28,7 +30,7 @@ public sealed record CreditSaleOutcomeResult(
 public sealed class CreditSaleCoordinator(CreditReservationService credit, CreditSaleDocumentWriter documents)
 {
     public async Task<CreditSaleOutcomeResult> StageAsync(
-        SqlConnection central,
+        SqlConnection? central,
         SqlConnection branch,
         CreditSaleRequest request,
         bool centralReachable,
@@ -62,7 +64,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         }
         catch (CreditConflictException exception)
         {
-            if (IsPriceMismatch(exception.Message) && request.DeferredAmount > 0m)
+            if (IsPriceMismatch(exception.Message) && request.DeferredAmount > 0m && central is { State: ConnectionState.Open })
             {
                 var preview = await credit.PreviewAsync(central, request.CustomerId, request.DeferredAmount, cancellationToken);
                 if (preview.Decision == CreditDecision.LimitExceeded)
@@ -91,9 +93,16 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             return new CreditSaleOutcomeResult(CreditSaleOutcome.Refused, null, null, Message: "القيمة المؤجلة يجب أن تكون أكبر من صفر ومساوية للفرق بين المجموع والدفع الفوري.");
         }
 
-        if (!centralReachable)
+        var centralOpen = centralReachable && central is { State: ConnectionState.Open };
+        var blockedByEarlier = await BranchOperationLog.HasEarlierIncompleteAsync(branch, request.OperationId, cancellationToken);
+        var executeNow = centralOpen && !blockedByEarlier && !skipFinalization;
+        if (!replayExists)
         {
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.CentralUnavailable, null, null);
+            var preview = await credit.PreviewAsync(branch, request.CustomerId, quote.Deferred, cancellationToken);
+            if (preview.Decision != CreditDecision.Approved)
+            {
+                return RefusedPreview(preview);
+            }
         }
 
         await using (var existing = new SqlCommand("SELECT Payload FROM dbo.BranchFinancialOutbox WHERE CreditOperationID = @operation;", branch))
@@ -110,8 +119,28 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
                     return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, request.SaleId, null);
                 }
 
-                return await DeliverAsync(central, branch, request.OperationId, request.ActorUserId, cancellationToken);
+                if (!executeNow)
+                {
+                    return new CreditSaleOutcomeResult(CreditSaleOutcome.PendingCentral, request.SaleId, null);
+                }
+
+                return await DeliverAsync(central!, branch, request.OperationId, request.ActorUserId, cancellationToken);
             }
+        }
+
+        var saleId = request.SaleId;
+        try
+        {
+            await InsertPendingSaleAsync(branch, request, quote, saleId, null, failLocalCommit, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, null, Message: LocalSaveMessage(exception));
+        }
+
+        if (!executeNow || central is null)
+        {
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.PendingCentral, saleId, null);
         }
 
         var reserved = await credit.ReserveAsync(
@@ -121,29 +150,15 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             quote.Deferred,
             request.OperationId.ToString("N"),
             DateTime.UtcNow.AddMinutes(10),
-            cancellationToken);
+            cancellationToken,
+            trustBranchDecision: true);
         if (reserved.Decision != CreditDecision.Approved || reserved.Status != "Authorized" && !reserved.Replay)
         {
-            return new CreditSaleOutcomeResult(
-                CreditSaleOutcome.Refused,
-                null,
-                reserved.AuthorizationId,
-                reserved.Decision == CreditDecision.LimitExceeded ? reserved.Available : null,
-                reserved.CreditLimit,
-                reserved.Outstanding);
+            await MarkOutboxAsync(branch, request.OperationId, "ReconciliationRequired", "لم يُقبل الحجز المركزي بعد حفظ البيع.", cancellationToken);
+            return RefusedPreview(reserved);
         }
 
-        var saleId = request.SaleId;
-        try
-        {
-            await InsertPendingSaleAsync(branch, request, quote, saleId, reserved.AuthorizationId, failLocalCommit, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            await credit.ReleaseAsync(central, reserved.AuthorizationId, cancellationToken);
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.LocalRolledBack, null, reserved.AuthorizationId, Message: LocalSaveMessage(exception));
-        }
-
+        await RememberAuthorizationAsync(branch, request.OperationId, reserved.AuthorizationId, cancellationToken);
         if (afterLocalCommit is not null)
         {
             await afterLocalCommit();
@@ -153,11 +168,6 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         {
             await MarkOutboxAsync(branch, request.OperationId, "ReconciliationRequired", "Reservation was not available after the local sale committed.", cancellationToken);
             return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, saleId, reserved.AuthorizationId);
-        }
-
-        if (skipFinalization)
-        {
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.PendingCentral, saleId, reserved.AuthorizationId);
         }
 
         return await DeliverAsync(central, branch, request.OperationId, request.ActorUserId, cancellationToken);
@@ -189,7 +199,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         var saleId = reader.GetGuid(0);
         var branchId = reader.GetGuid(1);
         var customerId = reader.GetGuid(2);
-        var authorizationId = reader.GetGuid(3);
+        var authorizationId = reader.IsDBNull(3) ? Guid.Empty : reader.GetGuid(3);
         var status = reader.GetString(4);
         var payload = reader.GetString(5);
         await reader.CloseAsync();
@@ -215,13 +225,41 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             || payloadSale != saleId)
         {
             await MarkOutboxAsync(branch, operationId, "ReconciliationRequired", "Stored credit payload does not match the sale.", cancellationToken);
-            return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, saleId, authorizationId);
+            return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, saleId, authorizationId == Guid.Empty ? null : authorizationId);
+        }
+
+        if (authorizationId == Guid.Empty)
+        {
+            CreditReserveResult reserved;
+            try
+            {
+                reserved = await credit.ReserveAsync(central, customerId, branchId, deferred, operationId.ToString("N"), DateTime.UtcNow.AddMinutes(10), cancellationToken, trustBranchDecision: true);
+            }
+            catch (SqlException)
+            {
+                await MarkOutboxAsync(branch, operationId, "Pending", "Central finalization is temporarily unavailable.", cancellationToken);
+                return new CreditSaleOutcomeResult(CreditSaleOutcome.PendingCentral, saleId, null);
+            }
+
+            if (reserved.Decision != CreditDecision.Approved || reserved.Status != "Authorized" && !reserved.Replay)
+            {
+                await MarkOutboxAsync(branch, operationId, "ReconciliationRequired", "لم يُقبل الحجز المركزي.", cancellationToken);
+                return RefusedPreview(reserved) with { SaleId = saleId };
+            }
+
+            authorizationId = reserved.AuthorizationId;
+            await RememberAuthorizationAsync(branch, operationId, authorizationId, cancellationToken);
+            if (!await credit.BeginPostingAsync(central, authorizationId, saleId, cancellationToken))
+            {
+                await MarkOutboxAsync(branch, operationId, "ReconciliationRequired", "Reservation was not available after the local sale committed.", cancellationToken);
+                return new CreditSaleOutcomeResult(CreditSaleOutcome.ReconciliationRequired, saleId, authorizationId);
+            }
         }
 
         try
         {
             var snapshot = await CreditDocumentSnapshot.ReadAsync(branch, saleId, deferred, cancellationToken);
-            var posNumber = await PosNumberAsync(branch, saleId, cancellationToken);
+            var posNumber = await PosNumberAsync(branch, null!, saleId, cancellationToken);
             await credit.FinalizeAsync(
                 central,
                 authorizationId,
@@ -233,7 +271,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
                 customerId,
                 deferred,
                 branchId,
-                await SaleNumberAsync(branch, saleId, cancellationToken),
+                await SaleNumberAsync(branch, null!, saleId, cancellationToken),
                 snapshot,
                 posNumber,
                 await BusinessIdAsync(branch, cancellationToken));
@@ -281,6 +319,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             return new CreditSaleOutcomeResult(CreditSaleOutcome.PendingCentral, saleId, authorizationId);
         }
 
+        await BranchOperationLog.MarkAsync(branch, transaction, operationId, "Completed", "تم التنفيذ على المركز.", cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new CreditSaleOutcomeResult(CreditSaleOutcome.Completed, saleId, authorizationId);
     }
@@ -290,7 +329,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         CreditSaleRequest request,
         CreditQuote quote,
         Guid saleId,
-        Guid authorizationId,
+        Guid? authorizationId,
         bool failLocalCommit,
         CancellationToken cancellationToken)
     {
@@ -309,9 +348,32 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         outbox.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         outbox.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = request.BranchId;
         outbox.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = request.CustomerId;
-        outbox.Parameters.Add("@authorization", SqlDbType.UniqueIdentifier).Value = authorizationId;
+        outbox.Parameters.Add("@authorization", SqlDbType.UniqueIdentifier).Value = (object?)authorizationId ?? DBNull.Value;
         outbox.Parameters.Add("@payload", SqlDbType.NVarChar, 2000).Value = Payload(request, quote);
         await outbox.ExecuteNonQueryAsync(cancellationToken);
+        await BranchOperationLog.EnqueueAsync(branch, transaction, new BranchOperationDraft(
+            request.OperationId,
+            "CreditSale",
+            Payload(request, quote),
+            string.Create(CultureInfo.InvariantCulture, $"تأجيل دفع بمبلغ {quote.Deferred:0.00}"),
+            "Sales",
+            saleId,
+            request.BranchId,
+            request.ActorUserId,
+            request.StationId), cancellationToken);
+        await BranchCreditLedger.RecordCreditSaleAsync(
+            branch,
+            transaction,
+            request.OperationId,
+            request.CustomerId,
+            request.BranchId,
+            saleId,
+            request.ActorUserId,
+            quote.Deferred,
+            await PosNumberAsync(branch, transaction, saleId, cancellationToken),
+            await SaleNumberAsync(branch, transaction, saleId, cancellationToken),
+            await PaymentTermDaysAsync(branch, transaction, request.CustomerId, cancellationToken),
+            cancellationToken);
         if (failLocalCommit)
         {
             await transaction.RollbackAsync(cancellationToken);
@@ -340,6 +402,28 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         command.Parameters.Add("@error", SqlDbType.NVarChar, 400).Value = error;
         command.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await BranchOperationLog.MarkAsync(branch, null, operationId, status, error, cancellationToken);
+    }
+
+    private static async Task RememberAuthorizationAsync(SqlConnection branch, Guid operationId, Guid authorizationId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            "UPDATE dbo.BranchFinancialOutbox SET AuthorizationID = @authorization WHERE CreditOperationID = @operation AND AuthorizationID IS NULL;",
+            branch);
+        command.Parameters.Add("@authorization", SqlDbType.UniqueIdentifier).Value = authorizationId;
+        command.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static CreditSaleOutcomeResult RefusedPreview(CreditReserveResult preview)
+    {
+        return new CreditSaleOutcomeResult(
+            CreditSaleOutcome.Refused,
+            null,
+            preview.AuthorizationId == Guid.Empty ? null : preview.AuthorizationId,
+            preview.Decision == CreditDecision.LimitExceeded ? preview.Available : null,
+            preview.CreditLimit,
+            preview.Outstanding);
     }
 
     private static async Task<bool> HasPermissionAsync(SqlConnection branch, Guid userId, string permissionCode, CancellationToken cancellationToken)
@@ -362,15 +446,15 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 1;
     }
 
-    private static async Task<long?> SaleNumberAsync(SqlConnection branch, Guid saleId, CancellationToken cancellationToken)
+    private static async Task<long?> SaleNumberAsync(SqlConnection branch, SqlTransaction transaction, Guid saleId, CancellationToken cancellationToken)
     {
-        await using var command = new SqlCommand("SELECT SaleNumber FROM dbo.Sales WHERE SaleID = @sale;", branch);
+        await using var command = new SqlCommand("SELECT SaleNumber FROM dbo.Sales WHERE SaleID = @sale;", branch, transaction);
         command.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is long number ? number : null;
     }
 
-    private static async Task<int?> PosNumberAsync(SqlConnection branch, Guid saleId, CancellationToken cancellationToken)
+    private static async Task<int?> PosNumberAsync(SqlConnection branch, SqlTransaction transaction, Guid saleId, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             """
@@ -379,7 +463,8 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             INNER JOIN dbo.POSStations AS station ON station.StationID = sale.POSStationID
             WHERE sale.SaleID = @sale;
             """,
-            branch);
+            branch,
+            transaction);
         command.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is int number ? number : null;
@@ -395,7 +480,12 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
 
     private static async Task<int> PaymentTermDaysAsync(SqlConnection central, Guid customerId, CancellationToken cancellationToken)
     {
-        await using var command = new SqlCommand("SELECT PaymentTermDays FROM dbo.CustomerCreditPolicies WHERE CustomerID = @customer;", central);
+        return await PaymentTermDaysAsync(central, null!, customerId, cancellationToken);
+    }
+
+    private static async Task<int> PaymentTermDaysAsync(SqlConnection connection, SqlTransaction transaction, Guid customerId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT PaymentTermDays FROM dbo.CustomerCreditPolicies WHERE CustomerID = @customer;", connection, transaction);
         command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is int days && days is >= 0 and <= 3650 ? days : 30;
@@ -444,7 +534,7 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
         _ => string.IsNullOrWhiteSpace(message) ? "تم رفض البيع بالدين. السلة ما زالت موجودة." : message,
     };
 
-    private static async Task<string?> EnsureBranchCustomerAsync(SqlConnection central, SqlConnection branch, Guid businessId, Guid customerId, CancellationToken cancellationToken)
+    private static async Task<string?> EnsureBranchCustomerAsync(SqlConnection? central, SqlConnection branch, Guid businessId, Guid customerId, CancellationToken cancellationToken)
     {
         await using (var local = new SqlCommand("SELECT IsActive FROM dbo.Customers WHERE CustomerID = @id AND BusinessID = @business;", branch))
         {
@@ -454,6 +544,11 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             {
                 return active ? null : "الزبون غير فعال على هذا الفرع.";
             }
+        }
+
+        if (central is not { State: ConnectionState.Open })
+        {
+            return "الزبون غير مسجّل على هذا الفرع.";
         }
 
         await using var remote = new SqlCommand(

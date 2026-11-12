@@ -50,27 +50,47 @@ public static class CreditEndpoints
 
         var context = actor.Context!;
         var configuredBranch = connections.TryCreateBranchConnectionString();
-        var central = await centralStore.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
-        if (configuredBranch is null || central is null)
+        if (configuredBranch is null)
         {
             return Results.Json(new { state = "Pending", message = "جهة الائتمان المركزية غير متاحة." }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        await using var centralConnection = new Microsoft.Data.SqlClient.SqlConnection(central.BuildConnectionString(central.DatabaseName));
-        await centralConnection.OpenAsync(cancellationToken);
+        var central = await centralStore.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
+        Microsoft.Data.SqlClient.SqlConnection? centralConnection = null;
+        var centralReachable = false;
+        if (central is not null)
+        {
+            centralConnection = new Microsoft.Data.SqlClient.SqlConnection(central.BuildConnectionString(central.DatabaseName));
+            try
+            {
+                await centralConnection.OpenAsync(cancellationToken);
+                centralReachable = true;
+            }
+            catch (Microsoft.Data.SqlClient.SqlException)
+            {
+                await centralConnection.DisposeAsync();
+                centralConnection = null;
+            }
+        }
+
         await using var opened = new Microsoft.Data.SqlClient.SqlConnection(configuredBranch);
         await opened.OpenAsync(cancellationToken);
         Microsoft.Data.SqlClient.SqlConnection branch;
-        if (await CreditOperationalDatabase.HasSalesAsync(opened, cancellationToken))
+        if (!centralReachable || await CreditOperationalDatabase.HasSalesAsync(opened, cancellationToken))
         {
             branch = opened;
         }
         else
         {
             await opened.DisposeAsync();
-            var routed = await CreditOperationalDatabase.OpenRoutedBranchAsync(connections, centralConnection, context.BranchId, cancellationToken);
+            var routed = await CreditOperationalDatabase.OpenRoutedBranchAsync(connections, centralConnection!, context.BranchId, cancellationToken);
             if (routed is null)
             {
+                if (centralConnection is not null)
+                {
+                    await centralConnection.DisposeAsync();
+                }
+
                 return Results.Json(new { state = "Refused", code = "BRANCH_CONTEXT_MISSING", message = CreditOperationalDatabase.MissingBranchMessage }, statusCode: StatusCodes.Status409Conflict);
             }
 
@@ -106,8 +126,17 @@ public static class CreditEndpoints
                 line.ExpectedReferenceBasePrice,
                 line.ExpectedWeightKg,
                 line.ExpectedStockOwnerQuantity)).ToArray());
-        var result = await coordinator.StageAsync(centralConnection, branch, sale, true, false, false, null, cancellationToken);
-        return ToResult(result, operationId);
+        if (centralConnection is null)
+        {
+            var parked = await coordinator.StageAsync(null, branch, sale, false, false, false, null, cancellationToken);
+            return ToResult(parked, operationId);
+        }
+
+        await using (centralConnection)
+        {
+            var result = await coordinator.StageAsync(centralConnection, branch, sale, centralReachable, false, false, null, cancellationToken);
+            return ToResult(result, operationId);
+        }
     }
 
     private static async Task<IResult> StatusAsync(Guid operationId, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, CreditOutboxProcessor processor, CancellationToken cancellationToken)

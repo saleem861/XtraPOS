@@ -73,7 +73,18 @@ public sealed class CreditHistoryService
             """, businessId, customerId, cancellationToken);
         var rows = await MovementsAsync(central, CentralSql, businessId, customerId, skip, take, cancellationToken);
         var totals = await TotalsAsync(central, businessId, customerId, cancellationToken);
-        return new CreditHistoryView("central", false, outstanding, totals.Debt, totals.Repaid, totals.Count, rows);
+        var ledgerNet = await MoneyAsync(central, """
+            SELECT ISNULL(SUM(CASE
+                WHEN TransactionType = N'CreditSale' THEN Amount
+                WHEN TransactionType = N'Repayment' THEN -Amount
+                WHEN TransactionType = N'Reversal' AND PaymentID IS NULL THEN -Amount
+                WHEN TransactionType = N'Reversal' THEN Amount
+                ELSE Amount END), 0)
+            FROM dbo.CustomerCreditLedger AS ledger
+            INNER JOIN dbo.Customers AS customer ON customer.CustomerID = ledger.CustomerID AND customer.BusinessID = @business
+            WHERE ledger.CustomerID = @customer;
+            """, businessId, customerId, cancellationToken);
+        return new CreditHistoryView("central", outstanding != ledgerNet, outstanding, totals.Debt, totals.Repaid, totals.Count, rows);
     }
 
     private static async Task<CreditHistoryView> ReadReplicaAsync(SqlConnection branch, Guid businessId, Guid customerId, int skip, int take, CancellationToken cancellationToken)
@@ -81,7 +92,16 @@ public sealed class CreditHistoryService
         var rows = await MovementsAsync(branch, ReplicaSql, businessId, customerId, skip, take, cancellationToken);
         decimal balance = 0m;
         await using (var command = new SqlCommand(
-            "SELECT ISNULL(SUM(SignedEffect), 0) FROM dbo.BranchFinancialInbox WHERE BusinessID = @business AND CustomerID = @customer;",
+            """
+            SELECT ISNULL(SUM(CASE
+                WHEN TransactionType = N'CreditSale' THEN Amount
+                WHEN TransactionType = N'Repayment' THEN -Amount
+                WHEN TransactionType = N'Reversal' AND PaymentID IS NULL THEN -Amount
+                WHEN TransactionType = N'Reversal' THEN Amount
+                ELSE Amount END), 0)
+            FROM dbo.CustomerCreditLedger
+            WHERE CustomerID = @customer;
+            """,
             branch))
         {
             command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
@@ -128,12 +148,29 @@ public sealed class CreditHistoryService
         """;
 
     private const string ReplicaSql = """
-        SELECT OperationID, EventType, Amount, SignedEffect,
-               SUM(SignedEffect) OVER (ORDER BY ConfirmedAt, OperationID ROWS UNBOUNDED PRECEDING),
-               ConfirmedAt, SourceSaleID, Payload
-        FROM dbo.BranchFinancialInbox
-        WHERE BusinessID = @business AND CustomerID = @customer
-        ORDER BY ConfirmedAt DESC, OperationID DESC
+        SELECT ledger.IdempotencyKey,
+               ledger.TransactionType,
+               ledger.Amount,
+               CASE
+                   WHEN ledger.TransactionType = N'CreditSale' THEN ledger.Amount
+                   WHEN ledger.TransactionType = N'Repayment' THEN -ledger.Amount
+                   WHEN ledger.TransactionType = N'Reversal' AND ledger.PaymentID IS NULL THEN -ledger.Amount
+                   WHEN ledger.TransactionType = N'Reversal' THEN ledger.Amount
+                   ELSE ledger.Amount
+               END,
+               SUM(CASE
+                   WHEN ledger.TransactionType = N'CreditSale' THEN ledger.Amount
+                   WHEN ledger.TransactionType = N'Repayment' THEN -ledger.Amount
+                   WHEN ledger.TransactionType = N'Reversal' AND ledger.PaymentID IS NULL THEN -ledger.Amount
+                   WHEN ledger.TransactionType = N'Reversal' THEN ledger.Amount
+                   ELSE ledger.Amount
+               END) OVER (ORDER BY ledger.OccurredAt, ledger.LedgerEntryID ROWS UNBOUNDED PRECEDING),
+               ledger.OccurredAt,
+               ledger.SourceSaleID,
+               CAST(NULL AS nvarchar(max))
+        FROM dbo.CustomerCreditLedger AS ledger
+        WHERE ledger.CustomerID = @customer
+        ORDER BY ledger.OccurredAt DESC, ledger.LedgerEntryID DESC
         OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
         """;
 
@@ -218,11 +255,27 @@ public sealed class CreditHistoryService
             }
         }
 
-        return await OneAsync(branch, """
+        var inbox = await OneAsync(branch, """
             SELECT TOP (1) Payload FROM dbo.BranchFinancialInbox
             WHERE BusinessID = @business AND (@operation IS NULL OR OperationID = @operation) AND (@sale IS NULL OR SourceSaleID = @sale)
             ORDER BY EventSequence DESC;
             """, businessId, saleId, operationId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(inbox))
+        {
+            return inbox;
+        }
+
+        if (operationId is not null && operationId.StartsWith("collection:", StringComparison.Ordinal) && Guid.TryParse(operationId["collection:".Length..], out var collectionId))
+        {
+            await using var local = new SqlCommand("SELECT Amount FROM dbo.BranchDebtCollections WHERE CollectionOperationID = @operation;", branch);
+            local.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = collectionId;
+            if (await local.ExecuteScalarAsync(cancellationToken) is decimal amount)
+            {
+                return "{\"kind\":\"receipt\",\"amount\":" + amount.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"notes\":\"تسديد نقدي\"}";
+            }
+        }
+
+        return null;
     }
 
     private static async Task<string?> OneAsync(SqlConnection connection, string sql, Guid businessId, Guid? saleId, string? operationId, CancellationToken cancellationToken)

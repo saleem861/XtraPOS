@@ -24,6 +24,9 @@
 *.pem
 *.key
 
+# Staging deploy key copied into the project. Never commit it.
+/.ssh/
+
 # Machine and environment configuration; publish reviewed examples separately
 .env
 .env.*

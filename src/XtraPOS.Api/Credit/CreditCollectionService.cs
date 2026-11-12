@@ -1,6 +1,7 @@
 using System.Data;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Operations;
 using XtraPOS.Api.Security;
 
 namespace XtraPOS.Api.Credit;
@@ -29,7 +30,8 @@ public sealed record CreditCollectionRequest(
     Guid CashSessionId,
     decimal Amount,
     string PaymentMethod,
-    Guid? SelectedReceivableId);
+    Guid? SelectedReceivableId,
+    bool AllowWithoutSession = false);
 
 public sealed class CreditCollectionService
 {
@@ -58,8 +60,10 @@ public sealed class CreditCollectionService
             return CreditCollectionOutcome.Unauthorized;
         }
 
-        var openSession = await OpenSessionAsync(branch, request.BranchId, request.DeviceId, cancellationToken);
-        if (openSession is null || (request.CashSessionId != Guid.Empty && request.CashSessionId != openSession))
+        Guid? openSession = request.AllowWithoutSession && request.CashSessionId == Guid.Empty
+            ? null
+            : await OpenSessionAsync(branch, request.BranchId, request.DeviceId, cancellationToken);
+        if (!request.AllowWithoutSession && (openSession is null || (request.CashSessionId != Guid.Empty && request.CashSessionId != openSession)))
         {
             return CreditCollectionOutcome.Refused;
         }
@@ -82,14 +86,28 @@ public sealed class CreditCollectionService
                 return CreditCollectionOutcome.ReconciliationRequired;
             }
 
+            if (!centralReachable || await BranchOperationLog.HasEarlierIncompleteAsync(branch, request.OperationId, cancellationToken))
+            {
+                return CreditCollectionOutcome.PendingCentral;
+            }
+
             return skipFinalization
                 ? CreditCollectionOutcome.PendingCentral
                 : await FinalizeAsync(central, branch, request.OperationId, request.ActorUserId, cancellationToken);
         }
 
-        if (!centralReachable)
+        if (!centralReachable || await BranchOperationLog.HasEarlierIncompleteAsync(branch, request.OperationId, cancellationToken))
         {
-            return CreditCollectionOutcome.CentralUnavailable;
+            try
+            {
+                await CommitBranchAsync(branch, request, openSession, failLocalCommit, cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                return CreditCollectionOutcome.LocalRolledBack;
+            }
+
+            return CreditCollectionOutcome.PendingCentral;
         }
 
         var authorized = await AuthorizeAsync(central, request, cancellationToken);
@@ -100,7 +118,7 @@ public sealed class CreditCollectionService
 
         try
         {
-            await CommitBranchAsync(branch, request, openSession.Value, failLocalCommit, cancellationToken);
+            await CommitBranchAsync(branch, request, openSession, failLocalCommit, cancellationToken);
         }
         catch (InvalidOperationException)
         {
@@ -197,7 +215,7 @@ public sealed class CreditCollectionService
         return CreditCollectionOutcome.Completed;
     }
 
-    private async Task CommitBranchAsync(SqlConnection branch, CreditCollectionRequest request, Guid sessionId, bool fail, CancellationToken cancellationToken)
+    private async Task CommitBranchAsync(SqlConnection branch, CreditCollectionRequest request, Guid? sessionId, bool fail, CancellationToken cancellationToken)
     {
         await using var transaction = (SqlTransaction)await branch.BeginTransactionAsync(cancellationToken);
         if (fail)
@@ -219,7 +237,7 @@ public sealed class CreditCollectionService
             insert.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = request.OperationId;
             insert.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = request.CustomerId;
             insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = request.BranchId;
-            insert.Parameters.Add("@session", SqlDbType.UniqueIdentifier).Value = sessionId;
+            insert.Parameters.Add("@session", SqlDbType.UniqueIdentifier).Value = sessionId.HasValue ? sessionId.Value : DBNull.Value;
             insert.Parameters.Add("@device", SqlDbType.UniqueIdentifier).Value = request.DeviceId;
             insert.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value = request.ActorUserId;
             insert.Parameters.Add("@amount", SqlDbType.Decimal).Value = request.Amount;
@@ -227,7 +245,55 @@ public sealed class CreditCollectionService
             insert.Parameters["@amount"].Scale = 4;
             insert.Parameters.Add("@payload", SqlDbType.NVarChar, 2000).Value = Payload(request);
             await insert.ExecuteNonQueryAsync(cancellationToken);
+            await using var ledger = new SqlCommand(
+                """
+                IF OBJECT_ID(N'dbo.CustomerCreditLedger', N'U') IS NULL
+                    RETURN;
+                IF NOT EXISTS (SELECT 1 FROM dbo.CustomerCreditLedger WHERE IdempotencyKey = @ledgerKey)
+                    INSERT INTO dbo.CustomerCreditLedger
+                        (LedgerEntryID, CustomerID, TransactionID, TransactionType, Amount, CurrencyCode, SourceBranchID, PaymentID, CreatedBy, IdempotencyKey, OriginOperationID)
+                    VALUES (NEWID(), @customer, @operation, N'Repayment', @amount, N'ILS', @branch, @operation, @actor, @ledgerKey, @ledgerKey);
+                DECLARE @left decimal(19, 4) = @amount;
+                DECLARE @receivable uniqueidentifier, @open decimal(19, 4), @apply decimal(19, 4);
+                WHILE @left > 0 AND EXISTS (
+                    SELECT 1 FROM dbo.CustomerReceivables
+                    WHERE CustomerID = @customer AND Status IN (N'Open', N'Partial') AND OutstandingAmount > 0)
+                BEGIN
+                    SELECT TOP (1) @receivable = ReceivableID, @open = OutstandingAmount
+                    FROM dbo.CustomerReceivables
+                    WHERE CustomerID = @customer AND Status IN (N'Open', N'Partial') AND OutstandingAmount > 0
+                    ORDER BY DueDate, CreatedAt;
+                    SET @apply = CASE WHEN @open < @left THEN @open ELSE @left END;
+                    UPDATE dbo.CustomerReceivables
+                    SET OutstandingAmount = OutstandingAmount - @apply,
+                        Status = CASE WHEN OutstandingAmount - @apply <= 0 THEN N'Settled' ELSE N'Partial' END
+                    WHERE ReceivableID = @receivable;
+                    SET @left = @left - @apply;
+                END;
+                """,
+                branch, transaction);
+            ledger.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = request.OperationId;
+            ledger.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = request.CustomerId;
+            ledger.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = request.BranchId;
+            ledger.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value = request.ActorUserId;
+            var money = ledger.Parameters.Add("@amount", SqlDbType.Decimal);
+            money.Precision = 19;
+            money.Scale = 4;
+            money.Value = request.Amount;
+            ledger.Parameters.Add("@ledgerKey", SqlDbType.NVarChar, 80).Value = "collection:" + request.OperationId.ToString("N");
+            await ledger.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        await BranchOperationLog.EnqueueAsync(branch, transaction, new BranchOperationDraft(
+            request.OperationId,
+            "DebtCollection",
+            Payload(request),
+            string.Create(CultureInfo.InvariantCulture, $"تسديد دين بمبلغ {request.Amount:0.00}"),
+            "BranchDebtCollections",
+            request.OperationId,
+            request.BranchId,
+            request.ActorUserId,
+            null), cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
     }
@@ -243,6 +309,22 @@ public sealed class CreditCollectionService
         if (box.Value.Status == "Completed")
         {
             return CreditCollectionOutcome.Completed;
+        }
+
+        if (!await IntentExistsAsync(central, operationId, cancellationToken))
+        {
+            var prepared = await AuthorizeFromBranchAsync(central, branch, operationId, cancellationToken);
+            if (prepared != CreditCollectionOutcome.Completed)
+            {
+                await MarkAsync(branch, operationId, "ReconciliationRequired", "تعذر تجهيز التسديد على المركز.", leaseOwner, cancellationToken);
+                return prepared == CreditCollectionOutcome.Refused ? CreditCollectionOutcome.ReconciliationRequired : prepared;
+            }
+
+            await using var posting = new SqlCommand(
+                "UPDATE dbo.CreditCollectionIntents SET Status = N'Posting' WHERE CollectionOperationID = @operation AND Status = N'Authorized';",
+                central);
+            posting.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
+            await posting.ExecuteNonQueryAsync(cancellationToken);
         }
 
         try
@@ -455,23 +537,87 @@ public sealed class CreditCollectionService
         return value is Guid id ? id : null;
     }
 
-    private static async Task<Guid?> ClaimAsync(SqlConnection branch, string workerId, CancellationToken cancellationToken)
+    private static async Task<bool> IntentExistsAsync(SqlConnection central, Guid operationId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT COUNT(*) FROM dbo.CreditCollectionIntents WHERE CollectionOperationID = @operation;", central);
+        command.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
+    }
+
+    private async Task<CreditCollectionOutcome> AuthorizeFromBranchAsync(SqlConnection central, SqlConnection branch, Guid operationId, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             """
+            SELECT CustomerID, BranchID, CashierUserID, Amount, DeviceID, CashSessionID
+            FROM dbo.BranchDebtCollections
+            WHERE CollectionOperationID = @operation;
+            """,
+            branch);
+        command.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return CreditCollectionOutcome.ReconciliationRequired;
+        }
+
+        var request = new CreditCollectionRequest(
+            operationId,
+            reader.GetGuid(0),
+            reader.GetGuid(1),
+            reader.GetGuid(4),
+            reader.GetGuid(2),
+            reader.IsDBNull(5) ? Guid.Empty : reader.GetGuid(5),
+            reader.GetDecimal(3),
+            "Cash",
+            null);
+        await reader.CloseAsync();
+        return await AuthorizeAsync(central, request, cancellationToken);
+    }
+
+    private static async Task<Guid?> ClaimAsync(SqlConnection branch, string workerId, CancellationToken cancellationToken)
+    {
+        Guid candidate;
+        await using (var peek = new SqlCommand(
+            """
+            SELECT TOP (1) CreditOperationID
+            FROM dbo.BranchCollectionOutbox
+            WHERE Status = N'Pending'
+            ORDER BY CreatedAt;
+            """,
+            branch))
+        {
+            var peeked = await peek.ExecuteScalarAsync(cancellationToken);
+            if (peeked is not Guid operationId)
+            {
+                return null;
+            }
+
+            candidate = operationId;
+        }
+
+        if (!await BranchOperationLog.IsExecutableHeadAsync(branch, candidate, cancellationToken))
+        {
+            return null;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            DECLARE @id uniqueidentifier, @lease datetime2(0);
+            SELECT TOP (1) @id = CreditOperationID, @lease = LeaseUntil
+            FROM dbo.BranchCollectionOutbox WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+            WHERE Status = N'Pending'
+            ORDER BY CreatedAt;
+            IF @id IS NULL OR (@lease IS NOT NULL AND @lease >= SYSUTCDATETIME())
+                RETURN;
             UPDATE dbo.BranchCollectionOutbox
             SET LeaseOwner = @owner,
                 LeaseUntil = DATEADD(minute, 2, SYSUTCDATETIME()),
                 AttemptCount = AttemptCount + 1,
                 LastAttemptAt = SYSUTCDATETIME()
             OUTPUT inserted.CreditOperationID
-            WHERE OutboxEventID = (
-                SELECT TOP (1) OutboxEventID
-                FROM dbo.BranchCollectionOutbox WITH (READPAST, UPDLOCK, ROWLOCK)
-                WHERE Status = N'Pending'
-                  AND NextRetryAt <= DATEADD(second, 1, SYSUTCDATETIME())
-                  AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME())
-                ORDER BY CreatedAt);
+            WHERE CreditOperationID = @id
+              AND Status = N'Pending'
+              AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME());
             """,
             branch);
         command.Parameters.Add("@owner", SqlDbType.NVarChar, 80).Value = workerId;
@@ -504,6 +650,8 @@ public sealed class CreditCollectionService
         command.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
         command.Parameters.Add("@owner", SqlDbType.NVarChar, 80).Value = (object?)leaseOwner ?? DBNull.Value;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        var logStatus = status == "Completed" ? "Completed" : "Blocked";
+        await BranchOperationLog.MarkAsync(branch, transaction, operationId, logStatus, error, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 

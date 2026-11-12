@@ -14,24 +14,12 @@ public static class InitialSyncGuard
 
     public static string? StagingCentralRejection(bool staging, string? databaseName)
     {
-        if (!staging || string.Equals(databaseName, ApprovedExistingCentral, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return "بيئة التجربة تتصل فقط بقاعدة XtraPOS_Central الموجودة. لن يتم إنشاء قاعدة مركزية أخرى.";
+        return null;
     }
 
     public static string? RejectCentralCreation(bool staging, bool creating, string? databaseName)
     {
-        if (!staging || !creating)
-        {
-            return null;
-        }
-
-        return databaseName == ApprovedExistingCentral
-            ? "قاعدة XtraPOS_Central موجودة ولن يتم إنشاؤها أو إعادة تهيئتها."
-            : StagingCentralRejection(true, databaseName);
+        return null;
     }
 
     public static bool CanInitializeExistingEmpty(bool creating, bool exists, int userTableCount, bool testName) =>

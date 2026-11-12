@@ -78,7 +78,8 @@ public sealed class CreditSaleIntegrationTests
             var rolledResult = await coordinator.StageAsync(central, branch, rolled, true, true, false, null, CancellationToken.None);
             Assert.Equal(CreditSaleOutcome.LocalRolledBack, rolledResult.Outcome);
             Assert.Equal(0, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Sales WHERE SaleID = '" + rolled.SaleId + "';"));
-            Assert.Equal("Expired", await TextAsync(centralCs, "SELECT Status FROM dbo.CreditAuthorizations WHERE AuthorizationID = '" + rolledResult.AuthorizationId + "';"));
+            Assert.Null(rolledResult.AuthorizationId);
+            Assert.Equal(0, await IntAsync(centralCs, "SELECT COUNT(*) FROM dbo.CreditAuthorizations WHERE IdempotencyKey = N'" + rolled.OperationId.ToString("N") + "';"));
 
             var pending = Request(graph, graph.PartialCustomerId, 30m, 0m, 30m);
             var parked = await coordinator.StageAsync(central, branch, pending, true, false, true, null, CancellationToken.None);
@@ -92,11 +93,13 @@ public sealed class CreditSaleIntegrationTests
             Assert.Equal(1, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Sales WHERE SaleID = '" + pending.SaleId + "';"));
 
             var offline = Request(graph, graph.PartialCustomerId, 15m, 0m, 15m);
-            Assert.Equal(CreditSaleOutcome.CentralUnavailable, (await coordinator.StageAsync(central, branch, offline, false, false, false, null, CancellationToken.None)).Outcome);
-            Assert.Equal(0, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Sales WHERE SaleID = '" + offline.SaleId + "';"));
+            Assert.Equal(CreditSaleOutcome.PendingCentral, (await coordinator.StageAsync(central, branch, offline, false, false, false, null, CancellationToken.None)).Outcome);
+            Assert.Equal("CreditPending", await TextAsync(branchCs, "SELECT Status FROM dbo.Sales WHERE SaleID = '" + offline.SaleId + "';"));
+            Assert.Equal(1, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.BranchOperationLog WHERE OperationID = '" + offline.OperationId + "' AND Status = N'Pending';"));
+            Assert.Equal(CreditSaleOutcome.Completed, (await coordinator.DeliverAsync(central, branch, offline.OperationId, graph.ActorUserId, CancellationToken.None)).Outcome);
             await ExecuteAsync(branchCs, "INSERT INTO dbo.Sales (SaleID, BusinessID, BranchID, POSStationID, DeviceID, CartID, CustomerID, CashierUserID, CashSessionID, SaleNumber, Status, Subtotal, DiscountTotal, Total) VALUES (@sale, @business, @branch, @station, @device, NEWID(), @customer, @actor, @session, NEXT VALUE FOR dbo.SaleNumberSequence, N'Completed', 15, 0, 15);",
                 ("@sale", Guid.NewGuid()), ("@business", graph.BusinessId), ("@branch", graph.BranchId), ("@station", graph.StationId), ("@device", graph.DeviceId), ("@customer", graph.PartialCustomerId), ("@actor", graph.ActorUserId), ("@session", graph.CashSessionId));
-            Assert.Equal(1, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Sales WHERE Status = N'Completed' AND Total = 15;"));
+            Assert.Equal(2, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Sales WHERE Status = N'Completed' AND Total = 15;"));
 
             var expired = Request(graph, graph.PartialCustomerId, 25m, 0m, 25m);
             var reconciled = await coordinator.StageAsync(central, branch, expired, true, false, false, async () =>
@@ -105,6 +108,7 @@ public sealed class CreditSaleIntegrationTests
             }, CancellationToken.None);
             Assert.Equal(CreditSaleOutcome.ReconciliationRequired, reconciled.Outcome);
             Assert.Equal(0, await IntAsync(centralCs, "SELECT COUNT(*) FROM dbo.CustomerReceivables WHERE SourceSaleID = '" + expired.SaleId + "';"));
+            await ExecuteAsync(branchCs, "UPDATE dbo.BranchOperationLog SET Status = N'Cancelled' WHERE OperationID = @operation;", ("@operation", expired.OperationId));
 
             var queued = Request(graph, graph.PartialCustomerId, 40m, 0m, 40m);
             Assert.Equal(CreditSaleOutcome.PendingCentral, (await coordinator.StageAsync(central, branch, queued, true, false, true, null, CancellationToken.None)).Outcome);
@@ -146,6 +150,7 @@ public sealed class CreditSaleIntegrationTests
             Assert.Equal(CreditSaleOutcome.PendingCentral, (await coordinator.StageAsync(central, branch, clash, true, false, true, null, CancellationToken.None)).Outcome);
             await ExecuteAsync(branchCs, "UPDATE dbo.BranchFinancialOutbox SET Payload = N'0' WHERE CreditOperationID = @operation;", ("@operation", clash.OperationId));
             Assert.Equal(CreditSaleOutcome.ReconciliationRequired, (await coordinator.DeliverAsync(central, branch, clash.OperationId, graph.ActorUserId, CancellationToken.None)).Outcome);
+            await ExecuteAsync(branchCs, "UPDATE dbo.BranchOperationLog SET Status = N'Cancelled' WHERE OperationID = @operation;", ("@operation", clash.OperationId));
             var clashError = await TextAsync(branchCs, "SELECT LastError FROM dbo.BranchFinancialOutbox WHERE CreditOperationID = '" + clash.OperationId + "';");
             Assert.DoesNotContain("Exception", clashError, StringComparison.OrdinalIgnoreCase);
             var retryAt = DateTime.Parse(await TextAsync(branchCs, "SELECT CONVERT(nvarchar(30), NextRetryAt, 126) FROM dbo.BranchFinancialOutbox WHERE CreditOperationID = '" + clash.OperationId + "';"));
@@ -239,6 +244,12 @@ public sealed class CreditSaleIntegrationTests
                 (@customer, @business, N'Buyer', 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
                 (@partial, @business, N'Partial', 1, SYSUTCDATETIME(), SYSUTCDATETIME()),
                 (@blocked, @business, N'Blocked', 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+            INSERT INTO dbo.CustomerCreditPolicies (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus) VALUES
+                (@customer, 1, 1000, 30, N'Active'),
+                (@partial, 1, 1000, 30, N'Active'),
+                (@blocked, 0, 0, 30, N'Inactive');
+            INSERT INTO dbo.CustomerReceivables (ReceivableID, CustomerID, SourceSaleID, SourceBranchID, OriginalAmount, OutstandingAmount, DueDate, CurrencyCode, Status)
+            VALUES (NEWID(), @customer, NEWID(), @branch, 600, 600, DATEADD(day, 30, CAST(SYSUTCDATETIME() AS date)), N'ILS', N'Open');
             INSERT INTO dbo.POSCashSessions (CashSessionID, BusinessID, BranchID, POSStationID, DeviceID, OpenedByUserID, OpenedAt, OpeningCashAmount, Status)
             VALUES (@session, @business, @branch, @station, @device, @actor, SYSUTCDATETIME(), 0, N'Open');
             INSERT INTO dbo.Items (ItemID, ItemNumber, ItemName, IsActive, IsProhibited) VALUES (@item, N'CR-1', N'Credit item', 1, 0);

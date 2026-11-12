@@ -57,9 +57,8 @@ describe("customers menu", () => {
     expect(screen.getByRole("heading", { name: "إدارة الزبائن" })).toBeTruthy();
     expect(document.querySelectorAll(".xp-screen-bar")).toHaveLength(0);
     expect(document.querySelectorAll("header")).toHaveLength(1);
-    for (const title of ["ديون الزبائن", "مشتريات الزبون"]) {
-      expect(screen.getByRole("button", { name: new RegExp(title) }).hasAttribute("disabled")).toBe(true);
-    }
+    expect(screen.getByRole("button", { name: /مشتريات الزبون/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /ديون الزبائن/ }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: /إضافة زبون جديد/ }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: /استعراض الزبائن/ }).hasAttribute("disabled")).toBe(false);
 

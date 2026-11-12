@@ -67,16 +67,26 @@ public static class CentralRoute
 
     public static bool SameInstance(string branchServer, SqlEndpointSettings central)
     {
-        if (string.Equals(central.LocationKind, SqlEndpointSettings.Remote, StringComparison.Ordinal))
+        return string.Equals(
+            Setup.OperationalBranchAddress.Normalize(HostText(branchServer, null, null)),
+            Setup.OperationalBranchAddress.Normalize(HostText(central.Server, central.InstanceName, central.Port)),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string HostText(string? server, string? instanceName, int? port)
+    {
+        var host = server?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(instanceName) && host.IndexOf('\\') < 0)
         {
-            return false;
+            host += "\\" + instanceName.Trim();
         }
 
-        var branch = Split(branchServer, null);
-        var centralHost = Split(central.Server, central.Port);
-        return string.IsNullOrWhiteSpace(central.InstanceName)
-            && HostEquals(branch.Server, centralHost.Server)
-            && branch.Port == centralHost.Port;
+        if (port is > 0 && host.LastIndexOf(',') < 0)
+        {
+            host += "," + port.Value;
+        }
+
+        return host;
     }
 
     public static (string Server, int? Port) Split(string? server, int? explicitPort)

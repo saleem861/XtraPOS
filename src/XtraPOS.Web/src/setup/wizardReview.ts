@@ -14,6 +14,19 @@ export interface ReviewSection {
 
 const SYNC_DIRECTION = "الفرع المحلي → النسخة البعيدة";
 
+export function authoritativeBranchReview(
+  draft: BranchSetupInput,
+  persisted?: { branchCode?: string | null; branchName?: string | null } | null,
+): BranchSetupInput {
+  const code = persisted?.branchCode?.trim() ?? "";
+  if (!code) {
+    return draft;
+  }
+
+  const name = persisted?.branchName?.trim() || draft.branchName;
+  return { ...draft, branchCode: code, branchName: name };
+}
+
 export function mainBranchReview(draft: BranchSetupInput): ReviewSection[] {
   const sections: ReviewSection[] = [];
   if (draft.operatingMode === "CentralManagement") {

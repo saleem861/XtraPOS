@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Operations;
 using XtraPOS.Api.Security;
 
 namespace XtraPOS.Api.Credit;
@@ -69,9 +70,18 @@ public sealed class CreditReversalService
             return CreditReversalOutcome.Rejected;
         }
 
-        if (!centralReachable)
+        if (!centralReachable || await BranchOperationLog.HasEarlierIncompleteAsync(branch, request.OperationId, cancellationToken))
         {
-            return CreditReversalOutcome.CentralUnavailable;
+            try
+            {
+                await CommitBranchAsync(branch, request, openSession.Value, effect, cancellationToken);
+            }
+            catch (SqlException)
+            {
+                return CreditReversalOutcome.Rejected;
+            }
+
+            return CreditReversalOutcome.PendingCentral;
         }
 
         var authorized = await AuthorizeAsync(central, request, collection.Value, cancellationToken);
@@ -211,6 +221,16 @@ public sealed class CreditReversalService
         insert.Parameters.Add("@effect", SqlDbType.NVarChar, 30).Value = effect;
         insert.Parameters.Add("@payload", SqlDbType.NVarChar, 2000).Value = Payload(request);
         await insert.ExecuteNonQueryAsync(cancellationToken);
+        await BranchOperationLog.EnqueueAsync(branch, transaction, new BranchOperationDraft(
+            request.OperationId,
+            "CollectionReversal",
+            Payload(request),
+            "عكس تسديد",
+            "BranchCollectionReversals",
+            request.OperationId,
+            request.BranchId,
+            request.ActorUserId,
+            null), cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -387,22 +407,43 @@ public sealed class CreditReversalService
         command.Parameters.Add("@error", SqlDbType.NVarChar, 400).Value = (object?)error ?? DBNull.Value;
         command.Parameters.Add("@owner", SqlDbType.NVarChar, 80).Value = (object?)leaseOwner ?? DBNull.Value;
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await BranchOperationLog.MarkAsync(branch, null, operationId, status == "Completed" ? "Completed" : "Blocked", error, cancellationToken);
     }
 
     private static async Task<Guid?> ClaimAsync(SqlConnection branch, string workerId, CancellationToken cancellationToken)
     {
+        object? candidate;
+        await using (var peek = new SqlCommand(
+            """
+            SELECT TOP (1) ReversalOperationID
+            FROM dbo.BranchReversalOutbox
+            WHERE Status = N'Pending'
+            ORDER BY NextRetryAt;
+            """,
+            branch))
+        {
+            candidate = await peek.ExecuteScalarAsync(cancellationToken);
+        }
+        if (candidate is not Guid head || !await BranchOperationLog.IsExecutableHeadAsync(branch, head, cancellationToken))
+        {
+            return null;
+        }
+
         await using var command = new SqlCommand(
             """
+            DECLARE @id uniqueidentifier, @lease datetime2(0);
+            SELECT TOP (1) @id = ReversalOperationID, @lease = LeaseUntil
+            FROM dbo.BranchReversalOutbox WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+            WHERE Status = N'Pending'
+            ORDER BY NextRetryAt;
+            IF @id IS NULL OR (@lease IS NOT NULL AND @lease >= SYSUTCDATETIME())
+                RETURN;
             UPDATE dbo.BranchReversalOutbox
             SET LeaseOwner = @owner, LeaseUntil = DATEADD(minute, 2, SYSUTCDATETIME()), AttemptCount = AttemptCount + 1
             OUTPUT inserted.ReversalOperationID
-            WHERE OutboxEventID = (
-                SELECT TOP (1) OutboxEventID
-                FROM dbo.BranchReversalOutbox WITH (READPAST, UPDLOCK, ROWLOCK)
-                WHERE Status = N'Pending'
-                  AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME())
-                  AND NextRetryAt <= DATEADD(second, 1, SYSUTCDATETIME())
-                ORDER BY NextRetryAt);
+            WHERE ReversalOperationID = @id
+              AND Status = N'Pending'
+              AND (LeaseUntil IS NULL OR LeaseUntil < SYSUTCDATETIME());
             """,
             branch);
         command.Parameters.Add("@owner", SqlDbType.NVarChar, 80).Value = workerId;

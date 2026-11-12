@@ -66,9 +66,31 @@ public static class FinancialInboxSync
         }
 
         await reader.CloseAsync();
+        var localBranchId = await LocalBranchIdAsync(branch, cancellationToken);
         foreach (var row in rows)
         {
             maxSeen = row.Sequence;
+            if (row.EventType == "CreditSale")
+            {
+                await BranchCreditLedger.CopyCreditSaleAsync(
+                    branch,
+                    row.OperationId,
+                    row.CustomerId,
+                    row.OriginBranchId,
+                    row.SourceSaleId,
+                    row.SourceSaleNumber,
+                    row.Amount,
+                    row.PosNumber,
+                    row.ActorUserId,
+                    row.ConfirmedAt,
+                    cancellationToken);
+            }
+
+            if (localBranchId != Guid.Empty && row.OriginBranchId == localBranchId)
+            {
+                continue;
+            }
+
             if (await InsertInboxAsync(branch, row, cancellationToken))
             {
                 applied++;
@@ -121,6 +143,25 @@ public static class FinancialInboxSync
         command.Parameters.Add("@payload", SqlDbType.NVarChar, -1).Value = row.Payload;
         command.Parameters.Add("@confirmed", SqlDbType.DateTime2).Value = row.ConfirmedAt;
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    private static async Task<Guid> LocalBranchIdAsync(SqlConnection branch, CancellationToken cancellationToken)
+    {
+        await using var setting = new SqlCommand(
+            "SELECT TRY_CONVERT(uniqueidentifier, SettingValue) FROM dbo.SystemSettings WHERE SettingKey = N'BranchID';",
+            branch);
+        if (await setting.ExecuteScalarAsync(cancellationToken) is Guid configured && configured != Guid.Empty)
+        {
+            return configured;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            SELECT CASE WHEN COUNT(*) = 1 THEN CONVERT(nvarchar(36), MIN(BranchID)) ELSE NULL END
+            FROM dbo.Branches;
+            """,
+            branch);
+        return Guid.TryParse(await command.ExecuteScalarAsync(cancellationToken) as string, out var only) ? only : Guid.Empty;
     }
 
     private static async Task<Guid> BusinessIdAsync(SqlConnection branch, CancellationToken cancellationToken)

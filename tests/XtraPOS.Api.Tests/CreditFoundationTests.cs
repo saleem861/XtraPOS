@@ -41,7 +41,7 @@ public sealed class CreditFoundationTests
             Assert.Equal(1, await IntAsync(centralCs, "SELECT COUNT(*) FROM sys.indexes WHERE name = N'UQ_CustomerCreditLedger_Idempotency';"));
             Assert.Equal(1, await IntAsync(centralCs, "SELECT COUNT(*) FROM sys.triggers WHERE name = N'TR_CustomerCreditLedger_AppendOnly';"));
             Assert.Equal(7, await IntAsync(branchCs, "SELECT COUNT(*) FROM dbo.Permissions WHERE PermissionCode LIKE N'Credit.%';"));
-            Assert.Equal(0, await IntAsync(branchCs, "SELECT COUNT(*) FROM sys.tables WHERE name IN (N'CustomerReceivables', N'CustomerCreditLedger');"));
+            Assert.Equal(2, await IntAsync(branchCs, "SELECT COUNT(*) FROM sys.tables WHERE name IN (N'CustomerReceivables', N'CustomerCreditLedger');"));
             Assert.Equal(7, await IntAsync(branchCs, """
                 SELECT COUNT(*)
                 FROM dbo.RolePermissions AS grantRow

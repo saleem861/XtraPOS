@@ -1,7 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using XtraPOS.Api.Configuration;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Sync;
 
@@ -32,7 +31,7 @@ public sealed record SqlProbeResponse(
     bool? DatabaseExists = null,
     bool? SchemaCompatible = null);
 
-public sealed class SetupConnectionProbe(IHostEnvironment? environment = null, SqlServerOptions? applicationSql = null, IConfiguration? configuration = null)
+public sealed class SetupConnectionProbe(IHostEnvironment? environment = null, IConfiguration? configuration = null)
 {
     public async Task<SqlProbeResponse> ProbeAsync(SqlProbeRequest? request, CancellationToken cancellationToken)
     {
@@ -101,22 +100,6 @@ public sealed class SetupConnectionProbe(IHostEnvironment? environment = null, S
             {
                 return Fail(exception.Message);
             }
-        }
-        else if (staging
-            && !string.IsNullOrWhiteSpace(applicationSql?.User)
-            && !string.IsNullOrWhiteSpace(applicationSql.Password)
-            && (centralProbe && string.Equals(databaseName, InitialSyncGuard.ApprovedExistingCentral, StringComparison.Ordinal)
-                || !centralProbe && string.Equals(expectedRole, DatabaseRole.Branch, StringComparison.Ordinal)))
-        {
-            settings = settings with
-            {
-                Server = string.IsNullOrWhiteSpace(applicationSql.Server) ? settings.Server : applicationSql.Server.Trim(),
-                InstanceName = null,
-                Port = null,
-                AuthenticationType = SqlEndpointSettings.SqlLogin,
-                Username = applicationSql.User,
-                Password = applicationSql.Password,
-            };
         }
         try
         {
@@ -247,37 +230,8 @@ public sealed class SetupConnectionProbe(IHostEnvironment? environment = null, S
 
     private static async Task<bool> IsCompatibleCentralAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
-        await using var blocked = new SqlCommand(
-            """
-            SELECT CASE
-                WHEN OBJECT_ID(N'dbo.ItemBranchInventory', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.BranchStockBalances', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.StockMovements', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.POSStations', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.Devices', N'U') IS NOT NULL THEN 1
-                WHEN OBJECT_ID(N'dbo.Customers', N'U') IS NOT NULL
-                 AND COL_LENGTH(N'dbo.Customers', N'CustomerID') IS NULL THEN 1
-                ELSE 0
-            END;
-            """,
-            connection);
-        if ((int)(await blocked.ExecuteScalarAsync(cancellationToken) ?? 0) == 1)
-        {
-            return false;
-        }
-
-        if (!await TableExistsAsync(connection, "DatabaseSchemaHistory", cancellationToken))
-        {
-            return false;
-        }
-
-        await using var migrations = new SqlCommand(
-            """
-            SELECT COUNT(*) FROM dbo.DatabaseSchemaHistory
-            WHERE MigrationID IN (N'001_CentralFoundation', N'002_ItemOwnership', N'003_BranchCodeUniqueness');
-            """,
-            connection);
-        return (int)(await migrations.ExecuteScalarAsync(cancellationToken) ?? 0) == 3;
+        await using var compatible = new SqlCommand(SchemaConvergence.CentralStructureCompatibleSql, connection);
+        return (int)(await compatible.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
     }
 
     private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName, CancellationToken cancellationToken)

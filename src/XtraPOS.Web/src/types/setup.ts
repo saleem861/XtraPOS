@@ -38,6 +38,8 @@ export interface BranchSetupInput {
   branchCode: string;
   branchType: BranchType | "";
   stationNumber: string;
+  cashboxNumber: string;
+  syncPosNumber: string;
   stationName: string;
   deviceName: string;
   username: string;
@@ -65,6 +67,7 @@ export interface BranchSetupInput {
   branchAuthentication: "" | "Integrated" | "Sql";
   branchUsername: string;
   branchPassword: string;
+  branchDataDirectory?: string;
   branchUseCentralServer: boolean;
   branchRemoteChoice: "" | "yes" | "no";
   branchRemoteDatabaseName: string;
@@ -74,7 +77,9 @@ export interface BranchSetupInput {
   remoteAuthentication: "" | "Integrated" | "Sql";
   remoteUsername: string;
   remotePassword: string;
+  remoteDataDirectory?: string;
   branchDatabaseName: string;
+  branchAgentId: string;
   branchManualConnection: boolean;
   attachedBranchId: string;
   attachedBranchCode: string;
@@ -112,6 +117,8 @@ export const emptyBranchSetup: BranchSetupInput = {
   branchCode: "",
   branchType: "",
   stationNumber: "1",
+  cashboxNumber: "1",
+  syncPosNumber: "",
   stationName: "كاونتر 1",
   deviceName: "",
   username: "",
@@ -149,6 +156,7 @@ export const emptyBranchSetup: BranchSetupInput = {
   remoteUsername: "",
   remotePassword: "",
   branchDatabaseName: "",
+  branchAgentId: "",
   branchManualConnection: false,
   attachedBranchId: "",
   attachedBranchCode: "",
@@ -198,6 +206,11 @@ export interface DeviceSession {
 export interface SetupStatusResponse {
   status: "NotConfigured" | "Configuring" | "Configured" | "ConfiguredButAdminMissing" | "Error" | "ConfigurationError" | "DatabaseUnavailable";
   message?: string;
+  businessId?: string;
+  businessName?: string;
+  branchId?: string;
+  branchName?: string;
+  branchCode?: string;
 }
 
 export interface SetupStreamEvent {
@@ -207,6 +220,7 @@ export interface SetupStreamEvent {
   message?: string;
   device?: DeviceSession;
   alreadyConfigured?: boolean;
+  remoteAgent?: boolean;
 }
 
 export interface AdminSetupInput {

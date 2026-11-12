@@ -212,10 +212,9 @@ public sealed class FinancialDistributionTests
             Assert.True((await FinancialInboxSync.PullAsync(central, c2, CancellationToken.None)).Applied >= 1);
             var again = await FinancialInboxSync.PullAsync(central, c2, CancellationToken.None);
             Assert.Equal(0, again.Applied);
-            foreach (var cs in new[] { Connection(branchA), Connection(branchB), Connection(branchC) })
-            {
-                Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'Repayment';"));
-            }
+            Assert.Equal(1, await IntAsync(Connection(branchA), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'Repayment';"));
+            Assert.Equal(0, await IntAsync(Connection(branchB), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'Repayment';"));
+            Assert.Equal(1, await IntAsync(Connection(branchC), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'Repayment';"));
 
             var documents = new CreditHistoryService();
             var receipt = await documents.DocumentAsync(null, b2, graph.BusinessId, null, "collection:" + operation.ToString("N"), CancellationToken.None);
@@ -229,9 +228,11 @@ public sealed class FinancialDistributionTests
             await FinancialInboxSync.PullAsync(central, a2, CancellationToken.None);
             await FinancialInboxSync.PullAsync(central, b2, CancellationToken.None);
             await FinancialInboxSync.PullAsync(central, c2, CancellationToken.None);
+            Assert.Equal(0, await IntAsync(Connection(branchA), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'DebtReversal';"));
+            Assert.Equal(1, await IntAsync(Connection(branchB), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'DebtReversal';"));
+            Assert.Equal(1, await IntAsync(Connection(branchC), "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'DebtReversal';"));
             foreach (var cs in new[] { Connection(branchA), Connection(branchB), Connection(branchC) })
             {
-                Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.BranchFinancialInbox WHERE EventType = N'DebtReversal';"));
                 Assert.Equal(1, await IntAsync(cs, "SELECT COUNT(*) FROM dbo.FinancialSyncCheckpoints;"));
             }
 
@@ -364,6 +365,7 @@ public sealed class FinancialDistributionTests
             WHERE role.RoleCode = N'User'
               AND NOT EXISTS (SELECT 1 FROM dbo.RolePermissions AS existing WHERE existing.RoleID = role.RoleID AND existing.PermissionID = permission.PermissionID);
             INSERT INTO dbo.Customers (CustomerID, BusinessID, Name, IsActive, CreatedAt, UpdatedAt) VALUES (@customer, @business, N'Buyer', 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+            INSERT INTO dbo.CustomerCreditPolicies (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus) VALUES (@customer, 1, 100, 30, N'Active');
             INSERT INTO dbo.POSCashSessions (CashSessionID, BusinessID, BranchID, POSStationID, DeviceID, OpenedByUserID, OpenedAt, OpeningCashAmount, Status)
             VALUES (@session, @business, @branch, @station, @device, @actor, SYSUTCDATETIME(), 0, N'Open');
             INSERT INTO dbo.Items (ItemID, ItemNumber, ItemName, IsActive, IsProhibited) VALUES (@item, N'SY-1', N'Sync item', 1, 0);
