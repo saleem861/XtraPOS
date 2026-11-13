@@ -45,5 +45,14 @@ public sealed class LocalPosSessionStore(IDataProtectionProvider protection, IHo
         }
     }
 
+    public void Clear()
+    {
+        var path = SessionPath();
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
     private string SessionPath() => Path.Combine(environment.ContentRootPath, "App_Data", "local-pos-session.json");
 }

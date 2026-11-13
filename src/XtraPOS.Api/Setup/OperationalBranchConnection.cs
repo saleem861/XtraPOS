@@ -114,6 +114,14 @@ public sealed class OperationalBranchConnectionStore
             document.TrustServerCertificate);
     }
 
+    public void Clear()
+    {
+        if (File.Exists(_path))
+        {
+            File.Delete(_path);
+        }
+    }
+
     private sealed class StoredOperationalBranch
     {
         public string DatabaseRole { get; set; } = "";

@@ -325,6 +325,46 @@ public sealed class SqlConnectionFactory
         SqlConnection.ClearAllPools();
     }
 
+    public bool HasDroppableExclusiveInstallation
+    {
+        get
+        {
+            var active = ActiveOperational();
+            return active is not null && Setup.ExclusiveInstallationReset.CanDrop(active.DatabaseName, active.Server, active.InstanceName);
+        }
+    }
+
+    public async Task DropExclusiveOperationalInstallationAsync(CancellationToken cancellationToken)
+    {
+        var active = ActiveOperational();
+        if (active is null || !Setup.ExclusiveInstallationReset.CanDrop(active.DatabaseName, active.Server, active.InstanceName))
+        {
+            throw new InvalidOperationException("Refusing to drop a protected, shared, or remote database.");
+        }
+
+        var databaseName = active.DatabaseName.Trim();
+        var master = new SqlConnectionStringBuilder(active.BuildConnectionString("master"))
+        {
+            ConnectTimeout = _options.ConnectTimeoutSeconds is >= 1 and <= 120 ? _options.ConnectTimeoutSeconds : 15,
+            ApplicationName = "XtraPOS.Api",
+        }.ConnectionString;
+        SqlConnection.ClearAllPools();
+        await using var connection = new SqlConnection(master);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            $"""
+            IF DB_ID(N'{databaseName}') IS NOT NULL
+            BEGIN
+                ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                DROP DATABASE [{databaseName}];
+            END
+            """,
+            connection);
+        command.CommandTimeout = 60;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        SqlConnection.ClearAllPools();
+    }
+
     public async Task DropConfiguredInstallationAsync(CancellationToken cancellationToken)
     {
         if (ActiveOperational() is not null)

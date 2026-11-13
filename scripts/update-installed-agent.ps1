@@ -10,7 +10,7 @@ if (-not (Test-Path (Join-Path $source "wwwroot\index.html"))) {
 
 & sc.exe stop XtraPOSBranchAgent
 Start-Sleep -Seconds 4
-& robocopy $source $dest /E /XD App_Data
+& robocopy $source $dest /E /XD App_Data /R:1 /W:1
 if ($LASTEXITCODE -ge 8) {
     throw "Copy failed with robocopy code $LASTEXITCODE."
 }

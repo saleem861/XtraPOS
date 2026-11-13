@@ -219,7 +219,9 @@ public static class ApiEndpoints
             var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
             var connections = http.RequestServices.GetRequiredService<SqlConnectionFactory>();
             var deleteDatabase = body?.DeleteExclusiveDatabase == true;
-            if (deleteDatabase && !ProtectedDatabasePolicy.AllowsInstallationReset(connections.ConfiguredDatabase))
+            if (deleteDatabase
+                && !connections.HasDroppableExclusiveInstallation
+                && !ProtectedDatabasePolicy.AllowsInstallationReset(connections.ConfiguredDatabase))
             {
                 var refusal = "حذف هذه القاعدة مرفوض. القواعد المركزية والمشتركة وقواعد النظام محمية.";
                 SetupLog.Write(environment.ContentRootPath, environment.EnvironmentName, "device-reset-drop", "refused", detail: refusal);
@@ -249,7 +251,14 @@ public static class ApiEndpoints
             await db.Database.CloseConnectionAsync();
             try
             {
-                await connections.DropConfiguredInstallationAsync(cancellationToken);
+                if (connections.HasDroppableExclusiveInstallation)
+                {
+                    await connections.DropExclusiveOperationalInstallationAsync(cancellationToken);
+                }
+                else
+                {
+                    await connections.DropConfiguredInstallationAsync(cancellationToken);
+                }
             }
             catch (Exception exception)
             {
@@ -257,6 +266,10 @@ public static class ApiEndpoints
                 return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
             }
 
+            http.RequestServices.GetRequiredService<OperationalBranchConnectionStore>().Clear();
+            http.RequestServices.GetRequiredService<OperationalBranchConnection>().Replace(null);
+            http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
+            http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
             InstallationState.Clear(environment.ContentRootPath);
             SetupAuthorization.Invalidate(environment.ContentRootPath);
             return Results.Ok(new { status = "Reset", databaseDeleted = true });

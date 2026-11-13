@@ -204,6 +204,12 @@ public sealed class BranchAgentWorker(
             localAppUrl);
     }
 
+    public void ForgetConfiguredBranch()
+    {
+        _configuredBranch = null;
+        _configuredBranchDetailsLoaded = false;
+    }
+
     private async Task RefreshConfiguredBranchAsync(CancellationToken cancellationToken)
     {
         if (!InstallationState.IsConfigured(environment.ContentRootPath))
