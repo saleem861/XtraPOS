@@ -225,6 +225,15 @@ public sealed class SharedDataSync(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task CopyMembershipIdentitiesAsync(SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
+        await remote.OpenAsync(cancellationToken);
+        await branch.OpenAsync(cancellationToken);
+        await MembershipReplica.CopyIdentitiesFromCentralAsync(remote, branch, cancellationToken);
+    }
+
     private async Task CopyCustomerReplicaAsync(SqlEndpointSettings central, CancellationToken cancellationToken)
     {
         await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
@@ -235,6 +244,7 @@ public sealed class SharedDataSync(
         var priceTypes = await ReadPriceTypesAsync(remote, branch, cancellationToken);
         await CopyClassificationsAsync(remote, branch, priceTypes, cancellationToken);
         await CopyCustomersAsync(remote, branch, priceTypes, cancellationToken);
+        await MembershipReplica.CopyIdentitiesFromCentralAsync(remote, branch, cancellationToken);
         await CopyCreditPoliciesAsync(remote, branch, cancellationToken);
         await CopySpecialPricesAsync(remote, branch, cancellationToken);
     }

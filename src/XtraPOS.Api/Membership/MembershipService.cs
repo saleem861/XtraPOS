@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Setup;
 using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Membership;
@@ -19,12 +20,15 @@ public sealed record MembershipSummary(bool Configured, int ActiveSessions, IRea
 public sealed class MembershipService(
     SqlConnectionFactory connections,
     SyncEndpointStore endpoints,
+    LocalAppHostState localHost,
     IOptions<MembershipOptions> options)
 {
     public const string SessionCookie = "xtrapos-membership";
     public const string CsrfCookie = "xtrapos-membership-csrf";
 
     public MembershipOptions Options => options.Value;
+
+    public bool RecordsBranchOperations => !string.IsNullOrWhiteSpace(localHost.BaseUrl);
 
     public async Task<MembershipVerificationCreated> CreateAsync(Guid businessId, Guid branchId, Guid counterId, Guid cashierUserId, Guid customerId, Guid saleContextId, CancellationToken cancellationToken)
     {
@@ -466,9 +470,68 @@ public sealed class MembershipService(
         return (token, expires);
     }
 
+    public async Task<(string Token, DateTime ExpiresAtUtc)> CreateBranchEnrollmentQrAsync(Guid businessId, Guid cashierUserId, Guid? customerId, CancellationToken cancellationToken)
+    {
+        if (!options.Value.Enabled) throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
+        var token = MembershipTokens.CreateOpaqueToken();
+        var expires = DateTime.UtcNow.AddSeconds(Math.Clamp(options.Value.QRExpirySeconds, 15, 300));
+        var enrollmentId = Guid.NewGuid();
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var command = new SqlCommand(
+            """
+            INSERT INTO dbo.MembershipEnrollmentRequests
+                (EnrollmentID, BusinessID, CustomerID, TokenHash, Status, ExpiresAt, CreatedAt, CashierUserID)
+            VALUES
+                (@id, @business, @customer, @hash, N'Pending', @expires, SYSUTCDATETIME(), @cashier);
+            """,
+            connection,
+            transaction))
+        {
+            command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = enrollmentId;
+            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+            command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = (object?)customerId ?? DBNull.Value;
+            command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
+            command.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expires;
+            command.Parameters.Add("@cashier", SqlDbType.UniqueIdentifier).Value = cashierUserId;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await Sync.MembershipReplica.EnqueueAsync(
+            connection,
+            transaction,
+            Sync.MembershipReplica.EnrollmentOperation,
+            enrollmentId,
+            cashierUserId,
+            "تسجيل عضوية",
+            cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (token, expires);
+    }
+
     public async Task<(string Status, string? Provider, string? Display, Guid? AttemptId)> ReadEnrollmentQrAsync(string token, CancellationToken cancellationToken)
     {
-        await using var connection = await OpenCentralAsync(cancellationToken);
+        try
+        {
+            await using var central = await OpenCentralAsync(cancellationToken);
+            var found = await ReadEnrollmentOnAsync(central, token, cancellationToken);
+            if (found.Status != "Missing")
+            {
+                return found;
+            }
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+        }
+
+        await using var branch = new SqlConnection(connections.CreateBranchConnectionString());
+        await branch.OpenAsync(cancellationToken);
+        return await ReadEnrollmentOnAsync(branch, token, cancellationToken);
+    }
+
+    private async Task<(string Status, string? Provider, string? Display, Guid? AttemptId)> ReadEnrollmentOnAsync(SqlConnection connection, string token, CancellationToken cancellationToken)
+    {
         string? provider = null;
         string? subject = null;
         string? display = null;
@@ -513,20 +576,25 @@ public sealed class MembershipService(
 
     public async Task UnlinkAsync(Guid customerId, CancellationToken cancellationToken)
     {
-        var connectionString = await CentralConnectionStringAsync(cancellationToken) ?? throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
-        await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        await using var connection = await OpenCentralAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var revoked = new List<Guid>();
         await using (var identities = new SqlCommand(
             """
             UPDATE dbo.CustomerMembershipIdentities
-            SET Status = N'Revoked', UpdatedAt = SYSUTCDATETIME()
+            SET Status = N'Revoked', RevokedAt = SYSUTCDATETIME(), UpdatedAt = SYSUTCDATETIME()
+            OUTPUT inserted.IdentityID
             WHERE CustomerID = @customer AND Status = N'Active';
             """, connection, transaction))
         {
-            identities.Parameters.AddWithValue("@customer", customerId);
-            await identities.ExecuteNonQueryAsync(cancellationToken);
+            identities.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = customerId;
+            await using var reader = await identities.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                revoked.Add(reader.GetGuid(0));
+            }
         }
+
         await using (var sessions = new SqlCommand(
             """
             UPDATE dbo.CustomerMembershipSessions
@@ -537,6 +605,22 @@ public sealed class MembershipService(
             sessions.Parameters.AddWithValue("@customer", customerId);
             await sessions.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        if (RecordsBranchOperations)
+        {
+            foreach (var identityId in revoked)
+            {
+                await Sync.MembershipReplica.EnqueueAsync(
+                    connection,
+                    transaction,
+                    Sync.MembershipReplica.IdentityOperation,
+                    identityId,
+                    Guid.Empty,
+                    "إلغاء ربط العضوية",
+                    cancellationToken);
+            }
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -557,6 +641,13 @@ public sealed class MembershipService(
 
     internal async Task<SqlConnection> OpenCentralAsync(CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrWhiteSpace(localHost.BaseUrl))
+        {
+            var branch = new SqlConnection(connections.CreateBranchConnectionString());
+            await branch.OpenAsync(cancellationToken);
+            return branch;
+        }
+
         var connectionString = await CentralConnectionStringAsync(cancellationToken) ?? throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
         var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);

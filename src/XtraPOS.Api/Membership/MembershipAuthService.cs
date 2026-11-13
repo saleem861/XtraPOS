@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Customers;
 using XtraPOS.Api.Diagnostics;
+using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Membership;
 
@@ -272,17 +273,23 @@ public sealed class MembershipAuthService(
             insert.Parameters.AddWithValue("@email", (object?)email ?? DBNull.Value);
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
+        var completedEnrollments = new List<Guid>();
         await using (var enroll = new SqlCommand(
             """
             UPDATE dbo.MembershipEnrollmentRequests
             SET Status = N'Completed', CustomerID = @customer
+            OUTPUT inserted.EnrollmentID
             WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Pending';
             """, connection, transaction))
         {
             enroll.Parameters.AddWithValue("@customer", customerId);
             enroll.Parameters.AddWithValue("@provider", provider);
             enroll.Parameters.AddWithValue("@subject", subject);
-            await enroll.ExecuteNonQueryAsync(cancellationToken);
+            await using var completed = await enroll.ExecuteReaderAsync(cancellationToken);
+            while (await completed.ReadAsync(cancellationToken))
+            {
+                completedEnrollments.Add(completed.GetGuid(0));
+            }
         }
         await using (var done = new SqlCommand(
             """
@@ -297,6 +304,29 @@ public sealed class MembershipAuthService(
             if (await done.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_PROVIDER_STATE");
         }
         await membership.CreateSessionAsync(connection, transaction, business, customerId, identity, cancellationToken);
+        if (membership.RecordsBranchOperations)
+        {
+            await MembershipReplica.EnqueueAsync(
+                connection,
+                transaction,
+                MembershipReplica.IdentityOperation,
+                identity,
+                Guid.Empty,
+                "ربط عضوية",
+                cancellationToken);
+            foreach (var enrollmentId in completedEnrollments)
+            {
+                await MembershipReplica.EnqueueAsync(
+                    connection,
+                    transaction,
+                    MembershipReplica.EnrollmentOperation,
+                    enrollmentId,
+                    Guid.Empty,
+                    "إكمال تسجيل العضوية",
+                    cancellationToken);
+            }
+        }
+
         await transaction.CommitAsync(cancellationToken);
         DiagnosticLog.Write(environment, "customer-identity", "stored");
     }
@@ -365,6 +395,18 @@ public sealed class MembershipAuthService(
             if (await done.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_PROVIDER_STATE");
         }
         var session = await membership.CreateSessionAsync(connection, transaction, business, customerId, identity, cancellationToken);
+        if (membership.RecordsBranchOperations)
+        {
+            await MembershipReplica.EnqueueAsync(
+                connection,
+                transaction,
+                MembershipReplica.IdentityOperation,
+                identity,
+                Guid.Empty,
+                "ربط عضوية",
+                cancellationToken);
+        }
+
         await transaction.CommitAsync(cancellationToken);
         return session;
     }

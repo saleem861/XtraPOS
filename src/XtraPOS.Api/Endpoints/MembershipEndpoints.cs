@@ -180,11 +180,17 @@ public static class MembershipEndpoints
         }
         try
         {
-            var created = await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, request?.CustomerId is Guid id && id != Guid.Empty ? id : null, cancellationToken);
+            Guid? enrollmentCustomer = request?.CustomerId is Guid customerId && customerId != Guid.Empty ? customerId : null;
+            var localHost = http.RequestServices.GetService<XtraPOS.Api.Setup.LocalAppHostState>();
+            var created = localHost?.BaseUrl is not null
+                ? await membership.CreateBranchEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken)
+                : await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken);
             DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "created");
-            var origin = string.IsNullOrWhiteSpace(membership.Options.PublicOrigin)
-                ? $"{http.Request.Scheme}://{http.Request.Host}"
-                : membership.Options.PublicOrigin.TrimEnd('/');
+            var origin = localHost?.BaseUrl is not null
+                ? localHost.BaseUrl.TrimEnd('/')
+                : string.IsNullOrWhiteSpace(membership.Options.PublicOrigin)
+                    ? $"{http.Request.Scheme}://{http.Request.Host}"
+                    : membership.Options.PublicOrigin.TrimEnd('/');
             return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc, enrollUrl = origin + "/membership/enroll/" + created.Token });
         }
         catch (MembershipException exception)

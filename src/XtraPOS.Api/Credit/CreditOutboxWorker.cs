@@ -49,9 +49,11 @@ public sealed class CreditOutboxWorker(
         }
 
         await using var branch = new SqlConnection(branchConnection);
-        await using var central = new SqlConnection(centralSettings.BuildConnectionString(centralSettings.DatabaseName));
+        var centralConnection = centralSettings.BuildConnectionString(centralSettings.DatabaseName);
+        await using var central = new SqlConnection(centralConnection);
         await branch.OpenAsync(cancellationToken);
         await central.OpenAsync(cancellationToken);
+        await EnsureCentralSchemaAsync(scope.ServiceProvider, centralConnection, cancellationToken);
         await BranchOperationLog.PurgeAsync(branch, cancellationToken);
         var processor = scope.ServiceProvider.GetRequiredService<CreditOutboxProcessor>();
         var collection = scope.ServiceProvider.GetRequiredService<CreditCollectionService>();
@@ -63,6 +65,7 @@ public sealed class CreditOutboxWorker(
             "DebtCollection" => await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
             "CollectionReversal" => await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
             "CustomerUpsert" => await scope.ServiceProvider.GetRequiredService<BranchCardOutboxSync>().RelayCustomerAsync(central, branch, cancellationToken),
+            "MembershipEnrollment" or "MembershipUpsert" => await MembershipReplica.RelayAsync(central, branch, cancellationToken),
             null => await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? (object?)await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),
@@ -75,5 +78,26 @@ public sealed class CreditOutboxWorker(
 
         logger.LogInformation("Credit outbox recovery finished with {Outcome}.", outcome);
         return TimeSpan.FromSeconds(2);
+    }
+
+    private static int _centralSchema;
+    private async Task EnsureCentralSchemaAsync(IServiceProvider services, string centralConnection, CancellationToken cancellationToken)
+    {
+        if (Interlocked.CompareExchange(ref _centralSchema, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await services.GetRequiredService<XtraPOS.Api.Data.Central.CentralMigrationRunner>()
+                .ApplyAsync(centralConnection, cancellationToken);
+            logger.LogInformation("Pending central schema updates were applied.");
+        }
+        catch (Exception exception)
+        {
+            Interlocked.Exchange(ref _centralSchema, 0);
+            logger.LogWarning(exception, "Pending central schema updates were not applied.");
+        }
     }
 }

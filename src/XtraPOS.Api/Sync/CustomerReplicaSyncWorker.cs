@@ -87,6 +87,15 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
             status.Report("InProgress", "customer-replica", "جاري المزامنة", null);
         }
         await provider.GetRequiredService<BranchCardOutboxSync>().FlushAsync(stoppingToken);
+        try
+        {
+            await sync.CopyMembershipIdentitiesAsync(settings, stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Membership identities were not copied from central.");
+        }
+
         var result = await sync.PullAsync(view.EndpointId, settings, stoppingToken);
         if (!result.CentralReachable)
         {

@@ -30,7 +30,7 @@ public static class CentralChangeApply
     };
 
     public static bool CanApply(string entityType) =>
-        entityType is "Items" or "ItemUnits" or "ItemPrices" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices" or "CustomerCreditPolicies";
+        entityType is "Items" or "ItemUnits" or "ItemPrices" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices" or "CustomerCreditPolicies" or "CustomerMembershipIdentities";
 
     public static async Task ApplyAsync(
         SqlConnection connection,
@@ -69,6 +69,10 @@ public static class CentralChangeApply
         {
             await ApplyCreditPolicyAsync(connection, null, payload, authoritative: false, cancellationToken);
         }
+        else if (entityType == "CustomerMembershipIdentities")
+        {
+            await MembershipReplica.ApplyIdentityAsync(connection, null, payload, cancellationToken);
+        }
     }
 
     public static async Task ApplyAsync(
@@ -95,6 +99,12 @@ public static class CentralChangeApply
         if (entityType == "CustomerItemSpecialPrices")
         {
             await ApplySpecialPriceAsync(connection, transaction, payload, cancellationToken);
+            return;
+        }
+
+        if (entityType == "CustomerMembershipIdentities")
+        {
+            await MembershipReplica.ApplyIdentityAsync(connection, transaction, payload ?? "", cancellationToken);
             return;
         }
 
