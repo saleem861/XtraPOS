@@ -112,7 +112,7 @@ builder.Services.AddScoped<NewTestBranchService>();
 builder.Services.AddScoped<PermissionService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.Configure<MembershipOptions>(builder.Configuration.GetSection(MembershipOptions.SectionName));
-if (builder.Environment.IsStaging())
+if (builder.Environment.IsStaging() || isBranchAgent)
 {
     builder.Services.PostConfigure<MembershipOptions>(options =>
     {
@@ -120,6 +120,15 @@ if (builder.Environment.IsStaging())
         options.GoogleLoginEnabled = true;
         options.AppleLoginEnabled = false;
         options.RequireVerificationForSpecialPrices = false;
+        if (isBranchAgent && string.IsNullOrWhiteSpace(options.PublicOrigin))
+        {
+            options.PublicOrigin = branchAgentServer;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.GoogleClientId))
+        {
+            options.GoogleClientId = "998725042091-t1p0fv71s7ajkbs104s62if1c1oviqmd.apps.googleusercontent.com";
+        }
     });
 }
 builder.Services.AddScoped<MembershipService>();

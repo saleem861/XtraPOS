@@ -182,7 +182,10 @@ public static class MembershipEndpoints
         {
             var created = await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, request?.CustomerId is Guid id && id != Guid.Empty ? id : null, cancellationToken);
             DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "created");
-            return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc });
+            var origin = string.IsNullOrWhiteSpace(membership.Options.PublicOrigin)
+                ? $"{http.Request.Scheme}://{http.Request.Host}"
+                : membership.Options.PublicOrigin.TrimEnd('/');
+            return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc, enrollUrl = origin + "/membership/enroll/" + created.Token });
         }
         catch (MembershipException exception)
         {

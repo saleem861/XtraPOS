@@ -49,7 +49,7 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
       headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
       body: JSON.stringify({ customerId: customerId || null }),
     });
-    const body = await response.json().catch(() => ({})) as { token?: string; message?: string };
+    const body = await response.json().catch(() => ({})) as { token?: string; message?: string; enrollUrl?: string };
     if (!response.ok || !body.token) {
       const message = body.message || "تعذر توليد رمز العضوية.";
       setQrError(message);
@@ -57,7 +57,7 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
       return;
     }
     traceUi("customer", "enrollment-qr", "created");
-    const url = `${window.location.origin}/membership/enroll/${body.token}`;
+    const url = body.enrollUrl || `${window.location.origin}/membership/enroll/${body.token}`;
     setQrToken(body.token);
     setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
   }
@@ -168,7 +168,7 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
           <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={shownIdentity} /></label>
           {canExcept ? <label className="membership-exception"><input type="checkbox" disabled={exceptionLocked} checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /><span>تسجيل الزبون بدون تعريف إلكتروني</span></label> : null}
         </div>
-        {qrError ? <p role="status">{qrError}</p> : null}
+        {qrError ? <p className="form-error" role="status">{qrError}</p> : null}
         {notice ? <p role="status">{notice}</p> : null}
         {dialog}
       </section>
@@ -188,7 +188,7 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
         <label><span>مفتاح التعريف</span><input aria-label="مفتاح التعريف" readOnly value={shownIdentity} /></label>
         {canExcept ? <label className="membership-exception"><input type="checkbox" disabled={exceptionLocked} checked={withoutMembership} onChange={(event) => { const next = event.target.checked; if (next && !window.confirm("سيتم تسجيل الزبون بدون تعريف إلكتروني. هل تؤكد هذا الاستثناء؟")) return; setWithoutMembership(next); onException?.(next); }} /><span>تسجيل الزبون بدون تعريف إلكتروني</span></label> : null}
       </div>
-      {qrError ? <p role="status">{qrError}</p> : null}
+      {qrError ? <p className="form-error" role="status">{qrError}</p> : null}
       {linked ? <button type="button" onClick={() => setOpen((value) => !value)}>إدارة العضوية</button> : null}
       {open && linked ? (
         <div className="membership-compact-actions">
