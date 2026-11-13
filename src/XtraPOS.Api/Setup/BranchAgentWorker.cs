@@ -21,24 +21,36 @@ public sealed class BranchAgentWorker(
 
     private volatile LocalBranchConfiguration? _configuredBranch;
     private volatile bool _configuredBranchDetailsLoaded;
+    private HttpClient _client = null!;
+    private int _channelGeneration;
 
     public async Task RunAsync(string server, string? pairingCode, CancellationToken cancellationToken)
     {
         var configuredServer = server.TrimEnd('/');
-        using var http = new HttpClient { BaseAddress = new Uri(configuredServer + "/"), Timeout = TimeSpan.FromSeconds(30) };
         var session = new AgentSession(configuredServer);
         LoadSavedSession(session);
+        _client = string.IsNullOrWhiteSpace(session.Token)
+            ? BranchAgentChannel.Open(configuredServer)
+            : BranchAgentChannel.Retarget(session.Server, session.Token);
         await RefreshConfiguredBranchAsync(cancellationToken);
         await using var local = new BranchAgentLocalEndpoint(
             () => CurrentStatus(session),
-            (request, token) => AcceptPairAsync(http, session, request, token),
+            (request, token) => AcceptPairAsync(session, request, token),
             BranchAgentLocalEndpoint.DefaultPort);
         local.Start();
 
         var lastHeartbeat = DateTimeOffset.MinValue;
+        var seenGeneration = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
-            var token = await WaitForTokenAsync(http, session, pairingCode, cancellationToken);
+            var token = await WaitForTokenAsync(session, pairingCode, cancellationToken);
+            if (seenGeneration != _channelGeneration)
+            {
+                seenGeneration = _channelGeneration;
+                lastHeartbeat = DateTimeOffset.MinValue;
+            }
+
+            var http = _client;
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             try
             {
@@ -114,7 +126,7 @@ public sealed class BranchAgentWorker(
         }
     }
 
-    private async Task<string> WaitForTokenAsync(HttpClient http, AgentSession session, string? pairingCode, CancellationToken cancellationToken)
+    private async Task<string> WaitForTokenAsync(AgentSession session, string? pairingCode, CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(session.Token))
         {
@@ -123,7 +135,7 @@ public sealed class BranchAgentWorker(
 
         if (!string.IsNullOrWhiteSpace(pairingCode))
         {
-            await AcceptPairAsync(http, session, new LocalPairRequest(pairingCode, session.Server, false), cancellationToken);
+            await AcceptPairAsync(session, new LocalPairRequest(pairingCode, session.Server, false), cancellationToken);
             return session.Token!;
         }
 
@@ -135,7 +147,7 @@ public sealed class BranchAgentWorker(
         return session.Token ?? throw new OperationCanceledException(cancellationToken);
     }
 
-    private async Task<LocalAgentStatus> AcceptPairAsync(HttpClient http, AgentSession session, LocalPairRequest request, CancellationToken cancellationToken)
+    private async Task<LocalAgentStatus> AcceptPairAsync(AgentSession session, LocalPairRequest request, CancellationToken cancellationToken)
     {
         var target = BranchAgentLocalDecision.NormalizeServer(string.IsNullOrWhiteSpace(request.Server) ? session.Server : request.Server);
         if (string.IsNullOrWhiteSpace(target))
@@ -178,8 +190,10 @@ public sealed class BranchAgentWorker(
         session.Token = paired.Token;
         session.Server = target;
         session.AgentId = paired.AgentId;
-        http.BaseAddress = new Uri(target + "/");
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", paired.Token);
+        var next = BranchAgentChannel.Retarget(target, paired.Token);
+        var previous = Interlocked.Exchange(ref _client, next);
+        Interlocked.Increment(ref _channelGeneration);
+        previous?.Dispose();
         return CurrentStatus(session);
     }
 

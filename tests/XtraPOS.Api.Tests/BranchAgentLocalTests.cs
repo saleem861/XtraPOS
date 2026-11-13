@@ -30,6 +30,14 @@ public class BranchAgentLocalTests
     }
 
     [Fact]
+    public void Retarget_opens_a_new_client_for_the_paired_server()
+    {
+        using var next = BranchAgentChannel.Retarget("http://127.0.0.1:47335", "token");
+        Assert.Equal(new Uri("http://127.0.0.1:47335/"), next.BaseAddress);
+        Assert.Equal("Bearer", next.DefaultRequestHeaders.Authorization?.Scheme);
+    }
+
+    [Fact]
     public void Installer_rejects_zip_paths_outside_the_install_folder()
     {
         Assert.False(BranchAgentLocalDecision.IsSafeZipEntry(@"..\windows\system32\cmd.exe"));
