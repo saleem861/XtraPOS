@@ -395,12 +395,16 @@ public sealed class SetupService(
                 var replicaState = await sharedData.ReadReplicaStateAsync(cancellationToken);
                 if (InitialSyncGuard.NeedsInitialSync(replicaState))
                 {
-                    await sharedData.BootstrapAsync(topology.Central, cancellationToken);
-                    replicaState = await sharedData.EnsureCustomerReplicaAsync(endpoint.EndpointId, topology.Central, cancellationToken);
+                    replicaState = await sharedData.EnsureInitialReplicaAsync(endpoint.EndpointId, topology.Central, cancellationToken);
                 }
 
                 if (InitialSyncGuard.NeedsInitialSync(replicaState))
                 {
+                    if (!string.IsNullOrWhiteSpace(sharedData.LastErrorDiagnostic))
+                    {
+                        SetupLog.Write(environment.ContentRootPath, environment.EnvironmentName, "initial-sync", sharedData.LastErrorDiagnostic);
+                    }
+
                     throw new SetupRejectedException("المزامنة الأولية لم تكتمل. النسخة لم تُعلَّم جاهزة، وستستأنف تلقائياً أثناء تشغيل الخدمة.");
                 }
 

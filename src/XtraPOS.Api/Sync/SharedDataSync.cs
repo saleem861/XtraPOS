@@ -24,8 +24,10 @@ public static class BranchRemoteSync
 
 public sealed class SharedDataSync(
     SqlConnectionFactory branchConnections,
-    CentralDatabaseService centralDatabases)
+    CentralDatabaseService centralDatabases,
+    ILogger<SharedDataSync>? logger = null)
 {
+    public string? LastErrorDiagnostic { get; private set; }
     public const string StreamName = "CentralMaster";
     public const string ReplicaStateKey = "CustomerReplicaState";
     public const string ReplicaNotInitialized = "NotInitialized";
@@ -128,10 +130,34 @@ public sealed class SharedDataSync(
         return items;
     }
 
+    public async Task<string> EnsureInitialReplicaAsync(Guid endpointId, SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        var baseline = await MaxCentralChangeSequenceAsync(central, cancellationToken);
+        await BootstrapAsync(central, cancellationToken);
+        await SetReplicaStateAsync(ReplicaBootstrapping, cancellationToken);
+        await CopyCustomerReplicaAsync(central, cancellationToken);
+        await using (var branch = new SqlConnection(branchConnections.CreateBranchConnectionString()))
+        {
+            await branch.OpenAsync(cancellationToken);
+            var checkpoint = await CheckpointAsync(branch, endpointId, cancellationToken);
+            if (checkpoint == 0 && baseline > 0)
+            {
+                await SaveCheckpointAsync(branch, endpointId, baseline, cancellationToken);
+            }
+        }
+
+        return await FinalizeCustomerReplicaAsync(endpointId, central, cancellationToken);
+    }
+
     public async Task<string> EnsureCustomerReplicaAsync(Guid endpointId, SqlEndpointSettings central, CancellationToken cancellationToken)
     {
         await SetReplicaStateAsync(ReplicaBootstrapping, cancellationToken);
         await CopyCustomerReplicaAsync(central, cancellationToken);
+        return await FinalizeCustomerReplicaAsync(endpointId, central, cancellationToken);
+    }
+
+    private async Task<string> FinalizeCustomerReplicaAsync(Guid endpointId, SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
         var pull = await PullAsync(endpointId, central, cancellationToken);
         if (!pull.CentralReachable)
         {
@@ -456,12 +482,14 @@ public sealed class SharedDataSync(
     {
         await using var connection = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
         await connection.OpenAsync(cancellationToken);
+        await using var exists = new SqlCommand("SELECT OBJECT_ID(N'dbo.SyncChangeLog', N'U');", connection);
+        if (await exists.ExecuteScalarAsync(cancellationToken) is null or DBNull)
+        {
+            return 0;
+        }
+
         await using var command = new SqlCommand(
-            """
-            SELECT CASE WHEN OBJECT_ID(N'dbo.SyncChangeLog', N'U') IS NULL THEN 0
-                        ELSE ISNULL(MAX(ChangeSequence), 0) END
-            FROM dbo.SyncChangeLog;
-            """,
+            "SELECT ISNULL(MAX(ChangeSequence), 0) FROM dbo.SyncChangeLog;",
             connection);
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is long sequence ? sequence : Convert.ToInt64(value ?? 0);
@@ -536,25 +564,29 @@ public sealed class SharedDataSync(
 
             var source = centralConnection ?? connection;
             var checkpoint = await CheckpointAsync(connection, endpointId, cancellationToken);
-            await using var read = new SqlCommand(
-                SharesInstance(central)
-                    ? $"""
-                      SELECT ChangeSequence, EntityType, EntityId, Payload
-                      FROM [{centralName}].dbo.SyncChangeLog
-                      WHERE ChangeSequence > @checkpoint
-                      ORDER BY ChangeSequence;
-                      """
-                    : """
-                      SELECT ChangeSequence, EntityType, EntityId, Payload
-                      FROM dbo.SyncChangeLog
-                      WHERE ChangeSequence > @checkpoint
-                      ORDER BY ChangeSequence;
-                      """,
-                source);
-            read.Parameters.AddWithValue("@checkpoint", checkpoint);
+            var changeLogObject = SharesInstance(central) ? $"[{centralName}].dbo.SyncChangeLog" : "dbo.SyncChangeLog";
+            await using var changeLogExists = new SqlCommand("SELECT OBJECT_ID(@name, N'U');", source);
+            changeLogExists.Parameters.AddWithValue("@name", changeLogObject);
             var changes = new List<(long Sequence, string Entity, Guid Id, string? Payload)>();
-            await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+            if (await changeLogExists.ExecuteScalarAsync(cancellationToken) is not null and not DBNull)
             {
+                await using var read = new SqlCommand(
+                    SharesInstance(central)
+                        ? $"""
+                          SELECT ChangeSequence, EntityType, EntityId, Payload
+                          FROM [{centralName}].dbo.SyncChangeLog
+                          WHERE ChangeSequence > @checkpoint
+                          ORDER BY ChangeSequence;
+                          """
+                        : """
+                          SELECT ChangeSequence, EntityType, EntityId, Payload
+                          FROM dbo.SyncChangeLog
+                          WHERE ChangeSequence > @checkpoint
+                          ORDER BY ChangeSequence;
+                          """,
+                    source);
+                read.Parameters.AddWithValue("@checkpoint", checkpoint);
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     changes.Add((
@@ -591,10 +623,14 @@ public sealed class SharedDataSync(
 
             await SaveCheckpointAsync(connection, endpointId, checkpoint, cancellationToken);
             await SetEndpointStateAsync(connection, endpointId, null, cancellationToken);
+            LastErrorDiagnostic = null;
             return new SyncRunResult(applied, null, true);
         }
         catch (Exception exception)
         {
+            var sqlNumber = exception is SqlException sql ? $"SQL {sql.Number}: " : "";
+            LastErrorDiagnostic = $"{sqlNumber}{exception.Message}";
+            logger?.LogWarning(exception, "Central master pull failed for endpoint {EndpointId}.", endpointId);
             var message = SqlEndpointSettings.DescribeConnectionFailure(exception);
             await TryRecordErrorAsync(endpointId, message, cancellationToken);
             return new SyncRunResult(0, message, false);

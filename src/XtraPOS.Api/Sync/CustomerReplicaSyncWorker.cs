@@ -72,8 +72,7 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
         if (state is SharedDataSync.ReplicaNotInitialized or SharedDataSync.ReplicaBootstrapping
             || await sync.CatalogMissingAsync(settings, stoppingToken))
         {
-            await sync.BootstrapAsync(settings, stoppingToken);
-            state = await sync.EnsureCustomerReplicaAsync(view.EndpointId, settings, stoppingToken);
+            state = await sync.EnsureInitialReplicaAsync(view.EndpointId, settings, stoppingToken);
             logger.LogInformation("Central customer replica resumed at state {State}.", state);
         }
 

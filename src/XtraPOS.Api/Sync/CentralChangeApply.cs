@@ -139,7 +139,7 @@ public static class CentralChangeApply
                     UpdatedAt = @updated
                 WHERE CustomerID = @id
                   AND (@authoritative = 1 OR @updated >= UpdatedAt);
-            ELSE
+            ELSE IF EXISTS (SELECT 1 FROM dbo.Customers WHERE CustomerID = @id)
                 INSERT INTO dbo.CustomerCreditPolicies
                     (CustomerID, CreditEnabled, CreditLimit, PaymentTermDays, CreditStatus, CreatedAt, UpdatedAt, UpdatedBy)
                 VALUES (@id, @enabled, @limit, @terms, @status, @created, @updated, @actor);
@@ -180,13 +180,18 @@ public static class CentralChangeApply
 
         await using var command = new SqlCommand(
             """
-            IF EXISTS (SELECT 1 FROM dbo.CustomerItemSpecialPrices WHERE CustomerItemSpecialPriceID = @id)
+            IF EXISTS (
+                SELECT 1 FROM dbo.CustomerItemSpecialPrices
+                WHERE CustomerItemSpecialPriceID = @id
+                   OR (BusinessID = @business AND CustomerID = @customer AND ItemID = @item))
                 UPDATE dbo.CustomerItemSpecialPrices
                 SET SpecialPrice = @price, MinimumQuantity = @minimum, BundlePrice = @bundle, IsActive = @active,
                     ValidFrom = @from, ValidTo = @to, Notes = @notes, UpdatedAt = @updated
-                WHERE CustomerItemSpecialPriceID = @id
+                WHERE (CustomerItemSpecialPriceID = @id
+                       OR (BusinessID = @business AND CustomerID = @customer AND ItemID = @item))
                   AND (UpdatedAt IS NULL OR @updated >= UpdatedAt);
-            ELSE
+            ELSE IF EXISTS (SELECT 1 FROM dbo.Customers WHERE CustomerID = @customer)
+                 AND EXISTS (SELECT 1 FROM dbo.Items WHERE ItemID = @item)
                 INSERT INTO dbo.CustomerItemSpecialPrices (
                     CustomerItemSpecialPriceID, BusinessID, CustomerID, ItemID, SpecialPrice, MinimumQuantity, BundlePrice, IsActive,
                     ValidFrom, ValidTo, Notes, CreatedAt, UpdatedAt)
@@ -303,7 +308,7 @@ public static class CentralChangeApply
                         IsActive = @active,
                         UpdatedAt = SYSUTCDATETIME()
                     WHERE ItemUnitID = @id AND ItemID = @item;
-                ELSE
+                ELSE IF EXISTS (SELECT 1 FROM dbo.Items WHERE ItemID = @item)
                     INSERT INTO dbo.ItemUnits
                         (ItemUnitID, ItemID, UnitsPerPackage, InternalUnitItemID, InternalUnitItemNumber, InternalUnitItemName, IsBaseUnit, IsActive, CreatedAt, UpdatedAt)
                     VALUES
@@ -335,26 +340,36 @@ public static class CentralChangeApply
 
         var price = priceElement.GetDecimal();
         var active = !payload.TryGetProperty("isActive", out var activeElement) || activeElement.GetBoolean();
-        Guid priceTypeId;
+        Guid? priceTypeId = null;
         if (payload.TryGetProperty("priceTypeId", out var typeElement) && Guid.TryParse(typeElement.GetString(), out var parsedType))
         {
-            priceTypeId = parsedType;
-        }
-        else if (payload.TryGetProperty("priceCode", out var codeElement))
-        {
-            await using var lookup = new SqlCommand(
-                "SELECT PriceTypeID FROM dbo.PriceTypes WHERE PriceCode = @code;",
+            await using var exists = new SqlCommand(
+                "SELECT PriceTypeID FROM dbo.PriceTypes WHERE PriceTypeID = @id;",
                 connection);
-            lookup.Parameters.AddWithValue("@code", codeElement.GetString() ?? "");
-            var found = await lookup.ExecuteScalarAsync(cancellationToken);
-            if (found is not Guid typeId)
+            exists.Parameters.AddWithValue("@id", parsedType);
+            if (await exists.ExecuteScalarAsync(cancellationToken) is Guid localId)
             {
-                return;
+                priceTypeId = localId;
             }
-
-            priceTypeId = typeId;
         }
-        else
+
+        if (priceTypeId is null && payload.TryGetProperty("priceCode", out var codeElement))
+        {
+            var code = codeElement.GetString();
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                await using var lookup = new SqlCommand(
+                    "SELECT PriceTypeID FROM dbo.PriceTypes WHERE PriceCode = @code;",
+                    connection);
+                lookup.Parameters.AddWithValue("@code", code.Trim());
+                if (await lookup.ExecuteScalarAsync(cancellationToken) is Guid mappedId)
+                {
+                    priceTypeId = mappedId;
+                }
+            }
+        }
+
+        if (priceTypeId is null)
         {
             return;
         }
@@ -364,13 +379,13 @@ public static class CentralChangeApply
             UPDATE dbo.ItemPrices
             SET Price = @price, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
             WHERE ItemID = @item AND PriceTypeID = @type AND BranchID IS NULL;
-            IF @@ROWCOUNT = 0
+            IF @@ROWCOUNT = 0 AND EXISTS (SELECT 1 FROM dbo.Items WHERE ItemID = @item)
                 INSERT INTO dbo.ItemPrices (ItemID, PriceTypeID, BranchID, Price, IsActive, CreatedAt, UpdatedAt)
                 VALUES (@item, @type, NULL, @price, @active, SYSUTCDATETIME(), SYSUTCDATETIME());
             """,
             connection);
         command.Parameters.AddWithValue("@item", itemId);
-        command.Parameters.AddWithValue("@type", priceTypeId);
+        command.Parameters.AddWithValue("@type", priceTypeId.Value);
         command.Parameters.AddWithValue("@price", price);
         command.Parameters.AddWithValue("@active", active);
         await command.ExecuteNonQueryAsync(cancellationToken);
