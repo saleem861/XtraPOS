@@ -301,6 +301,31 @@ public sealed class BranchAgentRegistry
         }
     }
 
+    public bool IsClaimed(Guid jobId)
+    {
+        lock (_gate)
+        {
+            return _jobs.FirstOrDefault(item => item.Id == jobId)?.Claimed == true;
+        }
+    }
+
+    public bool CancelUnclaimed(Guid jobId, string reason)
+    {
+        lock (_gate)
+        {
+            var job = _jobs.FirstOrDefault(item => item.Id == jobId);
+            if (job is null || job.Claimed || job.Terminal)
+            {
+                return false;
+            }
+
+            job.Terminal = true;
+            job.Events.Add(new BranchAgentProgress("failed", null, null, reason, false));
+            Audit("unclaimed-cancelled " + job.Id);
+            return true;
+        }
+    }
+
     public bool IsTerminal(Guid jobId)
     {
         lock (_gate)

@@ -8,7 +8,8 @@ namespace XtraPOS.Api.Setup;
 public sealed class BranchAgentWorker(
     IServiceScopeFactory scopes,
     IHostEnvironment environment,
-    IDataProtectionProvider protection)
+    IDataProtectionProvider protection,
+    ILogger<BranchAgentWorker>? logger = null)
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -27,42 +28,77 @@ public sealed class BranchAgentWorker(
             (request, token) => AcceptPairAsync(http, session, request, token),
             BranchAgentLocalEndpoint.DefaultPort);
         local.Start();
-        var token = await WaitForTokenAsync(http, session, pairingCode, cancellationToken);
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var lastHeartbeat = DateTimeOffset.MinValue;
         while (!cancellationToken.IsCancellationRequested)
         {
-            await SendAsync(http, HttpMethod.Post, "api/branch-agent/heartbeat", new { instances = LocalInstances() }, cancellationToken);
-            var response = await http.GetAsync("api/branch-agent/jobs", cancellationToken);
-            if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                continue;
-            }
-
-            response.EnsureSuccessStatusCode();
-            var job = await response.Content.ReadFromJsonAsync<ClaimedBranchJob>(Json, cancellationToken);
-            if (job is null)
-            {
-                continue;
-            }
-
+            var token = await WaitForTokenAsync(http, session, pairingCode, cancellationToken);
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             try
             {
-                await ExecuteAsync(http, job, cancellationToken);
+                var now = DateTimeOffset.UtcNow;
+                if (now - lastHeartbeat >= TimeSpan.FromSeconds(15))
+                {
+                    using var heartbeatResponse = await SendWithResponseAsync(
+                        http,
+                        HttpMethod.Post,
+                        "api/branch-agent/heartbeat",
+                        new { instances = LocalInstances() },
+                        cancellationToken);
+                    if (heartbeatResponse.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        ResetSession(session);
+                        continue;
+                    }
+
+                    heartbeatResponse.EnsureSuccessStatusCode();
+                    lastHeartbeat = now;
+                }
+
+                using var response = await http.GetAsync("api/branch-agent/jobs", cancellationToken);
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    ResetSession(session);
+                    continue;
+                }
+
+                if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                    continue;
+                }
+
+                response.EnsureSuccessStatusCode();
+                var job = await response.Content.ReadFromJsonAsync<ClaimedBranchJob>(Json, cancellationToken);
+                if (job is null)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                    continue;
+                }
+
+                try
+                {
+                    await ExecuteAsync(http, job, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    var message = exception is BranchAgentRejectedException rejected
+                        ? rejected.Message
+                        : XtraPOS.Api.Sync.SqlEndpointSettings.DescribeConnectionFailure(exception);
+                    try
+                    {
+                        await PostAsync(http, job, new BranchAgentProgress("failed", null, null, message, false), cancellationToken);
+                    }
+                    catch (BranchAgentRejectedException)
+                    {
+                        // The job was already closed by a completed or failed report.
+                    }
+                }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                var message = exception is BranchAgentRejectedException rejected
-                    ? rejected.Message
-                    : XtraPOS.Api.Sync.SqlEndpointSettings.DescribeConnectionFailure(exception);
-                try
-                {
-                    await PostAsync(http, job, new BranchAgentProgress("failed", null, null, message, false), cancellationToken);
-                }
-                catch (BranchAgentRejectedException)
-                {
-                    // The job was already closed by a completed or failed report.
-                }
+                logger?.LogWarning(exception, "Branch agent poll cycle failed.");
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
             }
         }
     }
@@ -231,6 +267,36 @@ public sealed class BranchAgentWorker(
         }, cancellationToken);
     }
 
+    private void ResetSession(AgentSession session)
+    {
+        session.Token = null;
+        session.AgentId = Guid.Empty;
+        try
+        {
+            var tokenPath = TokenPath();
+            if (File.Exists(tokenPath))
+            {
+                File.Delete(tokenPath);
+            }
+
+            var identityPath = IdentityPath();
+            if (File.Exists(identityPath))
+            {
+                File.Delete(identityPath);
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore cleanup failure; the next successful pair overwrites both files.
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendWithResponseAsync(HttpClient http, HttpMethod method, string path, object body, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(method, path) { Content = JsonContent.Create(body, options: Json) };
+        return await http.SendAsync(request, cancellationToken);
+    }
+
     private static async Task<HttpResponseMessage> SendAsync(HttpClient http, HttpMethod method, string path, object body, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(method, path) { Content = JsonContent.Create(body, options: Json) };
@@ -252,18 +318,7 @@ public sealed class BranchAgentWorker(
         {
             var setup = scope.ServiceProvider.GetRequiredService<SetupService>();
             var selected = BranchAgentExecutor.LocalSettings(job.Instance, job.DatabaseName);
-            var topology = new TopologyPlan(
-                request.OperatingMode ?? "Standalone",
-                false,
-                false,
-                null,
-                null,
-                null,
-                null,
-                null,
-                selected,
-                request.BranchDataDirectory,
-                null);
+            var topology = SetupTopologyBuilder.Build(request, selected);
             await setup.RunAsync(model, async (setupEvent, token) =>
             {
                 await PostAsync(http, job, ToProgress(setupEvent), token);

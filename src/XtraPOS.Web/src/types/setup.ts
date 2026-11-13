@@ -214,7 +214,7 @@ export interface SetupStatusResponse {
 }
 
 export interface SetupStreamEvent {
-  type: "progress" | "failed" | "completed";
+  type: "progress" | "failed" | "completed" | "keepalive";
   step?: SetupStepId;
   state?: "started" | "succeeded";
   message?: string;

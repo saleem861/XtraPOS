@@ -172,7 +172,17 @@ internal static class Program
     private static void StopService()
     {
         Run("sc.exe", $"stop {ServiceName}");
-        Thread.Sleep(1500);
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var output = RunAndRead("sc.exe", $"query {ServiceName}");
+            if (output.ExitCode != 0 || output.StdOut.Contains("STOPPED", StringComparison.OrdinalIgnoreCase))
+            {
+                Thread.Sleep(300);
+                return;
+            }
+
+            Thread.Sleep(500);
+        }
     }
 
     private static void StartService()
@@ -187,7 +197,7 @@ internal static class Program
     private static bool WaitForStatus()
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        for (var attempt = 0; attempt < 15; attempt++)
+        for (var attempt = 0; attempt < 20; attempt++)
         {
             try
             {
@@ -199,8 +209,10 @@ internal static class Program
             }
             catch (Exception)
             {
-                Thread.Sleep(1000);
+                // Keep polling until the Windows service starts listening locally.
             }
+
+            Thread.Sleep(1000);
         }
 
         return false;
@@ -215,5 +227,23 @@ internal static class Program
         });
         process?.WaitForExit();
         return process?.ExitCode ?? 1;
+    }
+
+    private static (int ExitCode, string StdOut) RunAndRead(string file, string arguments)
+    {
+        using var process = Process.Start(new ProcessStartInfo(file, arguments)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        });
+        if (process is null)
+        {
+            return (1, "");
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return (process.ExitCode, output);
     }
 }

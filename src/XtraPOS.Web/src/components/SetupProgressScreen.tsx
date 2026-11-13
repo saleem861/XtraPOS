@@ -14,6 +14,7 @@ interface SetupProgressScreenProps {
   error: string;
   running: boolean;
   existingBranch: { name: string; code: string } | null;
+  remoteCompleted?: string;
   onRetry: () => void;
   onEdit: () => void;
   onRefresh: () => void;
@@ -25,6 +26,7 @@ export function SetupProgressScreen({
   error,
   running,
   existingBranch,
+  remoteCompleted = "",
   onRetry,
   onEdit,
   onRefresh,
@@ -44,7 +46,7 @@ export function SetupProgressScreen({
     <section className="card" aria-busy={running}>
       <ScreenHeader title="إعداد الفرع" />
       <header className="card-header">
-        <p>{running ? "يتم الآن تجهيز الفرع" : noticedBranch ? "هذا الفرع موجود مسبقًا" : error ? "لم يكتمل الإعداد" : "اكتمل فحص الإعداد"}</p>
+        <p>{running ? "يتم الآن تجهيز الفرع" : noticedBranch ? "هذا الفرع موجود مسبقًا" : error ? "لم يكتمل الإعداد" : remoteCompleted ? "اكتمل إعداد الفرع" : "اكتمل فحص الإعداد"}</p>
       </header>
       {running || completed > 0 ? (
         <OperationProgress label={progressLabel} percent={(completed / SETUP_STEPS.length) * 100} />
@@ -92,6 +94,16 @@ export function SetupProgressScreen({
             العودة لتعديل البيانات
           </button>
         </div>
+      ) : null}
+      {!running && remoteCompleted && !error && !noticedBranch && !organizationLocked ? (
+        <>
+          <p className="form-notice">{remoteCompleted}</p>
+          <div className="wizard-actions">
+            <button className="primary-button" type="button" onClick={onRefresh}>
+              العودة إلى البداية
+            </button>
+          </div>
+        </>
       ) : null}
     </section>
   );

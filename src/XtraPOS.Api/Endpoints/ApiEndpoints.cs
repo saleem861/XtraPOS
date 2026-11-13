@@ -500,6 +500,7 @@ public static class ApiEndpoints
         http.Response.StatusCode = StatusCodes.Status200OK;
         http.Response.ContentType = "application/x-ndjson; charset=utf-8";
         http.Response.Headers.CacheControl = "no-store";
+        http.Response.Headers["X-Accel-Buffering"] = "no";
 
         if (Guid.TryParse(request?.BranchAgentId, out var branchAgentId))
         {
@@ -513,7 +514,7 @@ public static class ApiEndpoints
         {
             try
             {
-                topology = BuildTopology(request!);
+                topology = SetupTopologyBuilder.Build(request!);
             }
             catch (SetupRejectedException exception)
             {
@@ -701,56 +702,6 @@ public static class ApiEndpoints
         }
 
         return Results.Ok(new { databaseName = connections.ConfiguredDatabase, branches });
-    }
-
-    private static TopologyPlan BuildTopology(CreateBranchRequest request)
-    {
-        SqlEndpointSettings? central = null;
-        if (!string.IsNullOrWhiteSpace(request.CentralDatabaseName))
-        {
-            central = CentralRoute.Bind(
-                request.CentralLocation,
-                request.CentralServer,
-                request.CentralInstance,
-                request.CentralPort,
-                request.CentralDatabaseName,
-                request.CentralAuthentication,
-                request.CentralUsername,
-                request.CentralPassword,
-                request.CentralEncrypt ?? true,
-                request.CentralTrustServerCertificate ?? true);
-        }
-
-        SqlEndpointSettings? remote = null;
-        if (string.Equals(request.BranchRemoteChoice, "yes", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(request.BranchRemoteDatabaseName))
-        {
-            remote = new SqlEndpointSettings(
-                Data.DatabaseRole.BranchRemote,
-                SqlEndpointSettings.Remote,
-                string.IsNullOrWhiteSpace(request.BranchRemoteServer) ? "localhost" : request.BranchRemoteServer.Trim(),
-                request.BranchRemoteInstance,
-                request.BranchRemotePort,
-                request.BranchRemoteDatabaseName.Trim(),
-                string.Equals(request.BranchRemoteAuthentication, SqlEndpointSettings.SqlLogin, StringComparison.Ordinal) ? SqlEndpointSettings.SqlLogin : SqlEndpointSettings.Integrated,
-                request.BranchRemoteUsername,
-                request.BranchRemotePassword,
-                true,
-                true);
-        }
-
-        return new TopologyPlan(
-            request.OperatingMode ?? "Standalone",
-            string.Equals(request.CentralAction, "create", StringComparison.OrdinalIgnoreCase),
-            string.Equals(request.LinkToCentral, "yes", StringComparison.OrdinalIgnoreCase),
-            central,
-            remote,
-            BranchSetupValidator.ReusesCentralAdmin(request, out var centralAdminId) ? centralAdminId : null,
-            request.SyncPosNumber,
-            request.CashboxNumber,
-            SelectedBranchTarget.FromRequest(request),
-            request.BranchDataDirectory,
-            request.RemoteDataDirectory);
     }
 
     private static async Task<IResult> CreateAdminAsync(

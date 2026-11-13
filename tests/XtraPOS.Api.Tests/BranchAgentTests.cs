@@ -47,6 +47,13 @@ public sealed class BranchAgentTests
         Assert.Throws<BranchAgentRejectedException>(() =>
             registry.Report(token, claimed.Id, claimed.Nonce, new BranchAgentProgress("completed", null, null, "again", true), now));
         Assert.Throws<BranchAgentRejectedException>(() => registry.Approve(agentId, "XtraPOS_Branch_Test_Staging", "localhost", null, now));
+
+        var unclaimed = registry.Approve(agentId, "XtraPOS_Branch_96", "localhost", null, now);
+        Assert.False(registry.IsClaimed(unclaimed.Id));
+        Assert.True(registry.CancelUnclaimed(unclaimed.Id, "timed out"));
+        Assert.True(registry.IsTerminal(unclaimed.Id));
+        var retried = registry.Approve(agentId, "XtraPOS_Branch_96", "localhost", null, now);
+        Assert.NotEqual(unclaimed.Id, retried.Id);
     }
 
     [Fact]

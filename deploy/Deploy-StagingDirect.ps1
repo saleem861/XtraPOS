@@ -62,7 +62,7 @@ if (Test-Path $setupPublish) { Remove-Item $setupPublish -Recurse -Force }
 dotnet publish (Join-Path $root "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release -r win-x64 --self-contained false -o $agentPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent publish failed." }
 Get-ChildItem $agentPublish -Filter "appsettings.*.json" | Remove-Item -Force
-dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true /p:EnableCompressionInSingleFile=true -o $setupPublish
+dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o $setupPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent installer publish failed." }
 $zip = Join-Path $downloads "branch-agent.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

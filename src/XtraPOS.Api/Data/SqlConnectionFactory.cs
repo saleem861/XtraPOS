@@ -386,6 +386,23 @@ public sealed class SqlConnectionFactory
 
     private string CreateConnectionString(string catalog)
     {
+        var active = ActiveOperational();
+        if (active is not null)
+        {
+            if (catalog != "master" && !CanOpen(catalog))
+            {
+                throw new InvalidOperationException("Refusing to open a database other than an allowed XtraPOS branch database.");
+            }
+
+            var timeout = _options.ConnectTimeoutSeconds is >= 1 and <= 120 ? _options.ConnectTimeoutSeconds : 15;
+            var selected = new SqlConnectionStringBuilder(active.BuildConnectionString(catalog))
+            {
+                ConnectTimeout = timeout,
+                ApplicationName = "XtraPOS.Api",
+            };
+            return selected.ConnectionString;
+        }
+
         if (!IsSafeConfiguration(out var problem))
         {
             throw new InvalidOperationException($"SQL Server configuration is not safe to use: {problem}");
@@ -394,17 +411,6 @@ public sealed class SqlConnectionFactory
         if (catalog != "master" && !CanOpen(catalog))
         {
             throw new InvalidOperationException("Refusing to open a database other than an allowed XtraPOS branch database.");
-        }
-
-        var active = ActiveOperational();
-        if (active is not null)
-        {
-            var selected = new SqlConnectionStringBuilder(active.BuildConnectionString(catalog))
-            {
-                ConnectTimeout = _options.ConnectTimeoutSeconds,
-                ApplicationName = "XtraPOS.Api",
-            };
-            return selected.ConnectionString;
         }
 
         var builder = new SqlConnectionStringBuilder

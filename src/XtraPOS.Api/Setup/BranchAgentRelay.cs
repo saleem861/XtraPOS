@@ -11,8 +11,12 @@ public sealed class BranchAgentRelay(BranchAgentRegistry registry)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    private static readonly TimeSpan ClaimTimeout = TimeSpan.FromSeconds(35);
+    private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(10);
+
     public async Task StreamAsync(HttpContext http, CreateBranchRequest request, Guid agentId, CancellationToken cancellationToken)
     {
+        http.Response.Headers["X-Accel-Buffering"] = "no";
         ClaimedBranchJob job;
         try
         {
@@ -30,27 +34,60 @@ public sealed class BranchAgentRelay(BranchAgentRegistry registry)
             return;
         }
 
+        await WriteAsync(http, SetupEvent.Progress(SetupSteps.CheckServer, "started"), cancellationToken);
+
         var seen = 0;
+        var claimDeadline = DateTimeOffset.UtcNow.Add(ClaimTimeout);
+        var lastWrite = DateTimeOffset.UtcNow;
         var deadline = job.ExpiresAt.AddSeconds(2);
-        while (DateTimeOffset.UtcNow <= deadline && !cancellationToken.IsCancellationRequested)
+        try
         {
-            foreach (var progress in registry.ReadEvents(job.Id, seen))
+            while (DateTimeOffset.UtcNow <= deadline && !cancellationToken.IsCancellationRequested)
             {
-                seen++;
-                await WriteAsync(http, ToEvent(progress), cancellationToken);
+                foreach (var progress in registry.ReadEvents(job.Id, seen))
+                {
+                    seen++;
+                    await WriteAsync(http, ToEvent(progress), cancellationToken);
+                    lastWrite = DateTimeOffset.UtcNow;
+                }
+
+                if (registry.IsTerminal(job.Id))
+                {
+                    return;
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                if (!registry.IsClaimed(job.Id) && now >= claimDeadline)
+                {
+                    registry.CancelUnclaimed(job.Id, "خدمة XtraPOS على جهاز الفرع لم تستجب للطلب. تأكد أن الخدمة تعمل ثم أعد المحاولة.");
+                    foreach (var progress in registry.ReadEvents(job.Id, seen))
+                    {
+                        seen++;
+                        await WriteAsync(http, ToEvent(progress), cancellationToken);
+                    }
+                    return;
+                }
+
+                if (now - lastWrite >= KeepaliveInterval)
+                {
+                    await WriteAsync(http, new SetupEvent { Type = "keepalive" }, cancellationToken);
+                    lastWrite = DateTimeOffset.UtcNow;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
             }
 
-            if (registry.IsTerminal(job.Id))
+            if (!registry.IsTerminal(job.Id) && !cancellationToken.IsCancellationRequested)
             {
-                return;
+                await WriteAsync(http, SetupEvent.Failed("جهاز الفرع لم يكمل التجهيز خلال المهلة."), cancellationToken);
             }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
         }
-
-        if (!registry.IsTerminal(job.Id))
+        finally
         {
-            await WriteAsync(http, SetupEvent.Failed("جهاز الفرع لم يكمل التجهيز خلال المهلة."), cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                registry.CancelUnclaimed(job.Id, "انقطع الاتصال قبل استلام الطلب.");
+            }
         }
     }
 

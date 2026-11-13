@@ -41,3 +41,15 @@ it("allows retrying an ordinary setup failure", async () => {
   expect(onRetry).toHaveBeenCalledOnce();
   expect(screen.queryByRole("button", { name: "فتح الفرع الموجود" })).toBeNull();
 });
+
+it("shows a completion notice and return button after remote branch agent finishes", async () => {
+  const onRefresh = vi.fn();
+  render(<SetupProgressScreen steps={steps} running={false} error=""
+    existingBranch={null} remoteCompleted="تم إنشاء قاعدة الفرع على جهاز الفرع."
+    onRefresh={onRefresh} onRetry={vi.fn()} onEdit={vi.fn()} />);
+
+  expect(screen.getByText("اكتمل إعداد الفرع")).toBeTruthy();
+  expect(screen.getByText("تم إنشاء قاعدة الفرع على جهاز الفرع.")).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "العودة إلى البداية" }));
+  expect(onRefresh).toHaveBeenCalledOnce();
+});

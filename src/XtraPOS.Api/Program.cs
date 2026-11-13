@@ -21,6 +21,12 @@ using XtraPOS.Api.Security;
 using XtraPOS.Api.Setup;
 using XtraPOS.Api.Sync;
 
+if (BranchAgentHostCommand.IsRequested(args))
+{
+    Environment.ExitCode = await BranchAgentHostCommand.RunAsync(args);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
@@ -977,40 +983,6 @@ if (app.Environment.IsStaging())
     {
         Console.WriteLine($"StagingCatalogSeedFailed={exception.GetType().Name}");
     }
-}
-
-if (args.Any(arg => string.Equals(arg, "--branch-agent", StringComparison.Ordinal)))
-{
-    string? agentServer = null;
-    string? pairingCode = null;
-    for (var index = 0; index < args.Length - 1; index++)
-    {
-        if (string.Equals(args[index], "--server", StringComparison.Ordinal))
-        {
-            agentServer = args[index + 1];
-        }
-
-        if (string.Equals(args[index], "--pairing-code", StringComparison.Ordinal))
-        {
-            pairingCode = args[index + 1];
-        }
-    }
-
-    if (string.IsNullOrWhiteSpace(agentServer))
-    {
-        Console.WriteLine("Branch agent requires --server.");
-        Environment.ExitCode = 1;
-        return;
-    }
-
-    using var agentStop = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, eventArgs) =>
-    {
-        eventArgs.Cancel = true;
-        agentStop.Cancel();
-    };
-    await app.Services.GetRequiredService<BranchAgentWorker>().RunAsync(agentServer, pairingCode, agentStop.Token);
-    return;
 }
 
 app.Run();

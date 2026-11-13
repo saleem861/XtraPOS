@@ -36,7 +36,7 @@ import {
   type SetupStepState,
   type SetupStreamEvent,
 } from "./types/setup";
-import { readSetupProgress } from "./setup/setupProgress";
+import { clearSetupProgress, readSetupProgress } from "./setup/setupProgress";
 import { visibleSteps } from "./setup/wizardFlow";
 
 type Phase =
@@ -51,6 +51,7 @@ type Phase =
       error: string;
       running: boolean;
       existingBranch: { name: string; code: string } | null;
+      remoteCompleted?: string;
     }
   | { kind: "unregistered"; intent?: "join" | "independent" | "central" }
   | { kind: "adminSetup"; session: DeviceSession; pending: boolean; error: string }
@@ -256,7 +257,7 @@ export default function App() {
       }
       return;
     }
-    setPhase({ kind: "progress", steps: pendingSteps(), error: "", running: true, existingBranch: null });
+    setPhase({ kind: "progress", steps: pendingSteps(), error: "", running: true, existingBranch: null, remoteCompleted: "" });
 
     try {
       await createBranch(input, (event) => {
@@ -288,9 +289,16 @@ export default function App() {
   function applySetupEvent(event: SetupStreamEvent) {
       if (event.type === "completed") {
         if (event.remoteAgent) {
+          clearSetupProgress();
           setPhase((current) =>
             current.kind === "progress"
-              ? { ...current, running: false, error: "", existingBranch: null }
+              ? {
+                  ...current,
+                  running: false,
+                  error: "",
+                  existingBranch: null,
+                  remoteCompleted: event.message || "تم تجهيز قاعدة الفرع على جهاز الفرع بنجاح.",
+                }
               : current,
           );
           return;
@@ -531,6 +539,7 @@ export default function App() {
             error={phase.error}
             running={phase.running}
             existingBranch={phase.existingBranch}
+            remoteCompleted={phase.remoteCompleted}
             onRetry={() => void startSetup(draft)}
             onEdit={() => setPhase({ kind: "wizard" })}
             onRefresh={() => void refresh()}

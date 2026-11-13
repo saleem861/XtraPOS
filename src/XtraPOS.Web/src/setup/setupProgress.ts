@@ -32,3 +32,7 @@ export function readSetupProgress(): { draft: BranchSetupInput; step: WizardStep
     return null;
   }
 }
+
+export function clearSetupProgress() {
+  sessionStorage.removeItem(storageKey);
+}

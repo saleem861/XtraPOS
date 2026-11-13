@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { OperationProgress } from "./OperationProgress";
 import { ScreenHeader } from "./ScreenHeader";
 import { BRANCH_TYPES, BRANCH_TYPE_LABELS, emptyBranchSetup, type BranchSetupInput } from "../types/setup";
 import {
@@ -840,6 +841,7 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
           <NewLocalBranchDatabase
             databaseName={value.branchDatabaseName}
             agentId={value.branchAgentId}
+            branchInstance={value.branchInstance}
             preview={preview}
             pending={pending}
             onDatabase={(branchDatabaseName) => update({ branchDatabaseName, branchConnectionTested: false, branchVerifiedKey: "" })}
@@ -1901,9 +1903,19 @@ function BranchManualConnection({
   );
 }
 
+function triggerInstallerDownload() {
+  const link = document.createElement("a");
+  link.href = "/downloads/XtraPOS-BranchAgent-Setup.exe";
+  link.download = "XtraPOS-BranchAgent-Setup.exe";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function NewLocalBranchDatabase({
   databaseName,
   agentId,
+  branchInstance,
   preview,
   pending,
   onDatabase,
@@ -1914,6 +1926,7 @@ function NewLocalBranchDatabase({
 }: {
   databaseName: string;
   agentId: string;
+  branchInstance: string;
   preview: boolean;
   pending: boolean;
   onDatabase: (value: string) => void;
@@ -1924,9 +1937,12 @@ function NewLocalBranchDatabase({
 }) {
   const [status, setStatus] = useState<LocalAgentStatus | null>(null);
   const [expectedVersion, setExpectedVersion] = useState("0.3.0");
-  const [instance, setInstance] = useState("");
+  const [instance, setInstance] = useState(branchInstance);
   const [notice, setNotice] = useState("");
   const [pairAttempt, setPairAttempt] = useState(0);
+  const [probing, setProbing] = useState(!preview);
+  const [awaitingInstall, setAwaitingInstall] = useState(false);
+  const [transferring, setTransferring] = useState(false);
   const state = decideBranchAgent(status, window.location.origin, expectedVersion);
   const ready = branchDatabaseNameReady(databaseName, preview ? PREVIEW_TAKEN_BRANCH_DATABASES : []);
 
@@ -1962,15 +1978,22 @@ function NewLocalBranchDatabase({
         const body = await response.json() as LocalAgentStatus;
         if (!cancelled) {
           setStatus(body);
+          if ((body.paired && body.agentId) || !body.sqlAvailable) {
+            setAwaitingInstall(false);
+          }
         }
       } catch {
         if (!cancelled) {
           setStatus(null);
         }
+      } finally {
+        if (!cancelled) {
+          setProbing(false);
+        }
       }
     }
     void probe();
-    const timer = window.setInterval(() => void probe(), 2000);
+    const timer = window.setInterval(() => void probe(), 1500);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -1998,6 +2021,7 @@ function NewLocalBranchDatabase({
           throw new Error("pair");
         }
         setStatus(await paired.json() as LocalAgentStatus);
+        setAwaitingInstall(false);
         setNotice("");
       } catch {
         if (!cancelled) {
@@ -2019,36 +2043,74 @@ function NewLocalBranchDatabase({
 
   async function transfer() {
     setNotice("");
-    const issued = await fetch("/api/setup/branch-agents/pairing-codes", { method: "POST" });
-    if (!issued.ok) {
-      setNotice("تعذر إنشاء طلب النقل.");
-      return;
+    setTransferring(true);
+    try {
+      const issued = await fetch("/api/setup/branch-agents/pairing-codes", { method: "POST" });
+      if (!issued.ok) {
+        setNotice("تعذر إنشاء طلب النقل.");
+        return;
+      }
+      const codeBody = await issued.json() as { code?: string };
+      const paired = await fetch(localAgentUrl("/pair"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: codeBody.code, server: window.location.origin, confirmTransfer: true }),
+      });
+      if (!paired.ok) {
+        setNotice("لم يكتمل نقل الربط.");
+        return;
+      }
+      setStatus(await paired.json() as LocalAgentStatus);
+    } finally {
+      setTransferring(false);
     }
-    const codeBody = await issued.json() as { code?: string };
-    const paired = await fetch(localAgentUrl("/pair"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: codeBody.code, server: window.location.origin, confirmTransfer: true }),
-    });
-    if (!paired.ok) {
-      setNotice("لم يكتمل نقل الربط.");
-      return;
-    }
-    setStatus(await paired.json() as LocalAgentStatus);
   }
+
+  const waitLabel = !preview
+    ? transferring
+      ? "جاري نقل ربط خدمة XtraPOS إلى هذا الموقع..."
+      : state === "unpaired" && !notice
+        ? "جاري ربط خدمة XtraPOS بهذا الموقع..."
+        : awaitingInstall && (state === "missing" || state === "outdated")
+          ? "بانتظار تثبيت وتشغيل خدمة XtraPOS على هذا الجهاز..."
+          : probing
+            ? "جاري التحقق من خدمة XtraPOS على هذا الجهاز..."
+            : ""
+    : "";
 
   return (
     <div className="connection-fields">
       <p>اسم قاعدة بيانات الفرع على خادم SQL المحلي. لا يلزم اسم مستخدم أو كلمة مرور.</p>
       {!preview && state === "missing" ? (
-        <button className="primary-button" type="button" onClick={() => { window.location.href = "/downloads/XtraPOS-BranchAgent-Setup.exe"; }}>تثبيت خدمة XtraPOS على هذا الجهاز</button>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={() => {
+            setAwaitingInstall(true);
+            setNotice("");
+            triggerInstallerDownload();
+          }}
+        >
+          تثبيت خدمة XtraPOS على هذا الجهاز
+        </button>
       ) : null}
       {!preview && state === "outdated" ? (
-        <button className="primary-button" type="button" onClick={() => { window.location.href = "/downloads/XtraPOS-BranchAgent-Setup.exe"; }}>تحديث خدمة XtraPOS</button>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={() => {
+            setAwaitingInstall(true);
+            setNotice("");
+            triggerInstallerDownload();
+          }}
+        >
+          تحديث خدمة XtraPOS
+        </button>
       ) : null}
+      {waitLabel ? <OperationProgress label={waitLabel} /> : null}
       {!preview && state === "sql-missing" ? <p className="form-error">لم يتم العثور على SQL Server على هذا الجهاز.</p> : null}
       {!preview && state === "other-environment" ? (
-        <button className="primary-button" type="button" onClick={() => void transfer()}>نقل الربط إلى هذا الموقع</button>
+        <button className="primary-button" type="button" disabled={transferring} onClick={() => void transfer()}>نقل الربط إلى هذا الموقع</button>
       ) : null}
       {!preview && notice ? <p className="form-error">{notice}</p> : null}
       {!preview && state === "unpaired" && notice ? (
