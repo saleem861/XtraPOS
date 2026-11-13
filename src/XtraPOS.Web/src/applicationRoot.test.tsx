@@ -208,4 +208,64 @@ describe("setup preview route gate", () => {
       window.history.replaceState(null, "", "/");
     }
   });
+
+  it("opens login after setup and then the home page", async () => {
+    const user = userEvent.setup();
+    const device = {
+      deviceId: "11111111-1111-1111-1111-111111111111",
+      businessId: "22222222-2222-2222-2222-222222222222",
+      branchId: "33333333-3333-3333-3333-333333333333",
+      stationId: "44444444-4444-4444-4444-444444444444",
+      deviceName: "صندوق 1",
+      deviceType: "POS",
+      deviceToken: "device-token",
+      registeredAt: "2026-11-13T00:00:00",
+      businessName: "منشأة الشربل",
+      branchName: "الفرع الرئيسي",
+      branchType: "Retail",
+      stationName: "كاونتر 1",
+      stationNumber: 1,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("47321")) {
+        return new Response("", { status: 404 });
+      }
+      if (url.includes("/api/setup/status")) {
+        return new Response(JSON.stringify({ status: "Configured" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/device/local-registration")) {
+        return new Response(JSON.stringify(device), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/auth/login") && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          userId: "55555555-5555-5555-5555-555555555555",
+          username: "admin",
+          displayName: "مدير",
+          roles: [],
+          permissions: ["Items.View"],
+          businessName: "منشأة الشربل",
+          branchName: "الفرع الرئيسي",
+          stationName: "كاونتر 1",
+          deviceName: "صندوق 1",
+          mustChangePassword: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("", { status: 404 });
+    }));
+
+    render(<ApplicationRoot development pathname="/" />);
+
+    expect(await screen.findByRole("button", { name: "تسجيل الدخول" })).toBeTruthy();
+    await user.type(screen.getByLabelText("اسم المستخدم"), "admin");
+    await user.type(screen.getByLabelText("كلمة المرور"), "secret");
+    await user.click(screen.getByRole("button", { name: "تسجيل الدخول" }));
+    expect(await screen.findByRole("button", { name: "نقطة البيع" })).toBeTruthy();
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideBranchAgent, type LocalAgentStatus } from "./branchAgentLocal";
+import { decideBranchAgent, localPosAfterSetup, type LocalAgentStatus } from "./branchAgentLocal";
 
 const ready: LocalAgentStatus = {
   product: "XtraPOS.BranchAgent",
@@ -32,5 +32,10 @@ describe("branch agent detection", () => {
   it("reports a missing SQL Server and an older agent", () => {
     expect(decideBranchAgent({ ...ready, sqlAvailable: false }, ready.server, "0.3.0")).toBe("sql-missing");
     expect(decideBranchAgent({ ...ready, version: "0.2.0" }, ready.server, "0.3.0")).toBe("outdated");
+  });
+
+  it("opens the local application after setup when the browser is still on the published site", () => {
+    expect(localPosAfterSetup("http://127.0.0.1:47335", "https://test-pos.sharbelfashion.com/")).toBe("http://127.0.0.1:47335");
+    expect(localPosAfterSetup("http://127.0.0.1:47335", "http://127.0.0.1:47335/")).toBeNull();
   });
 });

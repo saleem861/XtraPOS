@@ -60,6 +60,7 @@ public static class BranchAgentHostCommand
         builder.Services.Configure<SqlServerOptions>(builder.Configuration.GetSection(SqlServerOptions.SectionName));
         builder.Services.Configure<LoginProtectionOptions>(builder.Configuration.GetSection(LoginProtectionOptions.SectionName));
         builder.Services.AddSingleton(new LocalAppHostState(null));
+        builder.Services.AddSingleton<LocalPosSessionStore>();
         builder.Services.AddSingleton<OperationalBranchConnection>();
         builder.Services.AddSingleton<OperationalBranchConnectionStore>();
         builder.Services.AddSingleton<SqlConnectionFactory>();

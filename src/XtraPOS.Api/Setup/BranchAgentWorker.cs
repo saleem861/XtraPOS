@@ -9,6 +9,7 @@ public sealed class BranchAgentWorker(
     IServiceScopeFactory scopes,
     IHostEnvironment environment,
     IDataProtectionProvider protection,
+    LocalPosSessionStore localSessions,
     ILogger<BranchAgentWorker>? logger = null,
     LocalAppHostState? localAppHost = null)
 {
@@ -418,6 +419,11 @@ public sealed class BranchAgentWorker(
             {
                 if (setupEvent.Type == "completed")
                 {
+                    if (setupEvent.Device is not null)
+                    {
+                        localSessions.Save(setupEvent.Device);
+                    }
+
                     await RefreshConfiguredBranchAsync(token);
                 }
 

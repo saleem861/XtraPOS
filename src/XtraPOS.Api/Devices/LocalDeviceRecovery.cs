@@ -137,6 +137,61 @@ public sealed class LocalDeviceRecovery(
         }
     }
 
+    public async Task<DeviceRegistrationResponse?> TryIssueLocalBrowserSessionAsync(CancellationToken cancellationToken)
+    {
+        Branch branch;
+        try
+        {
+            branch = await SingleBranchAsync(cancellationToken);
+        }
+        catch (SetupRejectedException)
+        {
+            return null;
+        }
+
+        var device = await db.Devices
+            .Where(item => item.BranchId == branch.BranchId && item.IsActive && item.RevokedAt == null)
+            .OrderByDescending(item => item.RegisteredAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (device?.StationId is not Guid stationId)
+        {
+            return null;
+        }
+
+        var station = await db.PosStations.SingleOrDefaultAsync(item => item.StationId == stationId && item.IsActive, cancellationToken);
+        if (station is null || station.StationNumber <= 0 || string.IsNullOrWhiteSpace(device.DeviceName))
+        {
+            return null;
+        }
+
+        var token = DeviceTokenService.Generate();
+        var now = UtcNowSeconds();
+        device.DeviceType = DeviceTokenService.DeviceTypePos;
+        device.DeviceTokenHash = DeviceTokenService.Hash(token);
+        device.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+        directory.Remember(device.DeviceId, connections.EffectiveDatabase);
+
+        return new DeviceRegistrationResponse
+        {
+            DeviceId = device.DeviceId,
+            BusinessId = branch.BusinessId,
+            BranchId = branch.BranchId,
+            StationId = station.StationId,
+            DeviceName = device.DeviceName,
+            DeviceType = device.DeviceType,
+            DeviceToken = token,
+            RegisteredAt = device.RegisteredAt,
+            BusinessName = branch.Business.BusinessName,
+            BusinessDisplayName = branch.Business.BusinessDisplayName,
+            BranchName = branch.BranchName,
+            BranchCode = branch.BranchCode,
+            BranchType = branch.BranchType,
+            StationName = station.StationName,
+            StationNumber = station.StationNumber,
+        };
+    }
+
     private async Task ConfirmAdminAsync(
         string? username,
         string? password,

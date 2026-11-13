@@ -90,6 +90,18 @@ export interface BranchDatabaseCandidate {
   server: string;
 }
 
+export async function claimLocalDeviceRegistration(): Promise<DeviceSession | null> {
+  try {
+    const response = await fetch("/api/device/local-registration");
+    if (!response.ok) {
+      return null;
+    }
+    return asDeviceSession(await response.json());
+  } catch {
+    return null;
+  }
+}
+
 export async function getLocalDeviceRecovery(databaseName?: string): Promise<LocalRecoveryContext> {
   const response = await fetch("/api/setup/local-device-recovery", {
     headers: databaseName ? { "X-Setup-Branch-Database": databaseName } : undefined,

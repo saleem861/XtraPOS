@@ -74,6 +74,13 @@ export function localAgentUrl(path: string): string {
   return `http://127.0.0.1:${branchAgentPort}${path}`;
 }
 
+export function localPosAfterSetup(localAppUrl: string | null | undefined, currentHref = window.location.href): string | null {
+  if (!localAppUrl || localAppOriginMatches(localAppUrl, currentHref)) {
+    return null;
+  }
+  return localAppUrl;
+}
+
 export function localAppOriginMatches(localAppUrl: string, currentHref = window.location.href): boolean {
   try {
     return new URL(localAppUrl).origin === new URL(currentHref).origin;

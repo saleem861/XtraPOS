@@ -2,6 +2,7 @@ import { Home, UserRound } from "lucide-react";
 import { CentralLinkBadge } from "./components/CentralLinkBadge";
 import { useEffect, useRef, useState } from "react";
 import {
+  claimLocalDeviceRegistration,
   createBranch,
   createFirstAdmin,
   getCurrentDevice,
@@ -37,7 +38,7 @@ import {
   type SetupStreamEvent,
 } from "./types/setup";
 import { clearSetupProgress, readSetupProgress } from "./setup/setupProgress";
-import { localAppOriginMatches, probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
+import { localAppOriginMatches, localPosAfterSetup, probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
 import { visibleSteps } from "./setup/wizardFlow";
 
 type Phase =
@@ -210,6 +211,14 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
       }
 
       if (stored.kind === "none") {
+        if (ready) {
+          const claimed = await claimLocalDeviceRegistration();
+          if (claimed) {
+            await savePersistedDevice(claimed);
+            setPhase({ kind: "login", session: claimed, pending: false, error: "" });
+            return;
+          }
+        }
         setPhase(ready ? { kind: "unregistered", intent: "join" } : { kind: "choice" });
         return;
       }
@@ -307,21 +316,44 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
     }
   }
 
+  async function openLocalPos(event: SetupStreamEvent) {
+    const localAgent = await probeLocalAgentStatus(1500);
+    const target = localPosAfterSetup(localAgent?.localAppUrl);
+    if (target) {
+      onNavigate(target);
+      return;
+    }
+
+    const session = asDeviceSession(event.device) ?? await claimLocalDeviceRegistration();
+    if (session) {
+      try {
+        await savePersistedDevice(session);
+      } catch {
+        // The login screen can still use the session for this tab.
+      }
+      setDraft((current) => ({ ...current, password: "", confirmPassword: "" }));
+      setPhase({ kind: "login", session, pending: false, error: "" });
+      return;
+    }
+
+    setPhase((current) =>
+      current.kind === "progress"
+        ? {
+            ...current,
+            running: false,
+            error: "",
+            existingBranch: null,
+            remoteCompleted: event.message || "تم تجهيز قاعدة الفرع على جهاز الفرع بنجاح.",
+          }
+        : current,
+    );
+  }
+
   function applySetupEvent(event: SetupStreamEvent) {
       if (event.type === "completed") {
         if (event.remoteAgent) {
           clearSetupProgress();
-          setPhase((current) =>
-            current.kind === "progress"
-              ? {
-                  ...current,
-                  running: false,
-                  error: "",
-                  existingBranch: null,
-                  remoteCompleted: event.message || "تم تجهيز قاعدة الفرع على جهاز الفرع بنجاح.",
-                }
-              : current,
-          );
+          void openLocalPos(event);
           return;
         }
       if (event.alreadyConfigured) {

@@ -1,0 +1,16 @@
+---
+description: After every finished update, keep the local project and GitHub on the same commit
+alwaysApply: true
+---
+
+# Sync local and GitHub
+
+When an update is finished, the local repository and GitHub must match before the turn ends.
+
+- Local copy: `D:\Google\XtraPOS` on branch `main`.
+- GitHub: `origin` `https://github.com/saleem861/XtraPOS.git`.
+- Commit the update, then `git push` to `origin`. Do not leave the update only in the working tree.
+- Do not commit secrets: `.ssh`, `.env`, passwords, tokens, or `staging.env`.
+- Do not force-push. Do not change git config. Do not skip hooks.
+- A staging or production deploy is a separate request. Syncing GitHub does not deploy the site.
+- If the push fails, say that GitHub was not updated. Do not claim the two copies match.

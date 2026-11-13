@@ -94,6 +94,7 @@ builder.Services.AddSingleton<DevicePairingService>();
 builder.Services.AddSingleton<BranchAgentRegistry>();
 builder.Services.AddSingleton<BranchAgentRelay>();
 builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null));
+builder.Services.AddSingleton<LocalPosSessionStore>();
 builder.Services.AddSingleton<BranchAgentWorker>();
 if (isBranchAgent)
 {
@@ -898,6 +899,28 @@ app.UseCors("LocalWeb");
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.MapGet("/api/device/local-registration", async (HttpContext http, LocalPosSessionStore sessions, LocalAppHostState host, IServiceScopeFactory scopes, CancellationToken cancellationToken) =>
+{
+    var remote = http.Connection.RemoteIpAddress;
+    if (host.BaseUrl is null || remote is null || !System.Net.IPAddress.IsLoopback(remote))
+    {
+        return Results.NotFound();
+    }
+
+    var device = sessions.Read();
+    if (device is null)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var recovery = scope.ServiceProvider.GetRequiredService<LocalDeviceRecovery>();
+        device = await recovery.TryIssueLocalBrowserSessionAsync(cancellationToken);
+        if (device is not null)
+        {
+            sessions.Save(device);
+        }
+    }
+
+    return device is null ? Results.NotFound() : Results.Ok(device);
+});
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "Healthy",
