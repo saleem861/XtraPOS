@@ -41,16 +41,19 @@ public class BranchAgentLocalTests
     public async Task Local_status_and_transfer_refusal_use_localhost_only()
     {
         var port = 47332;
+        var configured = new LocalBranchConfiguration("منشأة الاختبار", null, "الفرع الرئيسي", "001", "XtraPOS_Branch", "localhost", "POS-01", 1, "نقطة 1");
         await using var endpoint = new BranchAgentLocalEndpoint(
-            () => new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://other.example", Guid.NewGuid().ToString(), ["localhost"], true),
+            () => new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://other.example", Guid.NewGuid().ToString(), ["localhost"], true, configured),
             (request, _) => request.ConfirmTransfer
-                ? Task.FromResult(new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://test-pos.sharbelfashion.com", Guid.NewGuid().ToString(), ["localhost"], true))
+                ? Task.FromResult(new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://test-pos.sharbelfashion.com", Guid.NewGuid().ToString(), ["localhost"], true, configured))
                 : throw new BranchAgentTransferRequiredException("هذه الخدمة مربوطة بموقع آخر."),
             port);
         endpoint.Start();
         using var http = new HttpClient();
         var status = await http.GetFromJsonAsync<LocalAgentStatus>($"http://127.0.0.1:{port}/status");
         Assert.Equal(BranchAgentLocalDecision.Product, status?.Product);
+        Assert.Equal("XtraPOS_Branch", status?.ConfiguredBranch?.DatabaseName);
+        Assert.Equal("الفرع الرئيسي", status?.ConfiguredBranch?.BranchName);
         var refused = await http.PostAsJsonAsync($"http://127.0.0.1:{port}/pair", new { code = "unused", server = "https://test-pos.sharbelfashion.com", confirmTransfer = false });
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
         Assert.False(BranchAgentLocalEndpoint.IsAllowedOrigin("https://evil.example"));

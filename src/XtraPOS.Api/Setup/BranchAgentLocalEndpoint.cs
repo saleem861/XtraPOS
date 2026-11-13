@@ -3,6 +3,17 @@ using System.Text.Json;
 
 namespace XtraPOS.Api.Setup;
 
+public sealed record LocalBranchConfiguration(
+    string BusinessName,
+    string? BusinessDisplayName,
+    string BranchName,
+    string? BranchCode,
+    string DatabaseName,
+    string Server,
+    string? DeviceName,
+    int? StationNumber,
+    string? StationName);
+
 public sealed record LocalAgentStatus(
     string Product,
     string Version,
@@ -11,7 +22,8 @@ public sealed record LocalAgentStatus(
     string Server,
     string? AgentId,
     IReadOnlyList<string> Instances,
-    bool SqlAvailable);
+    bool SqlAvailable,
+    LocalBranchConfiguration? ConfiguredBranch = null);
 
 public sealed record LocalPairRequest(string? Code, string? Server, bool ConfirmTransfer);
 

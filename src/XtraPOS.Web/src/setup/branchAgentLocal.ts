@@ -1,6 +1,18 @@
 export const branchAgentPort = 47331;
 export const branchAgentProduct = "XtraPOS.BranchAgent";
 
+export interface LocalBranchConfiguration {
+  businessName: string;
+  businessDisplayName?: string | null;
+  branchName: string;
+  branchCode?: string | null;
+  databaseName: string;
+  server: string;
+  deviceName?: string | null;
+  stationNumber?: number | null;
+  stationName?: string | null;
+}
+
 export interface LocalAgentStatus {
   product: string;
   version: string;
@@ -10,6 +22,7 @@ export interface LocalAgentStatus {
   agentId?: string | null;
   instances: string[];
   sqlAvailable: boolean;
+  configuredBranch?: LocalBranchConfiguration | null;
 }
 
 export type BranchAgentState =
@@ -58,4 +71,21 @@ export function compareVersions(actual: string, expected: string): number {
 
 export function localAgentUrl(path: string): string {
   return `http://127.0.0.1:${branchAgentPort}${path}`;
+}
+
+export async function probeLocalAgentStatus(timeoutMs = 700): Promise<LocalAgentStatus | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(localAgentUrl("/status"), { signal: controller.signal });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as Partial<LocalAgentStatus> | null;
+    return body && body.product === branchAgentProduct ? (body as LocalAgentStatus) : null;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }

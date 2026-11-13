@@ -17,12 +17,16 @@ public sealed class BranchAgentWorker(
         PropertyNameCaseInsensitive = true,
     };
 
+    private volatile LocalBranchConfiguration? _configuredBranch;
+    private volatile bool _configuredBranchDetailsLoaded;
+
     public async Task RunAsync(string server, string? pairingCode, CancellationToken cancellationToken)
     {
         var configuredServer = server.TrimEnd('/');
         using var http = new HttpClient { BaseAddress = new Uri(configuredServer + "/"), Timeout = TimeSpan.FromSeconds(30) };
         var session = new AgentSession(configuredServer);
         LoadSavedSession(session);
+        await RefreshConfiguredBranchAsync(cancellationToken);
         await using var local = new BranchAgentLocalEndpoint(
             () => CurrentStatus(session),
             (request, token) => AcceptPairAsync(http, session, request, token),
@@ -52,6 +56,11 @@ public sealed class BranchAgentWorker(
                     }
 
                     heartbeatResponse.EnsureSuccessStatusCode();
+                    if (!_configuredBranchDetailsLoaded && InstallationState.IsConfigured(environment.ContentRootPath))
+                    {
+                        await RefreshConfiguredBranchAsync(cancellationToken);
+                    }
+
                     lastHeartbeat = now;
                 }
 
@@ -183,7 +192,86 @@ public sealed class BranchAgentWorker(
             session.Server,
             session.AgentId == Guid.Empty ? null : session.AgentId.ToString("D"),
             instances,
-            SqlAvailable(instances));
+            SqlAvailable(instances),
+            _configuredBranch);
+    }
+
+    private async Task RefreshConfiguredBranchAsync(CancellationToken cancellationToken)
+    {
+        if (!InstallationState.IsConfigured(environment.ContentRootPath))
+        {
+            _configuredBranch = null;
+            _configuredBranchDetailsLoaded = false;
+            return;
+        }
+
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var store = scope.ServiceProvider.GetRequiredService<OperationalBranchConnectionStore>();
+            var settings = await store.ReadAsync(cancellationToken);
+            if (settings is null)
+            {
+                return;
+            }
+
+            var serverLabel = string.IsNullOrWhiteSpace(settings.InstanceName)
+                ? settings.Server
+                : $"{settings.Server}\\{settings.InstanceName}";
+            _configuredBranch ??= new LocalBranchConfiguration(
+                "",
+                null,
+                settings.DatabaseName,
+                null,
+                settings.DatabaseName,
+                serverLabel,
+                null,
+                null,
+                null);
+
+            await using var connection = new Microsoft.Data.SqlClient.SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new Microsoft.Data.SqlClient.SqlCommand(
+                """
+                SELECT TOP (1)
+                    b.BusinessName,
+                    b.BusinessDisplayName,
+                    br.BranchName,
+                    br.BranchCode,
+                    d.DeviceName,
+                    s.StationNumber,
+                    s.StationName
+                FROM dbo.Devices AS d
+                INNER JOIN dbo.Branches AS br ON br.BranchID = d.BranchID
+                INNER JOIN dbo.Businesses AS b ON b.BusinessID = br.BusinessID
+                LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID
+                WHERE EXISTS (SELECT 1 FROM dbo.SystemSettings WHERE SettingKey = N'SetupCompletedAt')
+                ORDER BY d.RegisteredAt DESC;
+                """,
+                connection)
+            {
+                CommandTimeout = 5,
+            };
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                _configuredBranch = new LocalBranchConfiguration(
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    settings.DatabaseName,
+                    serverLabel,
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6));
+                _configuredBranchDetailsLoaded = true;
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger?.LogDebug(exception, "Could not refresh configured local branch details.");
+        }
     }
 
     private void LoadSavedSession(AgentSession session)
@@ -321,6 +409,11 @@ public sealed class BranchAgentWorker(
             var topology = SetupTopologyBuilder.Build(request, selected);
             await setup.RunAsync(model, async (setupEvent, token) =>
             {
+                if (setupEvent.Type == "completed")
+                {
+                    await RefreshConfiguredBranchAsync(token);
+                }
+
                 await PostAsync(http, job, ToProgress(setupEvent), token);
             }, cancellationToken, topology);
             return;

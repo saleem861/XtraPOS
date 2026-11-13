@@ -8,6 +8,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 function rejectApi() {
@@ -78,5 +79,46 @@ describe("setup preview route gate", () => {
     expect(await screen.findByText("تعذر الاتصال بالخادم. تأكد أن التطبيق يعمل ثم أعد المحاولة.")).toBeTruthy();
     expect(screen.queryByText("وضع معاينة — لن يتم حفظ أو تنفيذ أي تغييرات")).toBeNull();
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("shows configured device details when the local branch agent reports an already-configured branch", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1:47331/status")) {
+        return new Response(JSON.stringify({
+          product: "XtraPOS.BranchAgent",
+          version: "0.3.0",
+          machineName: "DESKTOP-MFTEQK0",
+          paired: true,
+          server: "https://test-pos.sharbelfashion.com",
+          agentId: "agent-1",
+          instances: ["localhost"],
+          sqlAvailable: true,
+          configuredBranch: {
+            businessName: "منشأة الشربل",
+            branchName: "الفرع الرئيسي",
+            branchCode: "001",
+            databaseName: "XtraPOS_Branch",
+            server: "localhost",
+            deviceName: "POS-01",
+            stationNumber: 1,
+            stationName: "كاونتر 1",
+          },
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ status: "NotConfigured" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    render(<ApplicationRoot development pathname="/" />);
+
+    expect(await screen.findByText("تم إعداد هذا الجهاز مسبقًا")).toBeTruthy();
+    expect(screen.getByText(/منشأة الشربل/)).toBeTruthy();
+    expect(screen.getByText(/الفرع الرئيسي — 001/)).toBeTruthy();
+    expect(screen.getByText(/XtraPOS_Branch/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "إعداد فرع أو جهاز آخر" }));
+    expect(await screen.findByRole("heading", { name: "مرحبًا بك في XtraPOS" })).toBeTruthy();
   });
 });

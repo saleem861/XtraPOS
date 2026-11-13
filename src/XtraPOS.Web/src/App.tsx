@@ -37,13 +37,14 @@ import {
   type SetupStreamEvent,
 } from "./types/setup";
 import { clearSetupProgress, readSetupProgress } from "./setup/setupProgress";
+import { probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
 import { visibleSteps } from "./setup/wizardFlow";
 
 type Phase =
   | { kind: "loading" }
   | { kind: "offline" }
   | { kind: "error"; message: string }
-  | { kind: "choice" }
+  | { kind: "choice"; configuredBranch?: LocalBranchConfiguration | null }
   | { kind: "wizard" }
   | {
       kind: "progress";
@@ -184,7 +185,8 @@ export default function App() {
           setPhase({ kind: "wizard" });
           return;
         }
-        setPhase({ kind: "choice" });
+        const localAgent = await probeLocalAgentStatus();
+        setPhase({ kind: "choice", configuredBranch: localAgent?.configuredBranch ?? null });
         return;
       }
 
@@ -510,6 +512,8 @@ export default function App() {
         ) : null}
         {phase.kind === "choice" ? (
           <SetupChoiceScreen
+            configuredBranch={phase.configuredBranch}
+            onRefresh={() => void refresh()}
             onIndependent={() => {
               if (organizationReady.current) {
                 setPhase({ kind: "unregistered", intent: "join" });
@@ -529,7 +533,10 @@ export default function App() {
             value={draft}
             initialIndex={wizardIndex}
             onChange={setDraft}
-            onCancel={() => setPhase({ kind: "choice" })}
+            onCancel={() => {
+              clearSetupProgress();
+              void refresh();
+            }}
             onSubmit={(input) => void startSetup(input)}
           />
         ) : null}
@@ -550,7 +557,7 @@ export default function App() {
           <UnregisteredDeviceScreen
             intent={phase.intent}
             onboardingAuthorization={onboardingAuthorization.current}
-            onCancel={() => setPhase({ kind: "choice" })}
+            onCancel={() => void refresh()}
             onRecovered={(session) => {
               savePersistedDevice(session);
               void refresh();
