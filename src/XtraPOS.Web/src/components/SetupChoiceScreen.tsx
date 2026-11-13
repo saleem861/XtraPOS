@@ -7,6 +7,8 @@ type SetupChoice = "independent" | "point" | "central";
 
 interface SetupChoiceScreenProps {
   configuredBranch?: LocalBranchConfiguration | null;
+  localAppUrl?: string | null;
+  onOpenLocalApp?: (url: string) => void;
   onRefresh?: () => void;
   onIndependent: () => void;
   onPoint: () => void;
@@ -21,6 +23,8 @@ const choices: Array<{ id: SetupChoice; title: string; text: string; icon: typeo
 
 export function SetupChoiceScreen({
   configuredBranch = null,
+  localAppUrl = null,
+  onOpenLocalApp,
   onRefresh,
   onIndependent,
   onPoint,
@@ -61,8 +65,13 @@ export function SetupChoiceScreen({
           {configuredBranch.deviceName?.trim() ? <li>الجهاز: {configuredBranch.deviceName}</li> : null}
         </ul>
         <div className="wizard-actions">
+          {localAppUrl && onOpenLocalApp ? (
+            <button className="primary-button" type="button" onClick={() => onOpenLocalApp(localAppUrl)}>
+              فتح التطبيق الرئيسي
+            </button>
+          ) : null}
           {onRefresh ? (
-            <button className="primary-button" type="button" onClick={onRefresh}>
+            <button className={localAppUrl && onOpenLocalApp ? "ghost-button" : "primary-button"} type="button" onClick={onRefresh}>
               تحديث الحالة
             </button>
           ) : null}

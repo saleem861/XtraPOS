@@ -37,14 +37,14 @@ import {
   type SetupStreamEvent,
 } from "./types/setup";
 import { clearSetupProgress, readSetupProgress } from "./setup/setupProgress";
-import { probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
+import { localAppOriginMatches, probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
 import { visibleSteps } from "./setup/wizardFlow";
 
 type Phase =
   | { kind: "loading" }
   | { kind: "offline" }
   | { kind: "error"; message: string }
-  | { kind: "choice"; configuredBranch?: LocalBranchConfiguration | null }
+  | { kind: "choice"; configuredBranch?: LocalBranchConfiguration | null; localAppUrl?: string | null }
   | { kind: "wizard" }
   | {
       kind: "progress";
@@ -110,7 +110,15 @@ function readOnboardingAuthorization() {
   return token;
 }
 
-export default function App() {
+function isSetupForced(): boolean {
+  return new URLSearchParams(window.location.search).get("setup") === "1";
+}
+
+function defaultNavigate(url: string) {
+  window.location.replace(url);
+}
+
+export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (url: string) => void } = {}) {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -186,7 +194,18 @@ export default function App() {
           return;
         }
         const localAgent = await probeLocalAgentStatus();
-        setPhase({ kind: "choice", configuredBranch: localAgent?.configuredBranch ?? null });
+        if (!isSetupForced()
+          && localAgent?.configuredBranch
+          && localAgent.localAppUrl
+          && !localAppOriginMatches(localAgent.localAppUrl)) {
+          onNavigate(localAgent.localAppUrl);
+          return;
+        }
+        setPhase({
+          kind: "choice",
+          configuredBranch: localAgent?.configuredBranch ?? null,
+          localAppUrl: localAgent?.localAppUrl ?? null,
+        });
         return;
       }
 
@@ -513,6 +532,8 @@ export default function App() {
         {phase.kind === "choice" ? (
           <SetupChoiceScreen
             configuredBranch={phase.configuredBranch}
+            localAppUrl={phase.localAppUrl}
+            onOpenLocalApp={(url) => onNavigate(url)}
             onRefresh={() => void refresh()}
             onIndependent={() => {
               if (organizationReady.current) {

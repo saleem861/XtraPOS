@@ -16,9 +16,11 @@ const SetupPreview = import.meta.env.DEV
 export function ApplicationRoot({
   development,
   pathname,
+  onNavigate,
 }: {
   development: boolean;
   pathname: string;
+  onNavigate?: (url: string) => void;
 }) {
   useEffect(() => {
     if (!pathname.startsWith("/setup-preview")) traceUi("page", "open", pathname);
@@ -61,5 +63,5 @@ export function ApplicationRoot({
     );
   }
 
-  return <App />;
+  return <App onNavigate={onNavigate} />;
 }

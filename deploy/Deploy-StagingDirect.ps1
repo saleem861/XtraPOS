@@ -1,4 +1,4 @@
-﻿# Build the local XtraPOS release and copy it to staging over SSH.
+# Build the local XtraPOS release and copy it to staging over SSH.
 # This script does not use GitHub. It stops when the staging account still
 # cannot write /opt/xtrapos-staging or the isolated central database is not selected.
 param(
@@ -62,6 +62,9 @@ if (Test-Path $setupPublish) { Remove-Item $setupPublish -Recurse -Force }
 dotnet publish (Join-Path $root "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release -r win-x64 --self-contained false -o $agentPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent publish failed." }
 Get-ChildItem $agentPublish -Filter "appsettings.*.json" | Remove-Item -Force
+$agentWeb = Join-Path $agentPublish "wwwroot"
+New-Item -ItemType Directory -Force -Path $agentWeb | Out-Null
+Copy-Item (Join-Path $root "src\XtraPOS.Web\dist\*") $agentWeb -Recurse -Force
 dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o $setupPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent installer publish failed." }
 $zip = Join-Path $downloads "branch-agent.zip"

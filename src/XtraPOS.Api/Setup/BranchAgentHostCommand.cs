@@ -11,9 +11,13 @@ using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Setup;
 
+public sealed record LocalAppHostState(string? BaseUrl);
+
 public static class BranchAgentHostCommand
 {
     public const string ServiceName = "XtraPOSBranchAgent";
+    public const int LocalAppPort = 47335;
+    public static string LocalAppUrl => $"http://127.0.0.1:{LocalAppPort}";
 
     public static bool IsRequested(string[] args) =>
         args.Any(arg => string.Equals(arg, "--branch-agent", StringComparison.Ordinal));
@@ -55,6 +59,7 @@ public static class BranchAgentHostCommand
 
         builder.Services.Configure<SqlServerOptions>(builder.Configuration.GetSection(SqlServerOptions.SectionName));
         builder.Services.Configure<LoginProtectionOptions>(builder.Configuration.GetSection(LoginProtectionOptions.SectionName));
+        builder.Services.AddSingleton(new LocalAppHostState(null));
         builder.Services.AddSingleton<OperationalBranchConnection>();
         builder.Services.AddSingleton<OperationalBranchConnectionStore>();
         builder.Services.AddSingleton<SqlConnectionFactory>();
@@ -117,7 +122,7 @@ public static class BranchAgentHostCommand
         return 0;
     }
 
-    private sealed class BranchAgentHostedService(
+    public sealed class BranchAgentHostedService(
         BranchAgentWorker worker,
         string server,
         string? pairingCode) : BackgroundService

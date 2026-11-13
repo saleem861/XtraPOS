@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Configuration;
 using XtraPOS.Api.Credit;
@@ -21,13 +23,32 @@ using XtraPOS.Api.Security;
 using XtraPOS.Api.Setup;
 using XtraPOS.Api.Sync;
 
-if (BranchAgentHostCommand.IsRequested(args))
+var isBranchAgent = BranchAgentHostCommand.IsRequested(args);
+string? branchAgentServer = null;
+string? branchAgentPairingCode = null;
+if (isBranchAgent && !BranchAgentHostCommand.TryReadOptions(args, out branchAgentServer, out branchAgentPairingCode))
 {
-    Environment.ExitCode = await BranchAgentHostCommand.RunAsync(args);
+    Console.WriteLine("Branch agent requires --server.");
+    Environment.ExitCode = 1;
     return;
 }
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = isBranchAgent
+    ? WebApplication.CreateBuilder(new WebApplicationOptions
+    {
+        Args = args,
+        ContentRootPath = AppContext.BaseDirectory,
+    })
+    : WebApplication.CreateBuilder(args);
+
+if (isBranchAgent)
+{
+    builder.Services.AddWindowsService(options =>
+    {
+        options.ServiceName = BranchAgentHostCommand.ServiceName;
+    });
+    builder.WebHost.UseUrls(BranchAgentHostCommand.LocalAppUrl);
+}
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -61,7 +82,9 @@ builder.Services.AddDbContext<BranchDbContext>((services, options) =>
 {
     var sql = services.GetRequiredService<SqlConnectionFactory>();
     var branchConnection = sql.TryCreateBranchConnectionString();
-    options.UseSqlServer(branchConnection ?? sql.CreateMasterConnectionString());
+    options.UseSqlServer(branchConnection ?? (isBranchAgent
+        ? "Server=localhost;Database=master;Integrated Security=True;Encrypt=True;TrustServerCertificate=True"
+        : sql.CreateMasterConnectionString()));
 });
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddScoped<SelectedDatabaseProvisioner>();
@@ -70,7 +93,15 @@ builder.Services.AddScoped<SetupService>();
 builder.Services.AddSingleton<DevicePairingService>();
 builder.Services.AddSingleton<BranchAgentRegistry>();
 builder.Services.AddSingleton<BranchAgentRelay>();
+builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null));
 builder.Services.AddSingleton<BranchAgentWorker>();
+if (isBranchAgent)
+{
+    builder.Services.AddHostedService(services => new BranchAgentHostCommand.BranchAgentHostedService(
+        services.GetRequiredService<BranchAgentWorker>(),
+        branchAgentServer!,
+        branchAgentPairingCode));
+}
 builder.Services.AddScoped<BranchAgentExecutor>();
 builder.Services.AddScoped<DeviceService>();
 builder.Services.AddScoped<SecondaryDeviceRegistration>();
@@ -177,9 +208,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.Cookie.Name = "XtraPOS.Auth";
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Strict;
-        options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
-            ? CookieSecurePolicy.SameAsRequest
-            : CookieSecurePolicy.Always;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
         options.SlidingExpiration = true;
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
         options.Events.OnRedirectToLogin = context =>
@@ -854,6 +883,17 @@ app.Use(async (context, next) =>
     }
 });
 
+if (isBranchAgent)
+{
+    var webRoot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+    if (Directory.Exists(webRoot))
+    {
+        var fileProvider = new PhysicalFileProvider(webRoot);
+        app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = fileProvider });
+        app.UseStaticFiles(new StaticFileOptions { FileProvider = fileProvider });
+    }
+}
+
 app.UseCors("LocalWeb");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -936,6 +976,25 @@ app.MapCreditReversalEndpoints();
 app.MapCreditHistoryEndpoints();
 app.MapOperationLogEndpoints();
 app.MapCentralEndpoints();
+
+if (isBranchAgent)
+{
+    var indexPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "index.html");
+    if (File.Exists(indexPath))
+    {
+        app.MapFallback(async context =>
+        {
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.SendFileAsync(indexPath, context.RequestAborted);
+        });
+    }
+}
 
 if (args.Any(arg => string.Equals(arg, "--ensure-customer-replica", StringComparison.Ordinal)))
 {

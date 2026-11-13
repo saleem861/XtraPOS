@@ -23,6 +23,7 @@ export interface LocalAgentStatus {
   instances: string[];
   sqlAvailable: boolean;
   configuredBranch?: LocalBranchConfiguration | null;
+  localAppUrl?: string | null;
 }
 
 export type BranchAgentState =
@@ -71,6 +72,14 @@ export function compareVersions(actual: string, expected: string): number {
 
 export function localAgentUrl(path: string): string {
   return `http://127.0.0.1:${branchAgentPort}${path}`;
+}
+
+export function localAppOriginMatches(localAppUrl: string, currentHref = window.location.href): boolean {
+  try {
+    return new URL(localAppUrl).origin === new URL(currentHref).origin;
+  } catch {
+    return false;
+  }
 }
 
 export async function probeLocalAgentStatus(timeoutMs = 700): Promise<LocalAgentStatus | null> {

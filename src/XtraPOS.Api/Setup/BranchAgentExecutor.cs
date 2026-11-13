@@ -7,7 +7,8 @@ namespace XtraPOS.Api.Setup;
 public sealed class BranchAgentExecutor(
     SelectedDatabaseProvisioner provisioner,
     MigrationRunner migrations,
-    OperationalBranchConnectionStore store)
+    OperationalBranchConnectionStore store,
+    OperationalBranchConnection? current = null)
 {
     public async Task ProvisionAsync(
         ClaimedBranchJob job,
@@ -43,6 +44,7 @@ public sealed class BranchAgentExecutor(
         await report(new BranchAgentProgress("progress", SetupSteps.CreateTables, "succeeded", null, false), cancellationToken);
 
         await store.SaveAsync(settings, cancellationToken);
+        current?.Replace(settings);
         await report(new BranchAgentProgress("completed", null, null, "تم إنشاء قاعدة الفرع على جهاز الفرع.", true), cancellationToken);
     }
 

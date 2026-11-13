@@ -23,7 +23,8 @@ public sealed record LocalAgentStatus(
     string? AgentId,
     IReadOnlyList<string> Instances,
     bool SqlAvailable,
-    LocalBranchConfiguration? ConfiguredBranch = null);
+    LocalBranchConfiguration? ConfiguredBranch = null,
+    string? LocalAppUrl = null);
 
 public sealed record LocalPairRequest(string? Code, string? Server, bool ConfirmTransfer);
 
@@ -235,7 +236,8 @@ public sealed class BranchAgentLocalEndpoint : IAsyncDisposable
             return true;
         }
 
-        return uri.Host is "127.0.0.1" or "localhost" && uri.Port is 5173 or 5080;
+        return uri.Host is "127.0.0.1" or "localhost"
+            && uri.Port is 5173 or 5080 or BranchAgentHostCommand.LocalAppPort;
     }
 
     private static async Task WriteAsync(HttpListenerResponse response, int status, object body)

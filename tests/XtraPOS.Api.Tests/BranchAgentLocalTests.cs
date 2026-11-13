@@ -43,9 +43,9 @@ public class BranchAgentLocalTests
         var port = 47332;
         var configured = new LocalBranchConfiguration("منشأة الاختبار", null, "الفرع الرئيسي", "001", "XtraPOS_Branch", "localhost", "POS-01", 1, "نقطة 1");
         await using var endpoint = new BranchAgentLocalEndpoint(
-            () => new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://other.example", Guid.NewGuid().ToString(), ["localhost"], true, configured),
+            () => new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://other.example", Guid.NewGuid().ToString(), ["localhost"], true, configured, BranchAgentHostCommand.LocalAppUrl),
             (request, _) => request.ConfirmTransfer
-                ? Task.FromResult(new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://test-pos.sharbelfashion.com", Guid.NewGuid().ToString(), ["localhost"], true, configured))
+                ? Task.FromResult(new LocalAgentStatus(BranchAgentLocalDecision.Product, "0.3.0", "BRANCH-PC", true, "https://test-pos.sharbelfashion.com", Guid.NewGuid().ToString(), ["localhost"], true, configured, BranchAgentHostCommand.LocalAppUrl))
                 : throw new BranchAgentTransferRequiredException("هذه الخدمة مربوطة بموقع آخر."),
             port);
         endpoint.Start();
@@ -54,10 +54,13 @@ public class BranchAgentLocalTests
         Assert.Equal(BranchAgentLocalDecision.Product, status?.Product);
         Assert.Equal("XtraPOS_Branch", status?.ConfiguredBranch?.DatabaseName);
         Assert.Equal("الفرع الرئيسي", status?.ConfiguredBranch?.BranchName);
+        Assert.Equal(BranchAgentHostCommand.LocalAppUrl, status?.LocalAppUrl);
         var refused = await http.PostAsJsonAsync($"http://127.0.0.1:{port}/pair", new { code = "unused", server = "https://test-pos.sharbelfashion.com", confirmTransfer = false });
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
         Assert.False(BranchAgentLocalEndpoint.IsAllowedOrigin("https://evil.example"));
         Assert.True(BranchAgentLocalEndpoint.IsAllowedOrigin("https://test-pos.sharbelfashion.com"));
+        Assert.True(BranchAgentLocalEndpoint.IsAllowedOrigin(BranchAgentHostCommand.LocalAppUrl));
+        Assert.True(BranchAgentLocalEndpoint.IsAllowedOrigin($"http://localhost:{BranchAgentHostCommand.LocalAppPort}"));
     }
 
     [Fact]

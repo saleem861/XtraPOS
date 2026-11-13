@@ -50,6 +50,24 @@ public sealed class SqlConnectionFactory
 
     public bool IsSafeConfiguration(out string? problem)
     {
+        if (ActiveOperational() is { } active)
+        {
+            if (string.IsNullOrWhiteSpace(active.Server))
+            {
+                problem = "لم يتم إعداد الاتصال بخادم البيانات.";
+                return false;
+            }
+
+            if (_options.ConnectTimeoutSeconds is < 1 or > 120)
+            {
+                problem = "مهلة الاتصال يجب أن تكون بين 1 و 120 ثانية.";
+                return false;
+            }
+
+            problem = null;
+            return true;
+        }
+
         if (!BranchDatabase.IsAllowedName(_databaseName))
         {
             problem = "اسم قاعدة بيانات الفرع غير مسموح.";

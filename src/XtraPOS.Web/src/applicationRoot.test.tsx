@@ -121,4 +121,91 @@ describe("setup preview route gate", () => {
     await userEvent.click(screen.getByRole("button", { name: "إعداد فرع أو جهاز آخر" }));
     expect(await screen.findByRole("heading", { name: "مرحبًا بك في XtraPOS" })).toBeTruthy();
   });
+
+  it("redirects automatically to localAppUrl when the local branch agent has a configured branch and local web host", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1:47331/status")) {
+        return new Response(JSON.stringify({
+          product: "XtraPOS.BranchAgent",
+          version: "0.3.0",
+          machineName: "DESKTOP-MFTEQK0",
+          paired: true,
+          server: "https://test-pos.sharbelfashion.com",
+          agentId: "agent-1",
+          instances: ["localhost"],
+          sqlAvailable: true,
+          configuredBranch: {
+            businessName: "SW",
+            branchName: "Lab",
+            branchCode: "11",
+            databaseName: "XtraPOS_Branch2",
+            server: "localhost",
+            deviceName: "صندوق 1",
+            stationNumber: 1,
+            stationName: "كاونتر 1",
+          },
+          localAppUrl: "http://127.0.0.1:47335",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ status: "NotConfigured" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    const onNavigate = vi.fn();
+    render(<ApplicationRoot development pathname="/" onNavigate={onNavigate} />);
+
+    await vi.waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledWith("http://127.0.0.1:47335");
+    });
+  });
+
+  it("stays on the configured details screen when ?setup=1 is present and lets the user open the local app manually", async () => {
+    window.history.replaceState(null, "", "/?setup=1");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1:47331/status")) {
+        return new Response(JSON.stringify({
+          product: "XtraPOS.BranchAgent",
+          version: "0.3.0",
+          machineName: "DESKTOP-MFTEQK0",
+          paired: true,
+          server: "https://test-pos.sharbelfashion.com",
+          agentId: "agent-1",
+          instances: ["localhost"],
+          sqlAvailable: true,
+          configuredBranch: {
+            businessName: "SW",
+            branchName: "Lab",
+            branchCode: "11",
+            databaseName: "XtraPOS_Branch2",
+            server: "localhost",
+            deviceName: "صندوق 1",
+            stationNumber: 1,
+            stationName: "كاونتر 1",
+          },
+          localAppUrl: "http://127.0.0.1:47335",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ status: "NotConfigured" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    const onNavigate = vi.fn();
+    try {
+      render(<ApplicationRoot development pathname="/" onNavigate={onNavigate} />);
+
+      expect(await screen.findByText("تم إعداد هذا الجهاز مسبقًا")).toBeTruthy();
+      expect(onNavigate).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole("button", { name: "فتح التطبيق الرئيسي" }));
+      expect(onNavigate).toHaveBeenCalledWith("http://127.0.0.1:47335");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
 });

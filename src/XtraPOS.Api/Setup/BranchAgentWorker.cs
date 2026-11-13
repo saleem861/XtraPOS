@@ -9,7 +9,8 @@ public sealed class BranchAgentWorker(
     IServiceScopeFactory scopes,
     IHostEnvironment environment,
     IDataProtectionProvider protection,
-    ILogger<BranchAgentWorker>? logger = null)
+    ILogger<BranchAgentWorker>? logger = null,
+    LocalAppHostState? localAppHost = null)
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -184,6 +185,11 @@ public sealed class BranchAgentWorker(
     private LocalAgentStatus CurrentStatus(AgentSession session)
     {
         var instances = LocalInstances();
+        var localAppUrl = _configuredBranch is not null
+            && !string.IsNullOrWhiteSpace(localAppHost?.BaseUrl)
+            && File.Exists(Path.Combine(environment.ContentRootPath, "wwwroot", "index.html"))
+            ? localAppHost.BaseUrl
+            : null;
         return new LocalAgentStatus(
             BranchAgentLocalDecision.Product,
             "0.3.0",
@@ -193,7 +199,8 @@ public sealed class BranchAgentWorker(
             session.AgentId == Guid.Empty ? null : session.AgentId.ToString("D"),
             instances,
             SqlAvailable(instances),
-            _configuredBranch);
+            _configuredBranch,
+            localAppUrl);
     }
 
     private async Task RefreshConfiguredBranchAsync(CancellationToken cancellationToken)
@@ -421,6 +428,7 @@ public sealed class BranchAgentWorker(
 
         var executor = scope.ServiceProvider.GetRequiredService<BranchAgentExecutor>();
         await executor.ProvisionAsync(job, (progress, token) => PostAsync(http, job, progress, token), cancellationToken);
+        await RefreshConfiguredBranchAsync(cancellationToken);
     }
 
     private static BranchAgentProgress ToProgress(SetupEvent setupEvent)

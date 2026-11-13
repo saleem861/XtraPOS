@@ -118,6 +118,38 @@ public class SqlConnectionSafetyTests
         Assert.Equal(StagingSqlDefaults.CentralDatabaseName, "XtraPOS_Central_Test_Staging");
     }
 
+    [Fact]
+    public void ActiveOperationalBranchSatisfiesSafetyWithoutBootstrapServer()
+    {
+        var operational = new XtraPOS.Api.Setup.OperationalBranchConnection();
+        operational.Replace(new XtraPOS.Api.Sync.SqlEndpointSettings(
+            DatabaseRole.Branch,
+            XtraPOS.Api.Sync.SqlEndpointSettings.Local,
+            "localhost",
+            null,
+            null,
+            "XtraPOS_Branch2",
+            XtraPOS.Api.Sync.SqlEndpointSettings.Integrated,
+            null,
+            null,
+            true,
+            true));
+
+        var factory = new SqlConnectionFactory(
+            Options.Create(new SqlServerOptions
+            {
+                Server = "",
+                Database = BranchDatabase.Name,
+                ConnectTimeoutSeconds = 15,
+            }),
+            environment: null,
+            operational);
+
+        Assert.True(factory.IsSafeConfiguration(out var problem));
+        Assert.Null(problem);
+        Assert.Equal("XtraPOS_Branch2", factory.EffectiveDatabase);
+    }
+
     private static SqlConnectionFactory Factory(SqlServerOptions options, bool staging = false) =>
         new(Options.Create(options), staging ? new StagingEnvironment() : null);
 
