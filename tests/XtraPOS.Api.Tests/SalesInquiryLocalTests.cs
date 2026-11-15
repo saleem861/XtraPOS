@@ -5,6 +5,8 @@ namespace XtraPOS.Api.Tests;
 
 public class SalesInquiryLocalTests
 {
+    private static readonly TimeZoneInfo PlusTwo = TimeZoneInfo.CreateCustomTimeZone("Test-Plus-Two", TimeSpan.FromHours(2), "Test-Plus-Two", "Test-Plus-Two");
+
     [Fact]
     public void OneLocalBranchIsAlwaysTheCurrentDatabase()
     {
@@ -16,11 +18,13 @@ public class SalesInquiryLocalTests
     }
 
     [Fact]
-    public void NamedZoneFailureFallsBackToTheMachineClock()
+    public void LocalDayIsComparedInUtc()
     {
-        Assert.True(SalesInquiryLocal.IsNamedZoneFailure(102, "Incorrect syntax near 'AT'."));
-        Assert.True(SalesInquiryLocal.IsNamedZoneFailure(50000, "The time zone parameter is invalid."));
-        Assert.False(SalesInquiryLocal.IsNamedZoneFailure(207, "Invalid column name 'PriceOverrideMode'."));
+        var (start, end) = SalesInquiryLocal.LocalDayBounds(new DateOnly(2026, 11, 15), new DateOnly(2026, 11, 15), PlusTwo);
+        Assert.Equal(new DateTime(2026, 11, 14, 22, 0, 0, DateTimeKind.Utc), start);
+        Assert.Equal(new DateTime(2026, 11, 15, 22, 0, 0, DateTimeKind.Utc), end);
+        Assert.Equal(120, SalesInquiryLocal.LocalOffsetMinutes(new DateOnly(2026, 11, 15), PlusTwo));
         Assert.Equal("قاعدة هذا الجهاز لا تحتوي جداول المبيعات المحدّثة.", SalesInquiryLocal.FailureMessage(208));
+        Assert.Contains("9820", SalesInquiryLocal.FailureMessage(9820), StringComparison.Ordinal);
     }
 }
