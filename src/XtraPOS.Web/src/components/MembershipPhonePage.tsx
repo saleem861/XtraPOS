@@ -37,17 +37,19 @@ export function MembershipPhonePage({ pathname }: { pathname: string }) {
         setMessage(messages.MEMBERSHIP_SESSION_REQUIRED);
         return;
       }
-      setMessage(body.status === "Verified" ? "تم التعرف على عضويتك بنجاح" : (body.message ?? messages[body.code ?? ""] ?? "تعذر التحقق من العضوية."));
+      const done = body.status === "Verified" ? "تم التعرف على عضويتك بنجاح" : body.status === "Sent" ? "تم إرسال العضوية إلى نقطة البيع." : null;
+      setMessage(done ?? body.message ?? messages[body.code ?? ""] ?? "تعذر التحقق من العضوية.");
     })().catch(() => { if (!stop) setMessage(messages.MEMBERSHIP_SERVER_UNAVAILABLE); });
     return () => { stop = true; };
   }, [resource, unlinked]);
   const login = message === messages.MEMBERSHIP_SESSION_REQUIRED;
   const googleStart = `/api/membership/auth/google/start?return=${encodeURIComponent(pathname)}`;
+  const appleStart = `/api/membership/auth/apple/start?return=${encodeURIComponent(pathname)}`;
   return (
     <main dir="rtl" aria-label="عضوية XtraPOS">
       <h1>XtraPOS</h1>
       <p>{message}</p>
-      {login ? <p><a href={googleStart}>Google</a> <a href="/api/membership/auth/apple/start">Apple</a></p> : null}
+      {login ? <p><a href={googleStart}>Google</a> <a href={appleStart}>Apple</a></p> : null}
     </main>
   );
 }

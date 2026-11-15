@@ -29,6 +29,14 @@ public static class MembershipLinks
     public static bool IsEnrollmentToken(string? token) =>
         token is { Length: >= 20 and <= 128 } && token.All(item => char.IsLetterOrDigit(item) || item is '-' or '_');
 
+    public static string? CounterToken(string? path)
+    {
+        const string prefix = "/membership/counter/";
+        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var token = path[prefix.Length..];
+        return IsEnrollmentToken(token) ? token : null;
+    }
+
     private static string Trim(string origin) => origin.Trim().TrimEnd('/');
 }
 
@@ -50,3 +58,10 @@ public sealed record SharedEnrollmentView(
     string? Email,
     Guid? AttemptId,
     DateTime? AttemptExpiresAtUtc);
+
+public sealed class SharedCounterPublish
+{
+    public string? Token { get; set; }
+}
+
+public sealed record SharedCounterView(string Status, string? Provider, string? Subject, string? Email, string? Display);

@@ -380,6 +380,76 @@ public sealed class MembershipService(
 
     public async Task<MembershipPublicStatus> CounterStatusAsync(string token, CancellationToken cancellationToken)
     {
+        var relayed = RelayCounterStatus(token);
+        MembershipPublicStatus? stored = null;
+        try
+        {
+            stored = await ReadStoredCounterStatusAsync(token, cancellationToken);
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+            stored = null;
+        }
+
+        if (relayed is not null && (stored is null || stored.Status is "Missing")) return relayed;
+        return stored ?? relayed ?? new MembershipPublicStatus("Missing", null, "MEMBERSHIP_SERVER_UNAVAILABLE");
+    }
+
+    public bool CounterRelayRecognized(string token) =>
+        relay.ReadCounter(token, DateTime.UtcNow)?.Status == "Verified";
+
+    public async Task<string?> ReadCounterTokenAsync(Guid counterId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT PublicToken FROM dbo.MembershipCounterCodes WHERE CounterID = @id;", connection);
+        command.Parameters.AddWithValue("@id", counterId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value as string;
+    }
+
+    public async Task ApplyRemoteCounterAsync(string token, SharedCounterView view, CancellationToken cancellationToken)
+    {
+        if (view.Status != "Verified" || string.IsNullOrWhiteSpace(view.Subject)) return;
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        Guid? customer = null;
+        await using (var lookup = new SqlCommand(
+            """
+            SELECT TOP (1) CustomerID
+            FROM dbo.CustomerMembershipIdentities
+            WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Active';
+            """,
+            connection))
+        {
+            lookup.Parameters.AddWithValue("@provider", string.IsNullOrWhiteSpace(view.Provider) ? "Google" : view.Provider);
+            lookup.Parameters.AddWithValue("@subject", view.Subject);
+            var value = await lookup.ExecuteScalarAsync(cancellationToken);
+            if (value is Guid id) customer = id;
+        }
+
+        await using var update = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET Status = @status, RecognizedCustomerID = @customer, UpdatedAt = SYSUTCDATETIME()
+            WHERE PublicToken = @token AND Status = N'Waiting';
+            """,
+            connection);
+        update.Parameters.AddWithValue("@status", customer is null ? "Unlinked" : "Verified");
+        update.Parameters.AddWithValue("@customer", (object?)customer ?? DBNull.Value);
+        update.Parameters.AddWithValue("@token", token);
+        await update.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private MembershipPublicStatus? RelayCounterStatus(string token)
+    {
+        var relayed = relay.ReadCounter(token, DateTime.UtcNow);
+        if (relayed is null) return null;
+        if (relayed.Status == "Expired") return new MembershipPublicStatus("Expired", null, "MEMBERSHIP_COUNTER_IDLE");
+        return new MembershipPublicStatus("Pending", DateTime.UtcNow, null);
+    }
+
+    private async Task<MembershipPublicStatus> ReadStoredCounterStatusAsync(string token, CancellationToken cancellationToken)
+    {
         await using var connection = await OpenCentralAsync(cancellationToken);
         await using var command = new SqlCommand(
             "SELECT UpdatedAt FROM dbo.MembershipCounterCodes WHERE PublicToken = @token;", connection);
@@ -406,8 +476,16 @@ public sealed class MembershipService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task CompleteCounterAsync(string token, string? sessionToken, CancellationToken cancellationToken)
+    public async Task<string> CompleteCounterAsync(string token, string? sessionToken, CancellationToken cancellationToken)
     {
+        var relayed = relay.ReadCounter(token, DateTime.UtcNow);
+        if (relayed is not null)
+        {
+            if (relayed.Status == "Verified") return "Sent";
+            if (relayed.Status == "Expired") throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
+            throw new MembershipException("MEMBERSHIP_SESSION_REQUIRED");
+        }
+
         await using var connection = await OpenCentralAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         DateTime updated;
@@ -433,6 +511,7 @@ public sealed class MembershipService(
         command.Parameters.AddWithValue("@token", token);
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
         await transaction.CommitAsync(cancellationToken);
+        return "Verified";
     }
 
     private static async Task<CounterTokenRow?> ReadCounterAsync(SqlConnection connection, SqlTransaction? transaction, Guid counterId, CancellationToken cancellationToken)

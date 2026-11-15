@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -22,6 +23,7 @@ public sealed class BranchAgentWorker(
         PropertyNameCaseInsensitive = true,
     };
 
+    private readonly ConcurrentDictionary<string, long> _counterPublishedAt = new();
     private volatile LocalBranchConfiguration? _configuredBranch;
     private volatile bool _configuredBranchDetailsLoaded;
     private HttpClient _client = null!;
@@ -436,6 +438,39 @@ public sealed class BranchAgentWorker(
         using var response = await SendMembershipAsync(HttpMethod.Get, "api/branch-agent/membership/enrollment/" + Uri.EscapeDataString(token), null, cancellationToken);
         if (response is null || response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
         return await response.Content.ReadFromJsonAsync<SharedEnrollmentView>(Json, cancellationToken);
+    }
+
+    public async Task<bool> PublishCounterAsync(string token, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow.Ticks;
+        if (_counterPublishedAt.TryGetValue(token, out var published) && now - published < TimeSpan.FromSeconds(10).Ticks)
+        {
+            return true;
+        }
+
+        using var response = await SendMembershipAsync(HttpMethod.Post, "api/branch-agent/membership/counter", new { token }, cancellationToken);
+        if (response is null || !response.IsSuccessStatusCode)
+        {
+            DiagnosticLog.Write(environment, "membership-counter", "public-publish-failed");
+            return false;
+        }
+
+        _counterPublishedAt[token] = now;
+        return true;
+    }
+
+    public async Task<SharedCounterView?> ReadCounterAsync(string token, CancellationToken cancellationToken)
+    {
+        using var response = await SendMembershipAsync(HttpMethod.Get, "api/branch-agent/membership/counter/" + Uri.EscapeDataString(token), null, cancellationToken);
+        if (response is null || response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
+        return await response.Content.ReadFromJsonAsync<SharedCounterView>(Json, cancellationToken);
+    }
+
+    public async Task ClearCounterAsync(string token, CancellationToken cancellationToken)
+    {
+        using var response = await SendMembershipAsync(HttpMethod.Post, "api/branch-agent/membership/counter/" + Uri.EscapeDataString(token) + "/consume", new { }, cancellationToken);
+        if (response is null || !response.IsSuccessStatusCode) return;
+        _counterPublishedAt.TryRemove(token, out _);
     }
 
     private async Task<HttpResponseMessage?> SendMembershipAsync(HttpMethod method, string path, object? body, CancellationToken cancellationToken)

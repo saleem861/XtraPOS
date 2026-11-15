@@ -32,6 +32,13 @@ public sealed class MembershipAuthService(
             : enrollmentToken + "." + MembershipTokens.CreateOpaqueToken();
         if (!string.IsNullOrWhiteSpace(returnPath)) state += "|" + returnPath;
         var nonce = MembershipTokens.CreateOpaqueToken();
+        var counterToken = MembershipLinks.CounterToken(returnPath);
+        if (counterToken is not null && relay.KnowsFreshCounter(counterToken, DateTime.UtcNow))
+        {
+            relay.StartCounterAttempt(counterToken, Guid.NewGuid(), provider, state, nonce, verifier, DateTime.UtcNow);
+            return new MembershipAuthStart(MembershipPkce.AuthorizeUrl(provider, clientId, redirectUri, state, nonce, challenge), state);
+        }
+
         if (!string.IsNullOrWhiteSpace(enrollmentToken) && relay.KnowsEnrollment(enrollmentToken, DateTime.UtcNow))
         {
             relay.StartAttempt(enrollmentToken, Guid.NewGuid(), provider, state, nonce, verifier, DateTime.UtcNow);
