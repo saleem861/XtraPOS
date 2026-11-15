@@ -1,13 +1,11 @@
+using XtraPOS.Api.Setup;
+
 namespace XtraPOS.Api.Membership;
 
 public static class MembershipLinks
 {
-    public static string? PhoneOrigin(string? configured, string? pairedServer)
-    {
-        if (IsPhoneReachable(pairedServer)) return Trim(pairedServer!);
-        if (IsPhoneReachable(configured)) return Trim(configured!);
-        return null;
-    }
+    public static string? PhoneOrigin(string? configured, string? pairedServer) =>
+        BranchAgentMembershipFile.PhoneOrigin(configured, pairedServer);
 
     public static string EnrollmentOrigin(string? publicOrigin, string? localBaseUrl, string requestOrigin)
     {

@@ -20,7 +20,7 @@ public static class BranchAgentMembershipFile
             membership["GoogleClientId"] = GoogleClientId;
         }
 
-        var phoneOrigin = XtraPOS.Api.Membership.MembershipLinks.PhoneOrigin(membership["PublicOrigin"]?.GetValue<string>(), publicOrigin);
+        var phoneOrigin = PhoneOrigin(membership["PublicOrigin"]?.GetValue<string>(), publicOrigin);
         if (phoneOrigin is not null)
         {
             membership["PublicOrigin"] = phoneOrigin;
@@ -28,5 +28,19 @@ public static class BranchAgentMembershipFile
 
         root["Membership"] = membership;
         File.WriteAllText(appsettingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    public static string? PhoneOrigin(string? configured, string? pairedServer)
+    {
+        if (IsPhoneReachable(pairedServer)) return pairedServer!.Trim().TrimEnd('/');
+        if (IsPhoneReachable(configured)) return configured!.Trim().TrimEnd('/');
+        return null;
+    }
+
+    private static bool IsPhoneReachable(string? origin)
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return false;
+        if (!Uri.TryCreate(origin.Trim(), UriKind.Absolute, out var uri)) return false;
+        return (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) && !uri.IsLoopback;
     }
 }
