@@ -13,6 +13,7 @@ public sealed record MembershipAuthResult(string? SessionSecret, string? Code, s
 
 public sealed class MembershipAuthService(
     MembershipService membership,
+    MembershipRelay relay,
     PhoneVerificationService phones,
     IMembershipIdTokenValidator tokens,
     MembershipCodeExchange exchange,
@@ -31,6 +32,12 @@ public sealed class MembershipAuthService(
             : enrollmentToken + "." + MembershipTokens.CreateOpaqueToken();
         if (!string.IsNullOrWhiteSpace(returnPath)) state += "|" + returnPath;
         var nonce = MembershipTokens.CreateOpaqueToken();
+        if (!string.IsNullOrWhiteSpace(enrollmentToken) && relay.KnowsEnrollment(enrollmentToken, DateTime.UtcNow))
+        {
+            relay.StartAttempt(enrollmentToken, Guid.NewGuid(), provider, state, nonce, verifier, DateTime.UtcNow);
+            return new MembershipAuthStart(MembershipPkce.AuthorizeUrl(provider, clientId, redirectUri, state, nonce, challenge), state);
+        }
+
         await using var connection = await membership.OpenCentralAsync(cancellationToken);
         await using var command = new SqlCommand(
             """
@@ -54,6 +61,12 @@ public sealed class MembershipAuthService(
         var clientId = provider == "Apple" ? settings.AppleClientId : settings.GoogleClientId;
         var secret = provider == "Apple" ? settings.AppleClientSecret : settings.GoogleClientSecret;
         if (string.IsNullOrWhiteSpace(clientId)) throw new MembershipException("BLOCKED_EXTERNAL_CONFIG");
+        var pending = relay.FindPending(provider, state, DateTime.UtcNow);
+        if (pending is not null)
+        {
+            return await FinishRelayAsync(provider, code, idToken, redirectUri, clientId, secret, pending, cancellationToken);
+        }
+
         await using var connection = await membership.OpenCentralAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         AttemptRow? attempt;
@@ -155,6 +168,30 @@ public sealed class MembershipAuthService(
 
         await transaction.CommitAsync(cancellationToken);
         return new MembershipAuthResult(null, "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED", attempt.Id.ToString());
+    }
+
+    private async Task<MembershipAuthResult> FinishRelayAsync(
+        string provider,
+        string? code,
+        string? idToken,
+        string redirectUri,
+        string clientId,
+        string? secret,
+        MembershipRelayAttempt pending,
+        CancellationToken cancellationToken)
+    {
+        var jwt = idToken;
+        if (string.IsNullOrWhiteSpace(jwt))
+        {
+            if (string.IsNullOrWhiteSpace(code)) throw new MembershipException("MEMBERSHIP_PROVIDER_SIGNATURE");
+            jwt = await exchange.ExchangeAsync(provider, clientId, secret ?? "", code, pending.Verifier, redirectUri, cancellationToken);
+        }
+
+        var claims = await tokens.ValidateAsync(provider, jwt, clientId, pending.Nonce, cancellationToken);
+        var email = string.IsNullOrWhiteSpace(claims.Email) ? null : claims.Email;
+        relay.Complete(pending.AttemptId, provider, claims.Subject, email, email ?? claims.Subject, DateTime.UtcNow);
+        DiagnosticLog.Write(environment, "enrollment-link", "relay");
+        return new MembershipAuthResult(null, "MEMBERSHIP_OWNERSHIP_PROOF_REQUIRED", pending.AttemptId.ToString());
     }
 
     public async Task ProveOwnershipAsync(Guid attemptId, Guid verificationId, string? destination, string? otp, CancellationToken cancellationToken)

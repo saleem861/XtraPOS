@@ -22,6 +22,7 @@ public sealed class MembershipService(
     SqlConnectionFactory connections,
     SyncEndpointStore endpoints,
     LocalAppHostState localHost,
+    MembershipRelay relay,
     IOptions<MembershipOptions> options)
 {
     public const string SessionCookie = "xtrapos-membership";
@@ -511,34 +512,34 @@ public sealed class MembershipService(
         return (enrollmentId, token, expires);
     }
 
-    public async Task SaveSharedEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
+    public Task SaveSharedEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
     {
         if (publish.EnrollmentId == Guid.Empty || publish.BusinessId == Guid.Empty || publish.CashierUserId == Guid.Empty) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
         if (!MembershipLinks.IsEnrollmentToken(publish.Token)) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
         var expires = DateTime.SpecifyKind(publish.ExpiresAtUtc, DateTimeKind.Utc);
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
         if (expires <= DateTime.UtcNow || expires > DateTime.UtcNow.AddMinutes(15)) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
-        await using var connection = await OpenCentralAsync(cancellationToken);
-        await using var command = new SqlCommand(
-            """
-            IF NOT EXISTS (SELECT 1 FROM dbo.MembershipEnrollmentRequests WHERE TokenHash = @hash)
-            INSERT INTO dbo.MembershipEnrollmentRequests
-                (EnrollmentID, BusinessID, CustomerID, TokenHash, Status, ExpiresAt, CreatedAt, CashierUserID)
-            VALUES
-                (@id, @business, @customer, @hash, N'Pending', @expires, SYSUTCDATETIME(), @cashier);
-            """,
-            connection);
-        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = publish.EnrollmentId;
-        command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = publish.BusinessId;
-        command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = publish.CustomerId is Guid customer && customer != Guid.Empty ? customer : DBNull.Value;
-        command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(publish.Token!);
-        command.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expires;
-        command.Parameters.Add("@cashier", SqlDbType.UniqueIdentifier).Value = publish.CashierUserId;
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        relay.Publish(publish, DateTime.UtcNow);
+        return Task.CompletedTask;
     }
 
     public async Task<SharedEnrollmentView?> ReadSharedEnrollmentAsync(string token, CancellationToken cancellationToken)
     {
         if (!MembershipLinks.IsEnrollmentToken(token)) return null;
+        var relayed = relay.Read(token, DateTime.UtcNow);
+        if (relayed is not null) return relayed;
+        try
+        {
+            return await ReadSharedEnrollmentFromSqlAsync(token, cancellationToken);
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<SharedEnrollmentView?> ReadSharedEnrollmentFromSqlAsync(string token, CancellationToken cancellationToken)
+    {
         await using var connection = await OpenCentralAsync(cancellationToken);
         string status;
         DateTime expires;

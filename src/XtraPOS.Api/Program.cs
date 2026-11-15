@@ -135,6 +135,7 @@ if (builder.Environment.IsStaging() || isBranchAgent)
         }
     });
 }
+builder.Services.AddSingleton<MembershipRelay>();
 builder.Services.AddScoped<MembershipService>();
 builder.Services.AddScoped<MembershipCodeExchange>();
 builder.Services.AddScoped<IMembershipIdTokenValidator, MembershipIdTokenValidator>();
