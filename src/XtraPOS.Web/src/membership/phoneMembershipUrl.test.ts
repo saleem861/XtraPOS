@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { phoneMembershipUrl } from "./phoneMembershipUrl";
 
 describe("phone membership links", () => {
