@@ -920,7 +920,18 @@ if (isBranchAgent)
     {
         var fileProvider = new PhysicalFileProvider(webRoot);
         app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = fileProvider });
-        app.UseStaticFiles(new StaticFileOptions { FileProvider = fileProvider });
+        app.UseStaticFiles(new StaticFileOptions
+        {
+            FileProvider = fileProvider,
+            OnPrepareResponse = context =>
+            {
+                var name = context.File.Name;
+                if (name.Equals("index.html", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Context.Response.Headers.CacheControl = "no-cache";
+                }
+            },
+        });
     }
 }
 
