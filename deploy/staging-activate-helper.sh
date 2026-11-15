@@ -387,9 +387,8 @@ activate() {
     branch="$(/usr/local/sbin/xtrapos-staging-db-name | sed -n 's/^DB_NAME=//p')"
   fi
   [[ "$branch" == "$BRANCH_DB" ]] || die "refusing activation while branch database is ${branch:-unknown}"
+  echo "Public site activation does not migrate a business database. XtraPOS_Branch on the branch device and its saved central database stay unchanged by this site."
   before="$(production_stamp)"
-  run_api "$api" --apply-branch-migrations --confirm-database "$BRANCH_DB"
-  run_api "$api" --apply-central-migrations --confirm-database "$CENTRAL_DB"
   backup="$(backup_pointer "$version")"
   switch_pointer "$release" "$version"
   if ! restart_staging_only; then

@@ -118,6 +118,11 @@ if ($WriteCentral) {
 & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'sudo -n /usr/local/sbin/xtrapos-staging-activate activate $version'"
 if ($LASTEXITCODE -ne 0) { throw "Activation failed. The helper restores the previous staging pointer when the new service does not become healthy." }
 & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'sed -i s/not-applied/applied-on-activate/ /opt/xtrapos-staging/current/release.json /opt/xtrapos-staging/current/web/release.json'"
+$installedAgent = "C:\Program Files\XtraPOS\BranchAgent\XtraPOS.Api.exe"
+if (Test-Path $installedAgent) {
+    & powershell -NoProfile -File (Join-Path $root "scripts\update-installed-agent.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "The public site was updated, but the local branch database XtraPOS_Branch was not migrated." }
+}
 if ($LASTEXITCODE -ne 0) { throw "The release is active, but release.json still says migrations were not applied." }
 Write-Host "Staging release $version is active. SHA $sha"
 

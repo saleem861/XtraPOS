@@ -14,6 +14,11 @@ Start-Sleep -Seconds 4
 if ($LASTEXITCODE -ge 8) {
     throw "Copy failed with robocopy code $LASTEXITCODE."
 }
+$exe = Join-Path $dest "XtraPOS.Api.exe"
+& $exe --apply-branch-migrations --confirm-database XtraPOS_Branch
+if ($LASTEXITCODE -ne 0) {
+    throw "Branch migrations were not applied to XtraPOS_Branch."
+}
 & sc.exe start XtraPOSBranchAgent
 Start-Sleep -Seconds 5
 & sc.exe query XtraPOSBranchAgent

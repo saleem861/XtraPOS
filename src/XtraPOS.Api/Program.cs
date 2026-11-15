@@ -467,6 +467,18 @@ if (BranchMigrationCommand.IsRequested(args))
     }
 
     using var migrationHost = builder.Build();
+    var savedOperational = await migrationHost.Services.GetRequiredService<OperationalBranchConnectionStore>().ReadAsync(CancellationToken.None);
+    if (savedOperational is not null && OperationalDatabaseGuard.IsProductionCatalog(savedOperational.DatabaseName))
+    {
+        migrationHost.Services.GetRequiredService<OperationalBranchConnection>().Replace(savedOperational);
+        if (!string.Equals(confirmed, savedOperational.DatabaseName, StringComparison.Ordinal))
+        {
+            Console.WriteLine($"Branch migration requires --confirm-database {savedOperational.DatabaseName}.");
+            Environment.ExitCode = 1;
+            return;
+        }
+    }
+
     var migrationConnections = migrationHost.Services.GetRequiredService<SqlConnectionFactory>();
     var migrationRunner = migrationHost.Services.GetRequiredService<MigrationRunner>();
     try
