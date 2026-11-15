@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
+using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Membership;
 
 namespace XtraPOS.Api.Setup;
@@ -414,7 +415,20 @@ public sealed class BranchAgentWorker(
     public async Task<bool> PublishEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
     {
         using var response = await SendMembershipAsync(HttpMethod.Post, "api/branch-agent/membership/enrollment", publish, cancellationToken);
-        return response is { IsSuccessStatusCode: true };
+        if (response is null)
+        {
+            DiagnosticLog.Write(environment, "enrollment-qr", "public-publish-no-response");
+            return false;
+        }
+
+        if (response.IsSuccessStatusCode)
+        {
+            return true;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        DiagnosticLog.Write(environment, "enrollment-qr", "public-publish-" + (int)response.StatusCode + " " + body);
+        return false;
     }
 
     public async Task<SharedEnrollmentView?> ReadEnrollmentAsync(string token, CancellationToken cancellationToken)

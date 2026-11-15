@@ -115,9 +115,9 @@ public static class BranchAgentEndpoints
             };
             return Results.Json(new { code = exception.Code }, statusCode: status);
         }
-        catch (SqlException)
+        catch (SqlException exception)
         {
-            return Results.Json(new { code = "MEMBERSHIP_SERVER_UNAVAILABLE" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            return Results.Json(new { code = "MEMBERSHIP_SQL_" + exception.Number }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 

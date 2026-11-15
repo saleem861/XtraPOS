@@ -821,9 +821,13 @@ public sealed class MembershipService(
         }
 
         var endpoint = await endpoints.GetAsync(DatabaseRole.Central, cancellationToken);
-        if (endpoint is null || !string.Equals(endpoint.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal)) return null;
+        if (endpoint is null || !string.Equals(endpoint.Status, SqlEndpointSettings.Linked, StringComparison.Ordinal))
+        {
+            return options.Value.Enabled ? connections.CreateBranchConnectionString() : null;
+        }
+
         var settings = await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
-        return settings?.BuildConnectionString(settings.DatabaseName);
+        return settings?.BuildConnectionString(settings.DatabaseName) ?? (options.Value.Enabled ? connections.CreateBranchConnectionString() : null);
     }
 
     private static async Task<RequestRow?> ReadRequestAsync(SqlConnection connection, SqlTransaction transaction, string token, CancellationToken cancellationToken)
