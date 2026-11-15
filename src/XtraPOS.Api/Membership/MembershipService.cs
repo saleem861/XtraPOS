@@ -781,10 +781,30 @@ public sealed class MembershipService(
             return branch;
         }
 
-        var connectionString = await CentralConnectionStringAsync(cancellationToken) ?? throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
-        var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
-        return connection;
+        var own = connections.CreateBranchConnectionString();
+        string? connectionString;
+        try
+        {
+            connectionString = await CentralConnectionStringAsync(cancellationToken);
+        }
+        catch (SqlException) when (options.Value.Enabled)
+        {
+            connectionString = own;
+        }
+
+        if (connectionString is null) throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
+        try
+        {
+            var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            return connection;
+        }
+        catch (SqlException) when (options.Value.Enabled && !string.Equals(connectionString, own, StringComparison.Ordinal))
+        {
+            var connection = new SqlConnection(own);
+            await connection.OpenAsync(cancellationToken);
+            return connection;
+        }
     }
 
     internal async Task<string> CreateSessionAsync(SqlConnection connection, SqlTransaction transaction, Guid businessId, Guid customerId, Guid identityId, CancellationToken cancellationToken)
