@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using Microsoft.Data.SqlClient;
 using Microsoft.Win32;
+using XtraPOS.Api.Setup;
 
 namespace XtraPOS.BranchAgent.Setup;
 
@@ -44,6 +45,12 @@ internal static class Program
             StopService();
             Directory.CreateDirectory(InstallDirectory);
             Extract(zipPath, InstallDirectory);
+            var settings = Path.Combine(InstallDirectory, "appsettings.json");
+            if (File.Exists(settings))
+            {
+                BranchAgentMembershipFile.Enable(settings, Site);
+            }
+
             GrantLocalSqlCreate();
             ConfigureService();
             StartService();

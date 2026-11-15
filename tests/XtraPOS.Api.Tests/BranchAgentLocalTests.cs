@@ -9,6 +9,34 @@ namespace XtraPOS.Api.Tests;
 public class BranchAgentLocalTests
 {
     [Fact]
+    public void Installed_agent_settings_enable_google_membership()
+    {
+        var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "xtrapos-agent-" + Guid.NewGuid().ToString("N")));
+        var settings = Path.Combine(directory.FullName, "appsettings.json");
+        File.WriteAllText(settings, """
+            {
+              "Membership": {
+                "Enabled": false,
+                "GoogleLoginEnabled": false,
+                "AppleLoginEnabled": false
+              },
+              "SqlServer": { "Database": "XtraPOS_Branch" }
+            }
+            """);
+
+        BranchAgentMembershipFile.Enable(settings, "https://test-pos.sharbelfashion.com/");
+        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settings));
+        var membership = document.RootElement.GetProperty("Membership");
+        Assert.True(membership.GetProperty("Enabled").GetBoolean());
+        Assert.True(membership.GetProperty("GoogleLoginEnabled").GetBoolean());
+        Assert.False(membership.GetProperty("AppleLoginEnabled").GetBoolean());
+        Assert.Equal(BranchAgentMembershipFile.GoogleClientId, membership.GetProperty("GoogleClientId").GetString());
+        Assert.Equal("https://test-pos.sharbelfashion.com", membership.GetProperty("PublicOrigin").GetString());
+        Assert.Equal("XtraPOS_Branch", document.RootElement.GetProperty("SqlServer").GetProperty("Database").GetString());
+        directory.Delete(true);
+    }
+
+    [Fact]
     public void Ready_agent_matches_only_the_expected_site()
     {
         var status = new LocalAgentStatus(

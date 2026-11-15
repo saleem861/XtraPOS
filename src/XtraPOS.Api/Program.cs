@@ -127,7 +127,7 @@ if (builder.Environment.IsStaging() || isBranchAgent)
 
         if (string.IsNullOrWhiteSpace(options.GoogleClientId))
         {
-            options.GoogleClientId = "998725042091-t1p0fv71s7ajkbs104s62if1c1oviqmd.apps.googleusercontent.com";
+            options.GoogleClientId = BranchAgentMembershipFile.GoogleClientId;
         }
     });
 }

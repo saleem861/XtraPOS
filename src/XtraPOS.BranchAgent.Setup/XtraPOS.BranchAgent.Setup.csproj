@@ -15,6 +15,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+    <Compile Include="..\XtraPOS.Api\Setup\BranchAgentMembershipFile.cs" Link="BranchAgentMembershipFile.cs" />
   </ItemGroup>
 </Project>
 
