@@ -167,6 +167,15 @@ public sealed class BranchAgentRegistry
         }
     }
 
+    public void Authorize(string? token, DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            var agent = RequireAgent(token);
+            agent.LastSeen = now;
+        }
+    }
+
     public void Heartbeat(string? token, IReadOnlyList<string>? instances, DateTimeOffset now)
     {
         var localInstances = NormalizeReported(instances);

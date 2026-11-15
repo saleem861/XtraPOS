@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
+using XtraPOS.Api.Membership;
 
 namespace XtraPOS.Api.Setup;
 
@@ -22,6 +24,7 @@ public sealed class BranchAgentWorker(
     private volatile LocalBranchConfiguration? _configuredBranch;
     private volatile bool _configuredBranchDetailsLoaded;
     private HttpClient _client = null!;
+    private volatile string? _bearer;
     private int _channelGeneration;
 
     public async Task RunAsync(string server, string? pairingCode, CancellationToken cancellationToken)
@@ -44,6 +47,7 @@ public sealed class BranchAgentWorker(
         while (!cancellationToken.IsCancellationRequested)
         {
             var token = await WaitForTokenAsync(session, pairingCode, cancellationToken);
+            _bearer = token;
             if (seenGeneration != _channelGeneration)
             {
                 seenGeneration = _channelGeneration;
@@ -404,6 +408,37 @@ public sealed class BranchAgentWorker(
         catch (Exception)
         {
             // Ignore cleanup failure; the next successful pair overwrites both files.
+        }
+    }
+
+    public async Task<bool> PublishEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
+    {
+        using var response = await SendMembershipAsync(HttpMethod.Post, "api/branch-agent/membership/enrollment", publish, cancellationToken);
+        return response is { IsSuccessStatusCode: true };
+    }
+
+    public async Task<SharedEnrollmentView?> ReadEnrollmentAsync(string token, CancellationToken cancellationToken)
+    {
+        using var response = await SendMembershipAsync(HttpMethod.Get, "api/branch-agent/membership/enrollment/" + Uri.EscapeDataString(token), null, cancellationToken);
+        if (response is null || response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
+        return await response.Content.ReadFromJsonAsync<SharedEnrollmentView>(Json, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage?> SendMembershipAsync(HttpMethod method, string path, object? body, CancellationToken cancellationToken)
+    {
+        var http = _client;
+        var bearer = _bearer;
+        if (http?.BaseAddress is null || string.IsNullOrWhiteSpace(bearer)) return null;
+        using var request = new HttpRequestMessage(method, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        if (body is not null) request.Content = JsonContent.Create(body, options: Json);
+        try
+        {
+            return await http.SendAsync(request, cancellationToken);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            return null;
         }
     }
 

@@ -13,6 +13,25 @@ public class MembershipRulesTests
     }
 
     [Fact]
+    public void EnrollmentQrUsesThePublicSiteInsteadOfTheLocalApp()
+    {
+        var origin = MembershipLinks.EnrollmentOrigin(
+            "https://test-pos.sharbelfashion.com",
+            "http://127.0.0.1:47335",
+            "http://127.0.0.1:47335");
+        Assert.Equal("https://test-pos.sharbelfashion.com", origin);
+        Assert.False(MembershipLinks.IsPhoneReachable("http://127.0.0.1:47335"));
+        Assert.False(MembershipLinks.IsPhoneReachable("http://localhost:47335"));
+    }
+
+    [Fact]
+    public void EnrollmentQrStaysOnThisServerWhenNoPublicSiteIsConfigured()
+    {
+        var origin = MembershipLinks.EnrollmentOrigin(null, null, "http://127.0.0.1:5080");
+        Assert.Equal("http://127.0.0.1:5080", origin);
+    }
+
+    [Fact]
     public void GetNeverVerifies()
     {
         Assert.False(MembershipRules.GetMayVerify());

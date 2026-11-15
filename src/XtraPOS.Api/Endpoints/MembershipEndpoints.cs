@@ -6,6 +6,7 @@ using XtraPOS.Api.Data;
 using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Membership;
 using XtraPOS.Api.Security;
+using XtraPOS.Api.Setup;
 
 namespace XtraPOS.Api.Endpoints;
 
@@ -153,12 +154,22 @@ public static class MembershipEndpoints
         }
     }
 
-    private static async Task<IResult> ReadEnrollmentQrAsync(string token, HttpContext http, AuthService auth, MembershipService membership, CancellationToken cancellationToken)
+    private static async Task<IResult> ReadEnrollmentQrAsync(string token, HttpContext http, AuthService auth, MembershipService membership, BranchAgentWorker agent, CancellationToken cancellationToken)
     {
         if (await auth.GetCurrentAsync(http, cancellationToken) is null) return Results.Unauthorized();
         try
         {
             var read = await membership.ReadEnrollmentQrAsync(token, cancellationToken);
+            var localHost = http.RequestServices.GetService<XtraPOS.Api.Setup.LocalAppHostState>();
+            if (localHost?.BaseUrl is not null && read.Status is "Pending" or "Missing")
+            {
+                var remote = await agent.ReadEnrollmentAsync(token, cancellationToken);
+                if (remote?.AttemptId is not null && !string.IsNullOrWhiteSpace(remote.Subject))
+                {
+                    await membership.ImportSharedEnrollmentAsync(token, remote, cancellationToken);
+                    read = await membership.ReadEnrollmentQrAsync(token, cancellationToken);
+                }
+            }
             return Results.Ok(new { status = read.Status, provider = read.Provider, display = read.Display, attemptId = read.AttemptId });
         }
         catch (MembershipException exception)
@@ -167,7 +178,7 @@ public static class MembershipEndpoints
         }
     }
 
-    private static async Task<IResult> CreateEnrollmentQrAsync(HttpContext http, AuthService auth, MembershipService membership, EnrollmentQrRequest? request, CancellationToken cancellationToken)
+    private static async Task<IResult> CreateEnrollmentQrAsync(HttpContext http, AuthService auth, MembershipService membership, BranchAgentWorker agent, EnrollmentQrRequest? request, CancellationToken cancellationToken)
     {
         var current = await auth.GetCurrentAsync(http, cancellationToken);
         if (current is null) return Results.Unauthorized();
@@ -181,17 +192,41 @@ public static class MembershipEndpoints
         try
         {
             Guid? enrollmentCustomer = request?.CustomerId is Guid customerId && customerId != Guid.Empty ? customerId : null;
-            var localHost = http.RequestServices.GetService<XtraPOS.Api.Setup.LocalAppHostState>();
-            var created = localHost?.BaseUrl is not null
-                ? await membership.CreateBranchEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken)
-                : await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken);
+            var localHost = http.RequestServices.GetService<LocalAppHostState>();
+            var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, localHost?.BaseUrl, $"{http.Request.Scheme}://{http.Request.Host}");
+            string token;
+            DateTime expires;
+            if (localHost?.BaseUrl is not null)
+            {
+                var created = await membership.CreateBranchEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken);
+                token = created.Token;
+                expires = created.ExpiresAtUtc;
+                if (MembershipLinks.IsPhoneReachable(origin))
+                {
+                    var published = await agent.PublishEnrollmentAsync(new SharedEnrollmentPublish
+                    {
+                        EnrollmentId = created.EnrollmentId,
+                        BusinessId = businessId.Value,
+                        CustomerId = enrollmentCustomer,
+                        CashierUserId = current.UserId,
+                        Token = token,
+                        ExpiresAtUtc = expires,
+                    }, cancellationToken);
+                    if (!published)
+                    {
+                        DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "public-publish-failed");
+                        return Results.Json(new { message = "تعذر تجهيز رابط العضوية على الخادم العام." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                    }
+                }
+            }
+            else
+            {
+                var created = await membership.CreateEnrollmentQrAsync(businessId.Value, current.UserId, enrollmentCustomer, cancellationToken);
+                token = created.Token;
+                expires = created.ExpiresAtUtc;
+            }
             DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "enrollment-qr", "created");
-            var origin = localHost?.BaseUrl is not null
-                ? localHost.BaseUrl.TrimEnd('/')
-                : string.IsNullOrWhiteSpace(membership.Options.PublicOrigin)
-                    ? $"{http.Request.Scheme}://{http.Request.Host}"
-                    : membership.Options.PublicOrigin.TrimEnd('/');
-            return Results.Ok(new { token = created.Token, expiresAtUtc = created.ExpiresAtUtc, enrollUrl = origin + "/membership/enroll/" + created.Token });
+            return Results.Ok(new { token, expiresAtUtc = expires, enrollUrl = origin + "/membership/enroll/" + token });
         }
         catch (MembershipException exception)
         {

@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Cryptography;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 using XtraPOS.Api.Data;
@@ -470,7 +471,7 @@ public sealed class MembershipService(
         return (token, expires);
     }
 
-    public async Task<(string Token, DateTime ExpiresAtUtc)> CreateBranchEnrollmentQrAsync(Guid businessId, Guid cashierUserId, Guid? customerId, CancellationToken cancellationToken)
+    public async Task<(Guid EnrollmentId, string Token, DateTime ExpiresAtUtc)> CreateBranchEnrollmentQrAsync(Guid businessId, Guid cashierUserId, Guid? customerId, CancellationToken cancellationToken)
     {
         if (!options.Value.Enabled) throw new MembershipException("MEMBERSHIP_SERVER_UNAVAILABLE");
         var token = MembershipTokens.CreateOpaqueToken();
@@ -507,7 +508,139 @@ public sealed class MembershipService(
             "تسجيل عضوية",
             cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return (token, expires);
+        return (enrollmentId, token, expires);
+    }
+
+    public async Task SaveSharedEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
+    {
+        if (publish.EnrollmentId == Guid.Empty || publish.BusinessId == Guid.Empty || publish.CashierUserId == Guid.Empty) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
+        if (!MembershipLinks.IsEnrollmentToken(publish.Token)) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
+        var expires = DateTime.SpecifyKind(publish.ExpiresAtUtc, DateTimeKind.Utc);
+        if (expires <= DateTime.UtcNow || expires > DateTime.UtcNow.AddMinutes(15)) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            IF NOT EXISTS (SELECT 1 FROM dbo.MembershipEnrollmentRequests WHERE TokenHash = @hash)
+            INSERT INTO dbo.MembershipEnrollmentRequests
+                (EnrollmentID, BusinessID, CustomerID, TokenHash, Status, ExpiresAt, CreatedAt, CashierUserID)
+            VALUES
+                (@id, @business, @customer, @hash, N'Pending', @expires, SYSUTCDATETIME(), @cashier);
+            """,
+            connection);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = publish.EnrollmentId;
+        command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = publish.BusinessId;
+        command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = publish.CustomerId is Guid customer && customer != Guid.Empty ? customer : DBNull.Value;
+        command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(publish.Token!);
+        command.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expires;
+        command.Parameters.Add("@cashier", SqlDbType.UniqueIdentifier).Value = publish.CashierUserId;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<SharedEnrollmentView?> ReadSharedEnrollmentAsync(string token, CancellationToken cancellationToken)
+    {
+        if (!MembershipLinks.IsEnrollmentToken(token)) return null;
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        string status;
+        DateTime expires;
+        string? provider;
+        string? subject;
+        string? display;
+        string? email;
+        await using (var command = new SqlCommand(
+            """
+            SELECT Status, ExpiresAt, Provider, ProviderSubject, ProviderAccountDisplay, ProviderEmail
+            FROM dbo.MembershipEnrollmentRequests
+            WHERE TokenHash = @hash;
+            """,
+            connection))
+        {
+            command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) return null;
+            status = reader.GetString(0);
+            expires = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
+            provider = reader.IsDBNull(2) ? null : reader.GetString(2);
+            subject = reader.IsDBNull(3) ? null : reader.GetString(3);
+            display = reader.IsDBNull(4) ? null : reader.GetString(4);
+            email = reader.IsDBNull(5) ? null : reader.GetString(5);
+        }
+
+        if (status == "Pending" && expires <= DateTime.UtcNow) status = "Expired";
+        Guid? attemptId = null;
+        DateTime? attemptExpires = null;
+        if (!string.IsNullOrWhiteSpace(subject) && status is not "Expired")
+        {
+            await using var attempt = new SqlCommand(
+                """
+                SELECT TOP (1) AttemptID, ExpiresAt
+                FROM dbo.MembershipAuthAttempts
+                WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Authenticated' AND ExpiresAt > SYSUTCDATETIME()
+                ORDER BY CreatedAt DESC;
+                """,
+                connection);
+            attempt.Parameters.AddWithValue("@provider", provider ?? "Google");
+            attempt.Parameters.AddWithValue("@subject", subject);
+            await using var reader = await attempt.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                attemptId = reader.GetGuid(0);
+                attemptExpires = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
+            }
+        }
+
+        return new SharedEnrollmentView(status, provider, display, subject, email, attemptId, attemptExpires);
+    }
+
+    public async Task ImportSharedEnrollmentAsync(string token, SharedEnrollmentView view, CancellationToken cancellationToken)
+    {
+        if (!MembershipLinks.IsEnrollmentToken(token) || view.AttemptId is null || string.IsNullOrWhiteSpace(view.Subject)) return;
+        var expires = view.AttemptExpiresAtUtc is DateTime attemptExpires && attemptExpires > DateTime.UtcNow
+            ? DateTime.SpecifyKind(attemptExpires, DateTimeKind.Utc)
+            : DateTime.UtcNow.AddMinutes(15);
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var update = new SqlCommand(
+            """
+            UPDATE dbo.MembershipEnrollmentRequests
+            SET Provider = @provider, ProviderSubject = @subject, ProviderEmail = @email, ProviderAccountDisplay = @display
+            WHERE TokenHash = @hash AND Status = N'Pending';
+            """,
+            connection,
+            transaction))
+        {
+            update.Parameters.AddWithValue("@provider", string.IsNullOrWhiteSpace(view.Provider) ? "Google" : view.Provider);
+            update.Parameters.AddWithValue("@subject", view.Subject);
+            update.Parameters.AddWithValue("@email", (object?)view.Email ?? DBNull.Value);
+            update.Parameters.AddWithValue("@display", (object?)view.Display ?? view.Email ?? view.Subject);
+            update.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(token);
+            if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return;
+            }
+        }
+
+        await using (var insert = new SqlCommand(
+            """
+            IF NOT EXISTS (SELECT 1 FROM dbo.MembershipAuthAttempts WHERE AttemptID = @id)
+            INSERT INTO dbo.MembershipAuthAttempts
+                (AttemptID, BusinessID, CustomerID, Provider, StateHash, Nonce, PkceVerifier, ProviderSubject, Status, ExpiresAt, CreatedAt, OwnershipVerifiedAt)
+            VALUES
+                (@id, NULL, NULL, @provider, @state, N'imported', N'imported', @subject, N'Authenticated', @expires, SYSUTCDATETIME(), NULL);
+            """,
+            connection,
+            transaction))
+        {
+            insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = view.AttemptId.Value;
+            insert.Parameters.AddWithValue("@provider", string.IsNullOrWhiteSpace(view.Provider) ? "Google" : view.Provider);
+            insert.Parameters.Add("@state", SqlDbType.Binary, 32).Value = RandomNumberGenerator.GetBytes(32);
+            insert.Parameters.AddWithValue("@subject", view.Subject);
+            insert.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expires;
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<(string Status, string? Provider, string? Display, Guid? AttemptId)> ReadEnrollmentQrAsync(string token, CancellationToken cancellationToken)

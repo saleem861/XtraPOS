@@ -1,3 +1,5 @@
+using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Membership;
 using XtraPOS.Api.Setup;
 
 namespace XtraPOS.Api.Endpoints;
@@ -12,6 +14,8 @@ public static class BranchAgentEndpoints
         app.MapPost("/api/branch-agent/heartbeat", Heartbeat);
         app.MapGet("/api/branch-agent/jobs", ClaimJob);
         app.MapPost("/api/branch-agent/jobs/{id:guid}/events", Report);
+        app.MapPost("/api/branch-agent/membership/enrollment", PublishEnrollment);
+        app.MapGet("/api/branch-agent/membership/enrollment/{token}", ReadPublishedEnrollment);
     }
 
     private static IResult IssuePairingCode(HttpContext http, BranchAgentRegistry registry, IHostEnvironment environment)
@@ -89,6 +93,60 @@ public static class BranchAgentEndpoints
         catch (BranchAgentRejectedException exception)
         {
             return Results.BadRequest(new { message = exception.Message });
+        }
+    }
+
+    private static async Task<IResult> PublishEnrollment(HttpContext http, SharedEnrollmentPublish? request, BranchAgentRegistry registry, MembershipService membership, CancellationToken cancellationToken)
+    {
+        if (!Authorize(http, registry, out var failure)) return failure!;
+        if (request is null) return Results.BadRequest(new { message = "طلب التسجيل غير مكتمل." });
+        try
+        {
+            await membership.SaveSharedEnrollmentAsync(request, cancellationToken);
+            return Results.NoContent();
+        }
+        catch (MembershipException exception)
+        {
+            var status = exception.Code switch
+            {
+                "MEMBERSHIP_QR_EXPIRED" => StatusCodes.Status409Conflict,
+                "MEMBERSHIP_SERVER_UNAVAILABLE" => StatusCodes.Status503ServiceUnavailable,
+                _ => StatusCodes.Status400BadRequest,
+            };
+            return Results.Json(new { code = exception.Code }, statusCode: status);
+        }
+        catch (SqlException)
+        {
+            return Results.Json(new { code = "MEMBERSHIP_SERVER_UNAVAILABLE" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    private static async Task<IResult> ReadPublishedEnrollment(string token, HttpContext http, BranchAgentRegistry registry, MembershipService membership, CancellationToken cancellationToken)
+    {
+        if (!Authorize(http, registry, out var failure)) return failure!;
+        try
+        {
+            var view = await membership.ReadSharedEnrollmentAsync(token, cancellationToken);
+            return view is null ? Results.NotFound() : Results.Ok(view);
+        }
+        catch (MembershipException exception)
+        {
+            return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    private static bool Authorize(HttpContext http, BranchAgentRegistry registry, out IResult? failure)
+    {
+        try
+        {
+            registry.Authorize(ReadBearer(http), DateTimeOffset.UtcNow);
+            failure = null;
+            return true;
+        }
+        catch (BranchAgentRejectedException exception)
+        {
+            failure = Results.Json(new { message = exception.Message }, statusCode: StatusCodes.Status401Unauthorized);
+            return false;
         }
     }
 
