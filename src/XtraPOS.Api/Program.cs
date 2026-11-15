@@ -120,9 +120,13 @@ if (builder.Environment.IsStaging() || isBranchAgent)
         options.GoogleLoginEnabled = true;
         options.AppleLoginEnabled = false;
         options.RequireVerificationForSpecialPrices = false;
-        if (isBranchAgent && string.IsNullOrWhiteSpace(options.PublicOrigin))
+        if (isBranchAgent)
         {
-            options.PublicOrigin = branchAgentServer;
+            var phoneOrigin = XtraPOS.Api.Membership.MembershipLinks.PhoneOrigin(options.PublicOrigin, branchAgentServer);
+            if (phoneOrigin is not null)
+            {
+                options.PublicOrigin = phoneOrigin;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(options.GoogleClientId))

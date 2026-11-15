@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
+import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import type { DeviceSession } from "../types/setup";
 
 interface Created {
@@ -9,6 +10,7 @@ interface Created {
   token: string;
   expiresAtUtc: string;
   pollingIntervalMs: number;
+  phoneUrl?: string;
 }
 
 export const membershipDisplayChannel = "xtrapos-membership-display";
@@ -76,7 +78,11 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
         return;
       }
       requestId = body.verificationRequestId;
-      const url = `${window.location.origin}/membership/verify/${body.token}`;
+      const url = phoneMembershipUrl(body.phoneUrl);
+      if (!url) {
+        setError(body.message || "رابط العضوية غير معد على الموقع العام.");
+        return;
+      }
       setImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
       setCreated(body);
       setStatus("Pending");
@@ -109,7 +115,7 @@ export function MembershipQr({ session, customerId, saleContextId, active, onPha
     return () => window.clearInterval(tick);
   }, [created, session, status, restrict]);
 
-  const url = created ? `${window.location.origin}/membership/verify/${created.token}` : "";
+  const url = created ? phoneMembershipUrl(created.phoneUrl) : "";
   useEffect(() => {
     if (!created) return undefined;
     const channel = new BroadcastChannel(membershipDisplayChannel);

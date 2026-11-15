@@ -20,9 +20,10 @@ public static class BranchAgentMembershipFile
             membership["GoogleClientId"] = GoogleClientId;
         }
 
-        if (!string.IsNullOrWhiteSpace(publicOrigin) && string.IsNullOrWhiteSpace(membership["PublicOrigin"]?.GetValue<string>()))
+        var phoneOrigin = XtraPOS.Api.Membership.MembershipLinks.PhoneOrigin(membership["PublicOrigin"]?.GetValue<string>(), publicOrigin);
+        if (phoneOrigin is not null)
         {
-            membership["PublicOrigin"] = publicOrigin.Trim().TrimEnd('/');
+            membership["PublicOrigin"] = phoneOrigin;
         }
 
         root["Membership"] = membership;

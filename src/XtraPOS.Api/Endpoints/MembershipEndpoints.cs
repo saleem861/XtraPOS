@@ -20,7 +20,8 @@ public static class MembershipEndpoints
             googleLoginEnabled = membership.Options.GoogleLoginEnabled && !string.IsNullOrWhiteSpace(membership.Options.GoogleClientId),
             appleLoginEnabled = membership.Options.AppleLoginEnabled && !string.IsNullOrWhiteSpace(membership.Options.AppleClientId),
             requireVerificationForSpecialPrices = membership.Options.RequireVerificationForSpecialPrices,
-            pollingIntervalMs = membership.Options.VerificationPollingIntervalMs
+            pollingIntervalMs = membership.Options.VerificationPollingIntervalMs,
+            publicOrigin = XtraPOS.Api.Membership.MembershipLinks.PhoneOrigin(membership.Options.PublicOrigin, null)
         }));
 
         app.MapGet("/api/membership/auth/google/start", (HttpContext http, MembershipAuthService auth, CancellationToken cancellationToken) => StartAsync(http, auth, "Google", cancellationToken));
@@ -427,7 +428,12 @@ public static class MembershipEndpoints
         {
             var created = await membership.CreateAsync(device.BusinessId, device.BranchId, device.StationId, device.UserId, request.CustomerId ?? Guid.Empty, request.SaleContextId, cancellationToken);
             DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "pos-qr", "created");
-            return Results.Ok(new { verificationRequestId = created.VerificationRequestId, token = created.Token, expiresAtUtc = created.ExpiresAtUtc, pollingIntervalMs = created.PollingIntervalMs });
+            var phoneUrl = PhonePage(http, membership, "/membership/verify/" + created.Token);
+            if (phoneUrl is null)
+            {
+                return Results.Json(new { message = "رابط العضوية غير معد على الموقع العام." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+            return Results.Ok(new { verificationRequestId = created.VerificationRequestId, token = created.Token, expiresAtUtc = created.ExpiresAtUtc, pollingIntervalMs = created.PollingIntervalMs, phoneUrl });
         }
         catch (MembershipException exception)
         {
@@ -498,6 +504,13 @@ public static class MembershipEndpoints
         }
     }
 
+    private static string? PhonePage(HttpContext http, MembershipService membership, string path)
+    {
+        var local = http.RequestServices.GetService<LocalAppHostState>()?.BaseUrl;
+        var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, local, $"{http.Request.Scheme}://{http.Request.Host}");
+        return MembershipLinks.IsPhoneReachable(origin) ? origin + path : null;
+    }
+
     private static string Arabic(string code) => code switch
     {
         "MEMBERSHIP_QR_EXPIRED" => "انتهت صلاحية الرمز. اطلب رمزًا جديدًا من الكاشير.",
@@ -512,7 +525,12 @@ public static class MembershipEndpoints
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
         if (device is null) return Results.Unauthorized();
         var counter = await membership.EnsureCounterTokenAsync(device.BusinessId, device.BranchId, device.StationId, cancellationToken);
-        return Results.Ok(new { token = counter.Token, day = counter.Day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) });
+        var phoneUrl = PhonePage(http, membership, "/membership/counter/" + counter.Token);
+        if (phoneUrl is null)
+        {
+            return Results.Json(new { message = "رابط العضوية غير معد على الموقع العام." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        return Results.Ok(new { token = counter.Token, day = counter.Day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), phoneUrl });
     }
 
     private static async Task<IResult> WatchCounterAsync(HttpContext http, AuthService auth, MembershipService membership, CounterWatchRequest? request, CancellationToken cancellationToken)

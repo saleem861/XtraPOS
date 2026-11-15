@@ -53,6 +53,7 @@ import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
 import { deviceHeaders } from "../api/client";
 import { membershipPricingCustomer } from "../membership/membershipPricing";
+import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
 import { createPricingClient, PricingClientError } from "../api/pricing";
@@ -1125,12 +1126,13 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     let shownDay = "";
     const loadCounterQr = () => {
       void fetch("/api/pos/membership-counter", { headers: deviceHeaders(session), credentials: "same-origin" }).then(async (response) => {
-        const body = await response.json().catch(() => ({})) as { token?: string };
-        if (!response.ok || stop || !body.token) return;
+        const body = await response.json().catch(() => ({})) as { token?: string; phoneUrl?: string };
+        const page = phoneMembershipUrl(body.phoneUrl);
+        if (!response.ok || stop || !body.token || !page) return;
         shownDay = hebronToday();
         if (body.token === counterTokenRef.current) return;
         counterTokenRef.current = body.token;
-        const image = await QRCode.toDataURL(`${window.location.origin}/membership/counter/${body.token}`, { margin: 0, width: 220 });
+        const image = await QRCode.toDataURL(page, { margin: 0, width: 220 });
         if (!stop) setCounterQr(image);
       }).catch(() => undefined);
     };

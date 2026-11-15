@@ -2,9 +2,17 @@ namespace XtraPOS.Api.Membership;
 
 public static class MembershipLinks
 {
+    public static string? PhoneOrigin(string? configured, string? pairedServer)
+    {
+        if (IsPhoneReachable(pairedServer)) return Trim(pairedServer!);
+        if (IsPhoneReachable(configured)) return Trim(configured!);
+        return null;
+    }
+
     public static string EnrollmentOrigin(string? publicOrigin, string? localBaseUrl, string requestOrigin)
     {
-        if (IsPhoneReachable(publicOrigin)) return Trim(publicOrigin!);
+        var phone = PhoneOrigin(publicOrigin, null);
+        if (phone is not null) return phone;
         if (IsPhoneReachable(requestOrigin)) return Trim(requestOrigin);
         if (!string.IsNullOrWhiteSpace(localBaseUrl)) return Trim(localBaseUrl);
         return Trim(requestOrigin);

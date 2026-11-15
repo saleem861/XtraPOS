@@ -25,6 +25,13 @@ public class MembershipRulesTests
     }
 
     [Fact]
+    public void NewDeviceUsesTheInstalledSiteEvenWhenSettingsPointAtTheLocalApp()
+    {
+        var origin = MembershipLinks.PhoneOrigin("http://127.0.0.1:47335", "https://test-pos.sharbelfashion.com");
+        Assert.Equal("https://test-pos.sharbelfashion.com", origin);
+    }
+
+    [Fact]
     public void EnrollmentQrStaysOnThisServerWhenNoPublicSiteIsConfigured()
     {
         var origin = MembershipLinks.EnrollmentOrigin(null, null, "http://127.0.0.1:5080");

@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { deviceHeaders } from "../api/client";
 import { traceUi } from "../diagnostics/trace";
 import { pendingEnrollmentKey } from "../membership/newCustomerDraft";
+import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import type { DeviceSession } from "../types/setup";
 
@@ -57,7 +58,11 @@ export function CustomerMembershipSection({ session, customerId, identityKey = "
       return;
     }
     traceUi("customer", "enrollment-qr", "created");
-    const url = body.enrollUrl || `${window.location.origin}/membership/enroll/${body.token}`;
+    const url = phoneMembershipUrl(body.enrollUrl);
+    if (!url) {
+      setQrError("رابط العضوية غير معد على الموقع العام.");
+      return;
+    }
     setQrToken(body.token);
     setQrImage(await QRCode.toDataURL(url, { margin: 1, width: 220 }));
   }

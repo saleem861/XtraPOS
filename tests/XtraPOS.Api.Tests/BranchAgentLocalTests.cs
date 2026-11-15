@@ -37,6 +37,26 @@ public class BranchAgentLocalTests
     }
 
     [Fact]
+    public void Reinstall_replaces_a_local_membership_address_with_the_site()
+    {
+        var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "xtrapos-agent-" + Guid.NewGuid().ToString("N")));
+        var settings = Path.Combine(directory.FullName, "appsettings.json");
+        File.WriteAllText(settings, """
+            {
+              "Membership": {
+                "Enabled": true,
+                "PublicOrigin": "http://127.0.0.1:47335"
+              }
+            }
+            """);
+
+        BranchAgentMembershipFile.Enable(settings, "https://test-pos.sharbelfashion.com/");
+        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settings));
+        Assert.Equal("https://test-pos.sharbelfashion.com", document.RootElement.GetProperty("Membership").GetProperty("PublicOrigin").GetString());
+        directory.Delete(true);
+    }
+
+    [Fact]
     public void Ready_agent_matches_only_the_expected_site()
     {
         var status = new LocalAgentStatus(
