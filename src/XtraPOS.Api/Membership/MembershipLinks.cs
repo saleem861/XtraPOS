@@ -7,6 +7,9 @@ public static class MembershipLinks
     public static string? PhoneOrigin(string? configured, string? pairedServer) =>
         BranchAgentMembershipFile.PhoneOrigin(configured, pairedServer);
 
+    public static string BranchEnrollmentOrigin(string? configured, string? startupServer) =>
+        PhoneOrigin(configured, startupServer) ?? BranchAgentMembershipFile.DefaultPhoneOrigin;
+
     public static string EnrollmentOrigin(string? publicOrigin, string? localBaseUrl, string requestOrigin)
     {
         var phone = PhoneOrigin(publicOrigin, null);

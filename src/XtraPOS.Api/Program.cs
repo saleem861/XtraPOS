@@ -93,7 +93,10 @@ builder.Services.AddScoped<SetupService>();
 builder.Services.AddSingleton<DevicePairingService>();
 builder.Services.AddSingleton<BranchAgentRegistry>();
 builder.Services.AddSingleton<BranchAgentRelay>();
-builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null));
+var branchAgentPhoneOrigin = isBranchAgent && XtraPOS.Api.Membership.MembershipLinks.IsPhoneReachable(branchAgentServer)
+    ? branchAgentServer!.Trim().TrimEnd('/')
+    : null;
+builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null, branchAgentPhoneOrigin));
 builder.Services.AddSingleton<LocalPosSessionStore>();
 builder.Services.AddSingleton<BranchAgentWorker>();
 if (isBranchAgent)

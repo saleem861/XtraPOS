@@ -194,7 +194,10 @@ public static class MembershipEndpoints
         {
             Guid? enrollmentCustomer = request?.CustomerId is Guid customerId && customerId != Guid.Empty ? customerId : null;
             var localHost = http.RequestServices.GetService<LocalAppHostState>();
-            var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, localHost?.BaseUrl, $"{http.Request.Scheme}://{http.Request.Host}");
+            var requestOrigin = $"{http.Request.Scheme}://{http.Request.Host}";
+            var origin = localHost?.BaseUrl is not null
+                ? MembershipLinks.BranchEnrollmentOrigin(membership.Options.PublicOrigin, localHost.PhoneOrigin)
+                : MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, localHost?.BaseUrl, requestOrigin);
             string token;
             DateTime expires;
             if (localHost?.BaseUrl is not null)
@@ -506,8 +509,10 @@ public static class MembershipEndpoints
 
     private static string? PhonePage(HttpContext http, MembershipService membership, string path)
     {
-        var local = http.RequestServices.GetService<LocalAppHostState>()?.BaseUrl;
-        var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, local, $"{http.Request.Scheme}://{http.Request.Host}");
+        var host = http.RequestServices.GetService<LocalAppHostState>();
+        var origin = host?.BaseUrl is not null
+            ? MembershipLinks.BranchEnrollmentOrigin(membership.Options.PublicOrigin, host.PhoneOrigin)
+            : MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, host?.BaseUrl, $"{http.Request.Scheme}://{http.Request.Host}");
         return MembershipLinks.IsPhoneReachable(origin) ? origin + path : null;
     }
 
