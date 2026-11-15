@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using System.Xml.Linq;
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Sales;
 using XtraPOS.Api.Security;
 
 namespace XtraPOS.Api.Endpoints;
@@ -14,7 +15,6 @@ public static class SalesInquiryEndpoints
 {
     private const int PageSize = 50;
     private const int ExportCap = 5000;
-    private const string LocalSale = "CONVERT(datetime2, (sale.CompletedAt AT TIME ZONE 'UTC') AT TIME ZONE 'Israel Standard Time')";
 
     public static void MapSalesInquiryEndpoints(this WebApplication app)
     {
@@ -66,9 +66,9 @@ public static class SalesInquiryEndpoints
         var seeEarns = CanSeeEarns(actor.User!);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var options = await OptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
+        var options = await SafeOptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
         var optionPayload = OptionsPayload(options);
-        if (useBranch == true && BranchUnavailable(options, branchName))
+        if (useBranch == true && !SalesInquiryLocal.IsCurrentBranch(options.Branches, branchName))
         {
             return Results.Ok(new InquiryResponse
             {
@@ -87,14 +87,55 @@ public static class SalesInquiryEndpoints
             return Results.Json(new { message = "تاريخ البداية أكبر من تاريخ النهاية." }, statusCode: StatusCodes.Status400BadRequest);
         }
 
-        var filter = BuildFilter(actor.Context!, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly);
-        var (total, salesTotal, earnTotal) = await SummariesAsync(connection, filter, seeEarns, cancellationToken);
-        var lines = new List<InquiryLine>();
-        if (sumsOnly != true)
+        try
         {
-            lines = await LinesAsync(connection, filter, seeEarns, Math.Max(0, skip ?? 0), Math.Clamp(take ?? PageSize, 1, PageSize), cancellationToken);
+            return await InquiryResultAsync(connection, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, SalesInquiryLocal.NamedLocalSale, cancellationToken);
         }
+        catch (SqlException exception) when (SalesInquiryLocal.IsNamedZoneFailure(exception.Number, exception.Message))
+        {
+            try
+            {
+                return await InquiryResultAsync(connection, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, SalesInquiryLocal.MachineLocalSale, cancellationToken);
+            }
+            catch (SqlException fallback)
+            {
+                return Results.Json(new { message = SalesInquiryLocal.FailureMessage(fallback.Number) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        }
+        catch (SqlException exception)
+        {
+            return Results.Json(new { message = SalesInquiryLocal.FailureMessage(exception.Number) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
 
+    private static async Task<IResult> InquiryResultAsync(
+        SqlConnection connection,
+        PosDeviceContext context,
+        bool seeEarns,
+        object optionPayload,
+        bool? sumsOnly,
+        int? skip,
+        int? take,
+        bool? useDate, string? dateFrom, string? dateTo,
+        bool? useTime, string? timeFrom, string? timeTo,
+        bool? useStation, int? stationNumber,
+        bool? useItem, bool? matchItem, string? itemNumber,
+        bool? useName, string? itemName,
+        bool? useUser, string? userId,
+        bool? useCustomer, string? customerNumber,
+        bool? useCustomerName, string? customerName,
+        bool? useSaleNumber, string? saleNumber,
+        bool? useClass, string? classifications,
+        bool? modifiedOnly,
+        string localSale,
+        CancellationToken cancellationToken)
+    {
+        var priceOverride = await HasColumnAsync(connection, "SaleItems", "PriceOverrideMode", cancellationToken);
+        var filter = BuildFilter(context, localSale, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly);
+        var (total, salesTotal, earnTotal) = await SummariesAsync(connection, filter, seeEarns, cancellationToken);
+        var lines = sumsOnly == true
+            ? []
+            : await LinesAsync(connection, filter, seeEarns, priceOverride, Math.Max(0, skip ?? 0), Math.Clamp(take ?? PageSize, 1, PageSize), cancellationToken);
         return Results.Ok(new InquiryResponse
         {
             total = total,
@@ -151,15 +192,39 @@ public static class SalesInquiryEndpoints
         var seeEarns = CanSeeEarns(actor.User!);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var options = await OptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
-        if (useBranch == true && BranchUnavailable(options, branchName))
+        var options = await SafeOptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
+        if (useBranch == true && !SalesInquiryLocal.IsCurrentBranch(options.Branches, branchName))
         {
             return Results.Json(new { message = "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية." }, statusCode: StatusCodes.Status400BadRequest);
         }
 
-        var filter = BuildFilter(actor.Context!, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly);
-        var (total, _, _) = await SummariesAsync(connection, filter, false, cancellationToken);
-        var lines = await LinesAsync(connection, filter, seeEarns, 0, ExportCap, cancellationToken);
+        var priceOverride = await HasColumnAsync(connection, "SaleItems", "PriceOverrideMode", cancellationToken);
+        Filter filter;
+        int total;
+        List<InquiryLine> lines;
+        try
+        {
+            filter = BuildFilter(actor.Context!, SalesInquiryLocal.NamedLocalSale, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly);
+            (total, _, _) = await SummariesAsync(connection, filter, false, cancellationToken);
+            lines = await LinesAsync(connection, filter, seeEarns, priceOverride, 0, ExportCap, cancellationToken);
+        }
+        catch (SqlException exception) when (SalesInquiryLocal.IsNamedZoneFailure(exception.Number, exception.Message))
+        {
+            try
+            {
+                filter = BuildFilter(actor.Context!, SalesInquiryLocal.MachineLocalSale, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly);
+                (total, _, _) = await SummariesAsync(connection, filter, false, cancellationToken);
+                lines = await LinesAsync(connection, filter, seeEarns, priceOverride, 0, ExportCap, cancellationToken);
+            }
+            catch (SqlException fallback)
+            {
+                return Results.Json(new { message = SalesInquiryLocal.FailureMessage(fallback.Number) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        }
+        catch (SqlException exception)
+        {
+            return Results.Json(new { message = SalesInquiryLocal.FailureMessage(exception.Number) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
         var truncated = total > lines.Count;
         var branchLabel = options.Branches.FirstOrDefault() ?? "";
         var when = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, BusinessZone()).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
@@ -281,8 +346,11 @@ public static class SalesInquiryEndpoints
         return (reader.GetInt32(0), reader.GetDecimal(1), seeEarns ? reader.GetDecimal(2) : null);
     }
 
-    private static async Task<List<InquiryLine>> LinesAsync(SqlConnection connection, Filter filter, bool seeEarns, int skip, int take, CancellationToken cancellationToken)
+    private static async Task<List<InquiryLine>> LinesAsync(SqlConnection connection, Filter filter, bool seeEarns, bool priceOverride, int skip, int take, CancellationToken cancellationToken)
     {
+        var modified = priceOverride
+            ? "CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END"
+            : "CAST(0 AS int)";
         await using var rows = new SqlCommand(
             """
             SELECT sale.SaleID, sale.SaleNumber, line.ItemNumberSnapshot, line.ItemNameSnapshot, line.Quantity,
@@ -290,8 +358,7 @@ public static class SalesInquiryEndpoints
                    line.UnitCostSnapshot, line.LineTotal, line.LineCostSnapshot,
                    CASE WHEN line.LineCostSnapshot IS NULL THEN NULL ELSE line.LineTotal - line.LineCostSnapshot END,
                    sale.CompletedAt, customer.Name, customer.CustomerNumber, COALESCE(cashier.DisplayName, N'—'), COALESCE(station.StationNumber, 0),
-                   CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END
-            """ + From + filter.Where + " ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY", connection);
+            """ + modified + From + filter.Where + " ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY", connection);
         rows.Parameters.Add(new SqlParameter("@skip", SqlDbType.Int) { Value = skip });
         rows.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
         foreach (var parameter in Clone(filter.Parameters)) rows.Parameters.Add(parameter);
@@ -337,6 +404,7 @@ public static class SalesInquiryEndpoints
 
     private static Filter BuildFilter(
         PosDeviceContext context,
+        string localSale,
         bool? useDate, string? dateFrom, string? dateTo,
         bool? useTime, string? timeFrom, string? timeTo,
         bool? useStation, int? stationNumber,
@@ -357,7 +425,7 @@ public static class SalesInquiryEndpoints
         };
         if (useDate == true && DateOnly.TryParse(dateFrom, out var from) && DateOnly.TryParse(dateTo, out var to) && from <= to)
         {
-            clauses.Add($"CAST({LocalSale} AS date) >= @dateFrom AND CAST({LocalSale} AS date) <= @dateTo");
+            clauses.Add($"CAST({localSale} AS date) >= @dateFrom AND CAST({localSale} AS date) <= @dateTo");
             parameters.Add(new("@dateFrom", SqlDbType.Date) { Value = from.ToDateTime(TimeOnly.MinValue) });
             parameters.Add(new("@dateTo", SqlDbType.Date) { Value = to.ToDateTime(TimeOnly.MinValue) });
         }
@@ -365,8 +433,8 @@ public static class SalesInquiryEndpoints
         if (useTime == true && TimeOnly.TryParse(timeFrom, out var startTime) && TimeOnly.TryParse(timeTo, out var endTime))
         {
             clauses.Add(startTime <= endTime
-                ? $"CAST({LocalSale} AS time) >= @timeStart AND CAST({LocalSale} AS time) <= @timeEnd"
-                : $"(CAST({LocalSale} AS time) >= @timeStart OR CAST({LocalSale} AS time) <= @timeEnd)");
+                ? $"CAST({localSale} AS time) >= @timeStart AND CAST({localSale} AS time) <= @timeEnd"
+                : $"(CAST({localSale} AS time) >= @timeStart OR CAST({localSale} AS time) <= @timeEnd)");
             parameters.Add(new("@timeStart", SqlDbType.Time) { Value = startTime.ToTimeSpan() });
             parameters.Add(new("@timeEnd", SqlDbType.Time) { Value = endTime.ToTimeSpan() });
         }
@@ -465,11 +533,24 @@ public static class SalesInquiryEndpoints
     private static bool ReversedDates(bool? useDate, string? dateFrom, string? dateTo) =>
         useDate == true && DateOnly.TryParse(dateFrom, out var from) && DateOnly.TryParse(dateTo, out var to) && from > to;
 
-    private static bool BranchUnavailable(InquiryOptions options, string? branchName)
+    private static async Task<InquiryOptions> SafeOptionsAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(branchName)) return false;
-        var current = options.Branches.FirstOrDefault();
-        return current is not null && !string.Equals(current.Trim(), branchName.Trim(), StringComparison.Ordinal);
+        try
+        {
+            return await OptionsAsync(connection, branchId, cancellationToken);
+        }
+        catch (SqlException)
+        {
+            return new InquiryOptions([], [], [], []);
+        }
+    }
+
+    private static async Task<bool> HasColumnAsync(SqlConnection connection, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT CASE WHEN COL_LENGTH(@table, @column) IS NULL THEN 0 ELSE 1 END;", connection);
+        command.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = "dbo." + table;
+        command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = column;
+        return (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 1;
     }
 
     private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
