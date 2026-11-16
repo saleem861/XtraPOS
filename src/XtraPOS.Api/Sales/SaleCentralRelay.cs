@@ -415,6 +415,11 @@ public static class SaleCentralRelay
 
         foreach (var values in rows)
         {
+            if (values[11] is Guid priceTypeId)
+            {
+                values[11] = (object?)await ResolvePriceTypeAsync(branch, central, transaction, priceTypeId, cancellationToken) ?? DBNull.Value;
+            }
+
             await using var insert = new SqlCommand(
                 """
                 INSERT INTO dbo.SaleItems
@@ -482,6 +487,69 @@ public static class SaleCentralRelay
 
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
+    }
+
+    private static async Task<Guid?> ResolvePriceTypeAsync(
+        SqlConnection branch,
+        SqlConnection central,
+        SqlTransaction transaction,
+        Guid priceTypeId,
+        CancellationToken cancellationToken)
+    {
+        if (await ExistsAsync(central, transaction, priceTypeId, cancellationToken))
+        {
+            return priceTypeId;
+        }
+
+        await using var read = new SqlCommand(
+            "SELECT PriceCode, PriceName, SortOrder, IsActive, CreatedAt FROM dbo.PriceTypes WHERE PriceTypeID = @id;",
+            branch);
+        read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = priceTypeId;
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var code = reader.GetString(0);
+        var name = reader.GetString(1);
+        var sort = reader.GetInt32(2);
+        var active = reader.GetBoolean(3);
+        var created = reader.GetDateTime(4);
+        await reader.CloseAsync();
+
+        await using (var match = new SqlCommand("SELECT PriceTypeID FROM dbo.PriceTypes WHERE PriceCode = @code;", central, transaction))
+        {
+            match.Parameters.Add("@code", SqlDbType.NVarChar, 50).Value = code;
+            if (await match.ExecuteScalarAsync(cancellationToken) is Guid existing)
+            {
+                return existing;
+            }
+        }
+
+        await using var insert = new SqlCommand(
+            """
+            IF NOT EXISTS (SELECT 1 FROM dbo.PriceTypes WHERE PriceTypeID = @id)
+            INSERT INTO dbo.PriceTypes (PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt)
+            VALUES (@id, @code, @name, @sort, @active, @created);
+            """,
+            central,
+            transaction);
+        insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = priceTypeId;
+        insert.Parameters.Add("@code", SqlDbType.NVarChar, 50).Value = code;
+        insert.Parameters.Add("@name", SqlDbType.NVarChar, 100).Value = name;
+        insert.Parameters.Add("@sort", SqlDbType.Int).Value = sort;
+        insert.Parameters.Add("@active", SqlDbType.Bit).Value = active;
+        insert.Parameters.Add("@created", SqlDbType.DateTime2).Value = created;
+        await insert.ExecuteNonQueryAsync(cancellationToken);
+        return priceTypeId;
+    }
+
+    private static async Task<bool> ExistsAsync(SqlConnection connection, SqlTransaction transaction, Guid id, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT CASE WHEN EXISTS (SELECT 1 FROM dbo.PriceTypes WHERE PriceTypeID = @id) THEN 1 ELSE 0 END;", connection, transaction);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 1;
     }
 
     private static async Task EnsureUserByIdAsync(SqlConnection branch, SqlConnection central, SqlTransaction transaction, Guid userId, CancellationToken cancellationToken)
