@@ -49,30 +49,35 @@ INNER JOIN sys.columns AS columnName ON columnName.object_id = child.object_id A
 INNER JOIN sys.tables AS parent ON parent.object_id = link.referenced_object_id
 INNER JOIN sys.columns AS parentColumn ON parentColumn.object_id = parent.object_id AND parentColumn.column_id = pair.referenced_column_id
 WHERE parent.name = N'Branches' AND parentColumn.name = N'BranchID'
-  AND child.name NOT IN (N'Sales', N'SaleItems', N'SalePayments', N'POSStations', N'Devices', N'Branches');
+  AND child.name NOT IN (N'Sales', N'SaleItems', N'SalePayments', N'POSCashSessions', N'POSStations', N'Devices', N'Branches');
 EXEC sys.sp_executesql @childSql, N'@keep uniqueidentifier', @keep = @keep;
+
+IF OBJECT_ID(N'dbo.POSCashSessions', N'U') IS NOT NULL
+    DELETE session
+    FROM dbo.POSCashSessions AS session
+    WHERE session.BranchID <> @keep
+      AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.CashSessionID = session.CashSessionID)
+      AND NOT EXISTS (SELECT 1 FROM dbo.SalePayments AS payment WHERE payment.CashSessionID = session.CashSessionID);
 
 IF OBJECT_ID(N'dbo.Devices', N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Devices', N'BranchID') IS NOT NULL
     DELETE device
     FROM dbo.Devices AS device
     WHERE device.BranchID <> @keep
-      AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.DeviceID = device.DeviceID);
+      AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.DeviceID = device.DeviceID)
+      AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.DeviceID = device.DeviceID);
 
 DELETE station
 FROM dbo.POSStations AS station
 WHERE station.BranchID <> @keep
-  AND NOT EXISTS
-  (
-      SELECT 1
-      FROM dbo.Sales AS sale
-      WHERE sale.POSStationID = station.StationID
-  );
+  AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.POSStationID = station.StationID)
+  AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.POSStationID = station.StationID);
 
 DELETE branch
 FROM dbo.Branches AS branch
 WHERE branch.BranchID <> @keep
   AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.BranchID = branch.BranchID)
   AND NOT EXISTS (SELECT 1 FROM dbo.POSStations AS station WHERE station.BranchID = branch.BranchID)
+  AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.BranchID = branch.BranchID)
   AND NOT EXISTS (SELECT 1 FROM dbo.CentralPosRegistry AS registry WHERE registry.BranchID = branch.BranchID);
 
 COMMIT TRANSACTION;
