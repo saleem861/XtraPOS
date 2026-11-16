@@ -71,42 +71,37 @@ public static class SalesInquiryEndpoints
         var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
         var optionPayload = OptionsPayload(options);
         var deviceBranch = (await LocalBranchAsync(connection, actor.Context.BranchId, cancellationToken)).Name;
-        var centralReview = useBranch == true && useStation == true && stationNumber is int;
-        if (!centralReview && useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
-        {
-            return Results.Ok(new InquiryResponse
-            {
-                total = 0,
-                salesTotal = 0m,
-                seeEarns = seeEarns,
-                unavailable = true,
-                message = "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية.",
-                lines = [],
-                options = optionPayload,
-            });
-        }
-
         if (ReversedDates(useDate, dateFrom, dateTo))
         {
             return Results.Json(new { message = "تاريخ البداية أكبر من تاريخ النهاية." }, statusCode: StatusCodes.Status400BadRequest);
         }
 
-        try
+        var otherBranch = useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName);
+        if (otherBranch)
         {
-            if (centralReview)
+            var central = await OpenCentralAsync(http, cancellationToken);
+            if (central is null)
             {
-                var central = await OpenCentralAsync(http, cancellationToken);
-                if (central is null)
+                return Results.Ok(new InquiryResponse
                 {
-                    return Results.Json(new { message = "تعذر قراءة مبيعات المركز." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-                }
-
-                await using (central)
-                {
-                    return await InquiryResultAsync(central, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, true, branchName, cancellationToken);
-                }
+                    total = 0,
+                    salesTotal = 0m,
+                    seeEarns = seeEarns,
+                    unavailable = true,
+                    message = "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية.",
+                    lines = [],
+                    options = optionPayload,
+                });
             }
 
+            await using (central)
+            {
+                return await InquiryResultAsync(central, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, true, branchName, cancellationToken);
+            }
+        }
+
+        try
+        {
             return await InquiryResultAsync(connection, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, false, null, cancellationToken);
         }
         catch (SqlException exception)
@@ -353,7 +348,7 @@ public static class SalesInquiryEndpoints
     {
         var cost = CostOf(shape);
         var earn = shape.LineProfit
-            ? "line.LineProfitSnapshot"
+            ? "COALESCE(line.LineProfitSnapshot, CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END)"
             : "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
         var sumSql = seeEarns
             ? "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0), SUM(" + earn + ") "
@@ -369,15 +364,17 @@ public static class SalesInquiryEndpoints
     {
         var original = shape.ReferenceBase ? "COALESCE(line.ReferenceBasePrice, line.UnitPrice)" : "line.UnitPrice";
         var customer = shape.FinalPrice ? "COALESCE(line.FinalSellingPrice, line.UnitPrice)" : "line.UnitPrice";
-        var unitCost = shape.UnitCost ? "line.UnitCostSnapshot" : "CAST(NULL AS decimal(19, 4))";
         var cost = CostOf(shape);
+        var unitCost = shape.UnitCost
+            ? "COALESCE(line.UnitCostSnapshot, CASE WHEN line.Quantity = 0 OR " + cost + " IS NULL THEN NULL ELSE " + cost + " / line.Quantity END)"
+            : "CASE WHEN line.Quantity = 0 OR " + cost + " IS NULL THEN NULL ELSE " + cost + " / line.Quantity END";
         var lineCost = cost;
         var earn = shape.LineProfit
-            ? "line.LineProfitSnapshot"
+            ? "COALESCE(line.LineProfitSnapshot, CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END)"
             : "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
         var unitProfit = shape.UnitProfit
-            ? "line.UnitProfitSnapshot"
-            : "CAST(NULL AS decimal(19, 4))";
+            ? "COALESCE(line.UnitProfitSnapshot, CASE WHEN " + unitCost + " IS NULL THEN NULL ELSE line.UnitPrice - (" + unitCost + ") END)"
+            : "CASE WHEN " + unitCost + " IS NULL THEN NULL ELSE line.UnitPrice - (" + unitCost + ") END";
         var modified = shape.PriceOverride
             ? "CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END"
             : "CAST(0 AS int)";
@@ -597,7 +594,7 @@ public static class SalesInquiryEndpoints
         var central = await TryCentralOptionsAsync(http, businessId, cancellationToken);
         if (central is null) return localOptions;
         return new InquiryOptions(
-            central.Stations.Length > 0 ? central.Stations : localOptions.Stations,
+            MergeStations(central.Stations, localOptions.Stations),
             central.Users.Length > 0 ? central.Users : localOptions.Users,
             central.Classes.Length > 0 ? central.Classes : localOptions.Classes,
             central.Branches.Length > 0 ? central.Branches : localOptions.Branches);
@@ -680,18 +677,18 @@ public static class SalesInquiryEndpoints
         var ownerItem = stockOwner ? "COALESCE(line.StockOwnerItemID, line.ItemID)" : "line.ItemID";
         var joins = new StringBuilder();
         var catalog = new List<string>();
+        if (inventory.Contains("UnitCost"))
+        {
+            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS itemInventory ON itemInventory.BranchID = sale.BranchID AND itemInventory.ItemID = line.ItemID\n");
+            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS ownerInventory ON ownerInventory.BranchID = sale.BranchID AND ownerInventory.ItemID = ").Append(ownerItem).Append('\n');
+            catalog.Add("(itemInventory.UnitCost * line.Quantity)");
+            catalog.Add("(ownerInventory.UnitCost * " + quantity + ")");
+        }
+
         if (balances.Contains("UnitCost"))
         {
             joins.Append("        LEFT JOIN dbo.BranchStockBalances AS ownerBalance ON ownerBalance.BranchID = sale.BranchID AND ownerBalance.ItemID = ").Append(ownerItem).Append('\n');
             catalog.Add("(ownerBalance.UnitCost * " + quantity + ")");
-        }
-
-        if (inventory.Contains("UnitCost"))
-        {
-            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS ownerInventory ON ownerInventory.BranchID = sale.BranchID AND ownerInventory.ItemID = ").Append(ownerItem).Append('\n');
-            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS itemInventory ON itemInventory.BranchID = sale.BranchID AND itemInventory.ItemID = line.ItemID\n");
-            catalog.Add("(ownerInventory.UnitCost * " + quantity + ")");
-            catalog.Add("(itemInventory.UnitCost * line.Quantity)");
         }
 
         return new SaleShape(
@@ -712,6 +709,7 @@ public static class SalesInquiryEndpoints
     {
         var stations = await StationsAsync(connection, businessId, cancellationToken);
         if (stations.Count == 0) stations = await StationsAsync(connection, null, cancellationToken);
+        stations.AddRange(await RegistryStationsAsync(connection, cancellationToken));
         var branches = await BranchesAsync(connection, businessId, cancellationToken);
         if (branches.Count == 0) branches = await BranchesAsync(connection, null, cancellationToken);
         var classes = SalesInquiryLocal.DistinctTexts(await Texts(connection, "SELECT DISTINCT LTRIM(RTRIM(Classification)) FROM dbo.Items WHERE Classification IS NOT NULL AND LTRIM(RTRIM(Classification)) <> N'' ORDER BY 1;", null, cancellationToken)).ToArray();
@@ -745,6 +743,43 @@ public static class SalesInquiryEndpoints
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
+            stations.Add(new StationOption(reader.GetInt32(0), reader.GetString(1).Trim(), reader.GetGuid(2), reader.GetString(3).Trim()));
+        }
+
+        return stations;
+    }
+
+    private static StationOption[] MergeStations(IEnumerable<StationOption> first, IEnumerable<StationOption> second)
+    {
+        var merged = new List<StationOption>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var station in first.Concat(second))
+        {
+            var key = station.BranchId.ToString("N") + ":" + station.Number.ToString(CultureInfo.InvariantCulture);
+            if (seen.Add(key)) merged.Add(station);
+        }
+
+        return merged.ToArray();
+    }
+
+    private static async Task<List<StationOption>> RegistryStationsAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        var stations = new List<StationOption>();
+        await using var command = new SqlCommand(
+            """
+            IF OBJECT_ID(N'dbo.CentralPosRegistry', N'U') IS NULL
+                SELECT TOP (0) CAST(0 AS int), CAST(N'' AS nvarchar(200)), CAST(NULL AS uniqueidentifier), CAST(N'' AS nvarchar(200));
+            ELSE
+                SELECT registry.PosNumber, registry.PosName, registry.BranchID, branch.BranchName
+                FROM dbo.CentralPosRegistry AS registry
+                INNER JOIN dbo.Branches AS branch ON branch.BranchID = registry.BranchID
+                WHERE registry.Status = N'Active';
+            """,
+            connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (reader.IsDBNull(2)) continue;
             stations.Add(new StationOption(reader.GetInt32(0), reader.GetString(1).Trim(), reader.GetGuid(2), reader.GetString(3).Trim()));
         }
 

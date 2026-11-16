@@ -15,17 +15,41 @@ namespace XtraPOS.Api.Endpoints;
 
 public static class ApiEndpoints
 {
-    private static void ScheduleBranchServiceRemoval()
+    private static void ScheduleBranchServiceRemoval(string server, string database)
     {
         if (!OperatingSystem.IsWindows())
         {
             return;
         }
 
+        var install = AppContext.BaseDirectory.TrimEnd('\\');
+        var script = Path.Combine(Path.GetTempPath(), "xtrapos-reset-branch.ps1");
+        var body = """
+            $server = '__SERVER__'
+            $database = '__DATABASE__'
+            $install = '__INSTALL__'
+            $localHost = ($server -split '\\')[0].Trim()
+            $isLocal = $localHost -in @('localhost', '.', '(local)', '127.0.0.1')
+            & sc.exe stop XtraPOSBranchAgent | Out-Null
+            for ($i = 0; $i -lt 40; $i++) {
+              $state = & sc.exe query XtraPOSBranchAgent 2>&1 | Out-String
+              if ($state -match 'FAILED 1060' -or $state -match 'STOPPED') { break }
+              Start-Sleep -Seconds 1
+            }
+            & sc.exe delete XtraPOSBranchAgent | Out-Null
+            if ($database -eq 'XtraPOS_Branch' -and $isLocal) {
+              & sqlcmd -S $server -E -b -Q "IF DB_ID(N'XtraPOS_Branch') IS NOT NULL BEGIN ALTER DATABASE [XtraPOS_Branch] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [XtraPOS_Branch]; END"
+            }
+            if (Test-Path $install) { Remove-Item $install -Recurse -Force }
+            """;
+        body = body.Replace("__SERVER__", server.Replace("'", "''"), StringComparison.Ordinal)
+            .Replace("__DATABASE__", database.Replace("'", "''"), StringComparison.Ordinal)
+            .Replace("__INSTALL__", install.Replace("'", "''"), StringComparison.Ordinal);
+        File.WriteAllText(script, body);
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
         {
-            FileName = "cmd.exe",
-            Arguments = "/c timeout /t 3 >nul & sc stop XtraPOSBranchAgent & sc delete XtraPOSBranchAgent",
+            FileName = "powershell.exe",
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\"",
             CreateNoWindow = true,
             UseShellExecute = false,
         });
@@ -39,6 +63,24 @@ public static class ApiEndpoints
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    private static async Task<Guid?> ReadConfiguredBranchIdAsync(SqlConnectionFactory connections, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqlCommand(
+                "SELECT TOP (1) CONVERT(uniqueidentifier, SettingValue) FROM dbo.SystemSettings WHERE SettingKey = N'BranchID';",
+                connection);
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value is Guid id ? id : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     public static void MapSetupEndpoints(this WebApplication app)
     {
@@ -250,10 +292,23 @@ public static class ApiEndpoints
                 stationNumber = requestedPos;
             }
 
+            var registry = http.RequestServices.GetRequiredService<CentralPosRegistryService>();
             if (stationNumber > 0)
             {
-                var registry = http.RequestServices.GetRequiredService<CentralPosRegistryService>();
                 await registry.DeleteAsync(stationNumber, cancellationToken);
+            }
+
+            var branchId = await ReadConfiguredBranchIdAsync(connections, cancellationToken);
+            if (branchId is Guid id)
+            {
+                try
+                {
+                    await registry.ReleaseBranchAsync(id, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    app.Logger.LogError(exception, "Central branch release failed during device reset.");
+                }
             }
 
             if (!deleteDatabase)
@@ -267,8 +322,8 @@ public static class ApiEndpoints
                 http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
                 InstallationState.Clear(environment.ContentRootPath);
                 SetupAuthorization.Invalidate(environment.ContentRootPath);
-                ScheduleBranchServiceRemoval();
-                return Results.Ok(new { status = "Reset", databaseDeleted = false });
+                ScheduleBranchServiceRemoval(connections.ConfiguredServer, connections.ConfiguredDatabase);
+                return Results.Ok(new { status = "Reset", databaseDeleted = true });
             }
 
             var db = http.RequestServices.GetRequiredService<BranchDbContext>();
@@ -296,7 +351,7 @@ public static class ApiEndpoints
             http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
             InstallationState.Clear(environment.ContentRootPath);
             SetupAuthorization.Invalidate(environment.ContentRootPath);
-            ScheduleBranchServiceRemoval();
+            ScheduleBranchServiceRemoval(connections.ConfiguredServer, connections.ConfiguredDatabase);
             return Results.Ok(new { status = "Reset", databaseDeleted = true });
         });
         app.MapGet("/api/sync/status", async (SyncStatusStore sync, SyncEndpointStore endpoints, SqlConnectionFactory connections, CancellationToken cancellationToken) =>

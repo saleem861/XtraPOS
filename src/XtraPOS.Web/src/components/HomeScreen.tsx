@@ -45,6 +45,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowUsers(false);
       setShowCentral(false);
       setShowCustomers(false);
+      setShowOperationLog(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -120,7 +121,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
         />
         {resetOpen ? (
           <form className="form" onSubmit={(event) => { event.preventDefault(); void resetDevice(); }}>
-            <p>تُمسح تهيئة هذه النقطة، ويُحذف رقمها من سجل نقاط المركز، وتُحذف خدمة الجهاز. المبيعات وبقية السجلات التجارية تبقى.</p>
+            <p>تُحذف قاعدة الفرع المحلية، وتسجيل النقطة في المركز، وخدمة الجهاز وملفات التثبيت. بعد التأكيد يُغلق البرنامج وتعود شاشة الإعداد.</p>
             <label className="check-line">
               <input type="checkbox" required />
               <span>أؤكد إعادة تهيئة هذا الجهاز</span>

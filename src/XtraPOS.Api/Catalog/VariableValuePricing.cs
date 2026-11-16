@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Sales;
 using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Catalog;
@@ -127,7 +128,7 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
         var quantity = weightKg * owner.Factor;
         var raw = enteredScaleValue * (1m - (discountPercent / 100m));
         var finalPrice = VariableValuePricing.ApplyLegacyVariableValueRounding(raw);
-        var unitCost = await ReadOwnerUnitCostAsync(connection, branchId, owner.ItemId, cancellationToken);
+        var unitCost = await ItemUnitCost.ReadAsync(connection, branchId, reference.Value.ItemId, owner.ItemId, cancellationToken);
         return new VariableValueResolution(
             VariableValuePricing.Mode,
             reference.Value.ItemId,
@@ -268,36 +269,6 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
         }
 
         return (reader.GetGuid(0), reader.GetBoolean(1), reader.GetDecimal(2));
-    }
-
-    private static async Task<(decimal? UnitCost, string Source)> ReadOwnerUnitCostAsync(
-        SqlConnection connection,
-        Guid branchId,
-        Guid ownerItemId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand(
-            """
-            SELECT
-                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
-                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL);
-            """,
-            connection);
-        command.Parameters.AddWithValue("@branch", branchId);
-        command.Parameters.AddWithValue("@item", ownerItemId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
-        if (!reader.IsDBNull(0))
-        {
-            return (reader.GetDecimal(0), VariableValuePricing.CostFromItemCard);
-        }
-
-        if (!reader.IsDBNull(1))
-        {
-            return (reader.GetDecimal(1), VariableValuePricing.CostFromOwner);
-        }
-
-        return (null, VariableValuePricing.CostUnavailable);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(

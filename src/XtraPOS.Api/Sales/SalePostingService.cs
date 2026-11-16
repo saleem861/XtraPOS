@@ -83,7 +83,7 @@ public sealed class SalePostingService(
         var lineTotal = decimal.Round(price.ResolvedPrice * line.Quantity, 4, MidpointRounding.AwayFromZero);
         Compare(changes, lineNumber, "UnitPrice", line.ExpectedUnitPrice, price.ResolvedPrice);
         Compare(changes, lineNumber, "StockOwnerQuantity", line.ExpectedStockOwnerQuantity, ownerQuantity);
-        var cost = await ReadOwnerCostAsync(connection, branchId, owner.StockOwnerItemId, ownerQuantity, cancellationToken);
+        var cost = await ReadOwnerCostAsync(connection, branchId, line.ItemId, owner.StockOwnerItemId, ownerQuantity, cancellationToken);
         var money = SaleLineEconomics.FromOwnerUnit(price.ResolvedPrice, line.Quantity, lineTotal, cost.UnitCost, ownerQuantity);
         return new LineSnapshot(
             lineNumber,
@@ -489,32 +489,19 @@ public sealed class SalePostingService(
     private static async Task<(decimal? UnitCost, decimal? LineCost, decimal? Projected, string? Source)> ReadOwnerCostAsync(
         SqlConnection connection,
         Guid branchId,
+        Guid itemId,
         Guid ownerItemId,
         decimal ownerQuantity,
         CancellationToken cancellationToken)
     {
-        await using var command = new SqlCommand(
-            """
-            SELECT
-                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
-                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL);
-            """,
-            connection);
-        command.Parameters.AddWithValue("@branch", branchId);
-        command.Parameters.AddWithValue("@item", ownerItemId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
-        decimal? unitCost = reader.IsDBNull(0) ? reader.IsDBNull(1) ? null : reader.GetDecimal(1) : reader.GetDecimal(0);
-        var source = reader.IsDBNull(0)
-            ? reader.IsDBNull(1) ? null : VariableValuePricing.CostFromOwner
-            : VariableValuePricing.CostFromItemCard;
-        if (unitCost is null)
+        var cost = await ItemUnitCost.ReadAsync(connection, branchId, itemId, ownerItemId, cancellationToken);
+        if (cost.UnitCost is null)
         {
             return (null, null, null, null);
         }
 
-        var lineCost = decimal.Round(unitCost.Value * ownerQuantity, 4, MidpointRounding.AwayFromZero);
-        return (unitCost, lineCost, lineCost, source);
+        var lineCost = decimal.Round(cost.UnitCost.Value * ownerQuantity, 4, MidpointRounding.AwayFromZero);
+        return (cost.UnitCost, lineCost, lineCost, cost.Source);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(SqlConnection connection, string key, CancellationToken cancellationToken)
