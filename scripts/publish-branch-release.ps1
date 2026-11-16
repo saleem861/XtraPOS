@@ -9,10 +9,10 @@ Push-Location (Join-Path $PWD "src\XtraPOS.Web")
 try {
   if (-not (Test-Path "node_modules\lucide-react\package.json")) {
     if (Test-Path "node_modules") { Remove-Item "node_modules" -Recurse -Force }
-    npm ci
+    npm.cmd ci
     if ($LASTEXITCODE -ne 0) { throw "Web dependencies failed with $LASTEXITCODE." }
   }
-  npm run build
+  npm.cmd run build
   if ($LASTEXITCODE -ne 0) { throw "Web build failed with $LASTEXITCODE." }
 }
 finally {
