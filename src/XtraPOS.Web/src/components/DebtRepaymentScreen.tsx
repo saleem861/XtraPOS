@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { deviceHeaders } from "../api/client";
+import { distinctBy } from "../distinct";
 import { invoiceLabel, previewAllocation, type AllocationLine, type DebtInvoice } from "../credit/debtAccount";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { DebtReversalScreen } from "./DebtReversalScreen";
@@ -171,7 +172,7 @@ export function DebtRepaymentScreen({ session, customer, branchName, cashierName
         <p>فرع التحصيل {branchName} · الكاشير {cashierName} · الجهاز {session.deviceName} · الجلسة {cashSessionLabel}</p>
         <p>{state === "Completed" ? "الدين القائم الآن" : "الدين القائم"} {outstanding ?? "—"} NIS · طريقة الدفع: نقدي</p>
         <label>المبلغ<button type="button" onClick={() => setKeypad(true)}>{amount || "0"}</button></label>
-        <label>فاتورة محددة<select aria-label="فاتورة محددة" value={selected} onChange={(event) => { setSelected(event.target.value); setAcknowledged(false); }} disabled={locked}><option value="">توزيع تلقائي</option>{rows.map((row) => <option key={row.receivableId} value={row.receivableId}>{invoiceLabel(row)} · {row.outstandingAmount}</option>)}</select></label>
+        <label>فاتورة محددة<select aria-label="فاتورة محددة" value={selected} onChange={(event) => { setSelected(event.target.value); setAcknowledged(false); }} disabled={locked}><option value="">توزيع تلقائي</option>{distinctBy(rows, (row) => row.receivableId).map((row) => <option key={row.receivableId} value={row.receivableId}>{invoiceLabel(row)} · {row.outstandingAmount}</option>)}</select></label>
         <button type="button" disabled={locked || Boolean(preview.error)} onClick={() => void quote()}>تحديث التوزيع</button>
         {preview.error ? <p className="status-error">{preview.error}</p> : null}
         <ul>{(quoteLines ?? []).map((line) => <li key={line.receivableId}>{line.receivableId.slice(0, 8)}: {line.amount} NIS</li>)}</ul>

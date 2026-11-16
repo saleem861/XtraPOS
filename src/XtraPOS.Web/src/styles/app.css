@@ -319,6 +319,12 @@ html.pos-pro-shell .topbar {
   padding: 32px 24px 40px;
 }
 
+.workspace:has(> .operation-log-screen) {
+  justify-content: stretch;
+  align-items: stretch;
+  padding: 12px;
+}
+
 .xp-screen-bar {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -347,6 +353,11 @@ html.pos-pro-shell .topbar {
   cursor: pointer;
 }
 .catalog > .xp-screen-bar { margin: 0 0 16px; }
+
+.card.operation-log-screen {
+  width: 100%;
+  max-width: none;
+}
 
 .card {
   width: min(640px, 100%);
@@ -646,7 +657,8 @@ html.pos-pro-shell .topbar {
 }
 
 .stack > .card.operation-log-screen {
-  width: min(1440px, calc(100vw - 32px));
+  width: 100%;
+  max-width: none;
 }
 
 .stack > .registered-layout {
@@ -5810,7 +5822,7 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .sales-review-actions h3 {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 6px;
   margin: 0;
   padding: 4px 8px;
@@ -5850,6 +5862,31 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .sales-review-actions h3 {
   margin: 0;
   text-align: center;
+}
+
+.sales-review-actions button.is-stale {
+  background: #f5a524;
+  color: #3b2503;
+  border-color: #e09412;
+  box-shadow: 0 0 0 4px rgb(245 165 36 / 28%);
+  animation: sales-refresh-glow 1.6s ease-in-out infinite;
+}
+
+.sales-refresh-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff8e8;
+  box-shadow: 0 0 0 0 rgb(255 248 232 / 70%);
+  animation: sales-refresh-dot 1.6s ease-out infinite;
+}
+
+@keyframes sales-refresh-glow {
+  50% { box-shadow: 0 0 0 7px rgb(245 165 36 / 8%); }
+}
+
+@keyframes sales-refresh-dot {
+  70% { box-shadow: 0 0 0 6px rgb(255 248 232 / 0%); }
 }
 
 .sales-review-actions button,
@@ -5963,15 +6000,24 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 }
 
 .sales-review-line {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
   align-items: center;
+  gap: 8px;
   min-height: 34px;
 }
 
-.sales-review-line.is-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.sales-review-line.is-two { grid-template-columns: 1.4fr 1fr 1fr 1fr; }
+.sales-review-line > .sales-review-filter,
+.sales-review-line > .sales-review-check {
+  flex: 1 1 190px;
+  max-width: 280px;
+}
+
+.sales-review-line > .is-wide {
+  flex: 2 1 340px;
+  max-width: 480px;
+}
 
 .sales-review-keyboard-toggle {
   flex: 0 0 32px;
@@ -6097,11 +6143,31 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .sales-review-table .is-no { color: #667085; }
 .sales-review-more { margin: 0; color: #475467; }
 .sales-review-exact { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; white-space: nowrap; font-size: 12px; }
+.sales-review-filter:has(details[open]) {
+  height: auto;
+  align-items: flex-start;
+  flex: 1 1 100%;
+  max-width: none;
+}
 .sales-review-class-menu { position: relative; flex: 1 1 auto; min-width: 0; }
 .sales-review-class-menu summary { display: flex; align-items: center; overflow: hidden; border: 1px solid #d5e1ee; border-radius: 8px; padding: 0 8px; background: #f7fbff; cursor: pointer; list-style: none; }
 .sales-review-class-menu summary::-webkit-details-marker { display: none; }
-.sales-review-class-pop { position: absolute; z-index: 5; top: 36px; right: 0; left: 0; max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 8px; box-shadow: 0 8px 20px rgb(15 40 70 / 12%); }
+.sales-review-class-pop { position: static; z-index: 6; width: min(420px, 100%); max-height: 220px; margin-top: 6px; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 8px; box-shadow: 0 8px 20px rgb(15 40 70 / 12%); }
 .sales-review-class-pop label { display: flex; align-items: center; gap: 4px; }
+.sales-review-sum-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 180px;
+  border: 1px solid #d5e1ee;
+  border-radius: 12px;
+  background: #f7fbff;
+  color: #0b3f6b;
+}
+.sales-review-sum-panel p { margin: 0; font-weight: 700; }
+.sales-review-sum-panel strong { font-size: 32px; }
 .sales-review-pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .sales-review-pager button { min-height: 36px; border: 1px solid #d5e1ee; border-radius: 10px; background: #f7fbff; font: inherit; }
 .sales-review-details { position: absolute; inset: 0; z-index: 40; display: flex; background: #eef3f8; }
@@ -6461,13 +6527,15 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .membership-qr img { width: 220px; height: 220px; background: #fff; }
 .my-log, main pre { white-space: pre-wrap; }
 
-.operation-log-screen { display: grid; gap: 16px; width: min(1440px, calc(100vw - 48px)); }
+.operation-log-screen { display: grid; gap: 16px; width: 100%; max-width: none; box-sizing: border-box; }
 .operation-log-tools { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
 .operation-log-tools label { display: grid; gap: 4px; font-size: 14px; font-weight: 700; }
 .operation-log-tools input, .operation-log-tools select { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; }
-.operation-log-table-wrap { overflow: auto; }
-.operation-log-table { min-width: 1280px; }
+.operation-log-table-wrap { width: 100%; overflow: auto; }
+.operation-log-table { width: 100%; min-width: 100%; }
 .operation-log-table th, .operation-log-table td { white-space: nowrap; }
+.operation-log-error { display: flex; gap: 8px; align-items: center; min-width: 320px; }
+.operation-log-error input { width: 100%; min-width: 220px; height: 34px; border: 1px solid #d5e1ee; border-radius: 8px; padding: 0 8px; font-family: Consolas, monospace; font-size: 12px; direction: ltr; text-align: left; background: #fff; }
 .operation-log-command { font-family: Consolas, monospace; font-size: 13px; direction: ltr; text-align: left; }
 .operation-log-actions { display: flex; gap: 8px; }
 .operation-log-stuck { background: #fff4d6; }

@@ -29,4 +29,13 @@ public class SalesInquiryLocalTests
         Assert.Contains("RowNum", page, StringComparison.Ordinal);
         Assert.DoesNotContain("OFFSET", page, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void ListsAndExportNamesStayDistinct()
+    {
+        Assert.Equal(["ألبان", "مخبوزات"], SalesInquiryLocal.DistinctTexts([" ألبان ", "ألبان", "مخبوزات", ""]));
+        Assert.Equal("مبيعات-Labtop-12.xlsx", SalesInquiryLocal.ExportFileName("Labtop", "12"));
+        Assert.Equal("مبيعات-Labtop.xlsx", SalesInquiryLocal.ExportFileName("Labtop", null));
+        Assert.Equal("547 The INSERT statement conflicted.", SalesInquiryLocal.SqlFailure(547, "The INSERT statement conflicted."));
+    }
 }

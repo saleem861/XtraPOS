@@ -6,6 +6,7 @@ import {
   SetupClientError,
   type LocalRecoveryContext,
 } from "../api/client";
+import { distinctBy } from "../distinct";
 import type { DeviceSession } from "../types/setup";
 import { ScreenHeader } from "./ScreenHeader";
 
@@ -133,7 +134,7 @@ export function UnregisteredDeviceScreen({ onRecovered, onCancel, intent = "join
                 <label className="field">
                   <span>نقطة البيع</span>
                   <select value={stationId} onChange={(event) => setStationId(event.target.value)} disabled={pending}>
-                    {context.stations.map((station) => (
+                    {distinctBy(context.stations, (station) => station.stationId).map((station) => (
                       <option key={station.stationId} value={station.stationId}>{station.stationName}</option>
                     ))}
                   </select>

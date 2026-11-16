@@ -70,7 +70,7 @@ public static class SalesInquiryEndpoints
         await connection.OpenAsync(cancellationToken);
         var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
         var optionPayload = OptionsPayload(options);
-        var deviceBranch = await LocalBranchNameAsync(connection, actor.Context.BranchId, cancellationToken);
+        var deviceBranch = (await LocalBranchAsync(connection, actor.Context.BranchId, cancellationToken)).Name;
         if (useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
         {
             return Results.Ok(new InquiryResponse
@@ -190,7 +190,8 @@ public static class SalesInquiryEndpoints
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
-        var deviceBranch = await LocalBranchNameAsync(connection, actor.Context.BranchId, cancellationToken);
+        var deviceBranchRow = await LocalBranchAsync(connection, actor.Context.BranchId, cancellationToken);
+        var deviceBranch = deviceBranchRow.Name;
         if (useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
         {
             return Results.Json(new { message = "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية." }, statusCode: StatusCodes.Status400BadRequest);
@@ -266,9 +267,11 @@ public static class SalesInquiryEndpoints
             truncated ? "تم الاقتطاع بعد " + ExportCap.ToString(CultureInfo.InvariantCulture) + " سطراً." : "التصدير كامل.",
         };
         var bytes = Workbook(meta, headers, rows);
+        var fileName = SalesInquiryLocal.ExportFileName(branchLabel, deviceBranchRow.Code);
         http.Response.Headers["X-Export-Truncated"] = truncated ? "true" : "false";
         http.Response.Headers["X-Export-Total"] = total.ToString(CultureInfo.InvariantCulture);
-        return Results.File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sales-review.xlsx");
+        http.Response.Headers["X-Export-File-Name"] = Uri.EscapeDataString(fileName);
+        return Results.File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
 
     private static async Task<IResult> DocumentAsync(Guid saleId, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, CancellationToken cancellationToken)
@@ -542,16 +545,23 @@ public static class SalesInquiryEndpoints
 
     private static async Task<InquiryOptions> SafeOptionsAsync(HttpContext http, SqlConnection local, Guid businessId, CancellationToken cancellationToken)
     {
-        var central = await TryCentralOptionsAsync(http, businessId, cancellationToken);
-        if (central is not null) return central;
+        InquiryOptions localOptions;
         try
         {
-            return await OptionsAsync(local, businessId, cancellationToken);
+            localOptions = await OptionsAsync(local, businessId, cancellationToken);
         }
         catch (SqlException)
         {
-            return new InquiryOptions([], [], [], []);
+            localOptions = new InquiryOptions([], [], [], []);
         }
+
+        var central = await TryCentralOptionsAsync(http, businessId, cancellationToken);
+        if (central is null) return localOptions;
+        return new InquiryOptions(
+            central.Stations.Length > 0 ? central.Stations : localOptions.Stations,
+            central.Users.Length > 0 ? central.Users : localOptions.Users,
+            central.Classes.Length > 0 ? central.Classes : localOptions.Classes,
+            central.Branches.Length > 0 ? central.Branches : localOptions.Branches);
     }
 
     private static async Task<InquiryOptions?> TryCentralOptionsAsync(HttpContext http, Guid businessId, CancellationToken cancellationToken)
@@ -570,10 +580,15 @@ public static class SalesInquiryEndpoints
         }
     }
 
-    private static async Task<string?> LocalBranchNameAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
+    private sealed record LocalBranch(string Name, string Code);
+
+    private static async Task<LocalBranch> LocalBranchAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
     {
-        var names = await Texts(connection, "SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", branchId, cancellationToken);
-        return names.FirstOrDefault();
+        await using var command = new SqlCommand("SELECT BranchName, ISNULL(BranchCode, N'') FROM dbo.Branches WHERE BranchID = @branch;", connection);
+        command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return new LocalBranch("", "");
+        return new LocalBranch(reader.GetString(0), reader.GetString(1));
     }
 
     private static IResult ReadFailure(HttpContext http, SqlException exception)
@@ -596,42 +611,66 @@ public static class SalesInquiryEndpoints
 
     private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid businessId, CancellationToken cancellationToken)
     {
-        var stations = new List<StationOption>();
-        await using (var command = new SqlCommand(
-            """
-            SELECT station.StationNumber, station.StationName, station.BranchID, branch.BranchName
-            FROM dbo.POSStations AS station
-            INNER JOIN dbo.Branches AS branch ON branch.BranchID = station.BranchID
-            WHERE branch.BusinessID = @business
-            ORDER BY branch.BranchName, station.StationNumber;
-            """,
-            connection))
-        {
-            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                stations.Add(new StationOption(reader.GetInt32(0), reader.GetString(1), reader.GetGuid(2), reader.GetString(3)));
-            }
-        }
-
-        var branches = new List<BranchOption>();
-        await using (var command = new SqlCommand("SELECT BranchID, BranchName FROM dbo.Branches WHERE BusinessID = @business ORDER BY BranchName;", connection))
-        {
-            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken)) branches.Add(new BranchOption(reader.GetGuid(0), reader.GetString(1)));
-        }
-
-        var classes = await Texts(connection, "SELECT DISTINCT Classification FROM dbo.Items WHERE Classification IS NOT NULL AND Classification <> N'' ORDER BY Classification;", null, cancellationToken);
+        var stations = await StationsAsync(connection, businessId, cancellationToken);
+        if (stations.Count == 0) stations = await StationsAsync(connection, null, cancellationToken);
+        var branches = await BranchesAsync(connection, businessId, cancellationToken);
+        if (branches.Count == 0) branches = await BranchesAsync(connection, null, cancellationToken);
+        var classes = SalesInquiryLocal.DistinctTexts(await Texts(connection, "SELECT DISTINCT LTRIM(RTRIM(Classification)) FROM dbo.Items WHERE Classification IS NOT NULL AND LTRIM(RTRIM(Classification)) <> N'' ORDER BY 1;", null, cancellationToken)).ToArray();
         var users = new List<UserOption>();
         await using (var command = new SqlCommand("SELECT UserID, DisplayName FROM dbo.Users ORDER BY DisplayName;", connection))
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken)) users.Add(new UserOption(reader.GetGuid(0), reader.GetString(1)));
+            while (await reader.ReadAsync(cancellationToken)) users.Add(new UserOption(reader.GetGuid(0), reader.GetString(1).Trim()));
         }
 
-        return new InquiryOptions(stations.ToArray(), users.ToArray(), classes, branches.ToArray());
+        return new InquiryOptions(
+            stations.DistinctBy(station => station.BranchId.ToString("N") + ":" + station.Number.ToString(CultureInfo.InvariantCulture)).ToArray(),
+            users.DistinctBy(user => user.UserId).ToArray(),
+            classes,
+            branches.DistinctBy(branch => branch.BranchId).ToArray());
+    }
+
+    private static async Task<List<StationOption>> StationsAsync(SqlConnection connection, Guid? businessId, CancellationToken cancellationToken)
+    {
+        var stations = new List<StationOption>();
+        await using var command = new SqlCommand(
+            """
+            SELECT station.StationNumber, station.StationName, station.BranchID, branch.BranchName
+            FROM dbo.POSStations AS station
+            INNER JOIN dbo.Branches AS branch ON branch.BranchID = station.BranchID
+            WHERE @business IS NULL OR branch.BusinessID = @business
+            ORDER BY branch.BranchName, station.StationNumber;
+            """,
+            connection);
+        command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = (object?)businessId ?? DBNull.Value;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            stations.Add(new StationOption(reader.GetInt32(0), reader.GetString(1).Trim(), reader.GetGuid(2), reader.GetString(3).Trim()));
+        }
+
+        return stations;
+    }
+
+    private static async Task<List<BranchOption>> BranchesAsync(SqlConnection connection, Guid? businessId, CancellationToken cancellationToken)
+    {
+        var branches = new List<BranchOption>();
+        await using var command = new SqlCommand(
+            """
+            SELECT BranchID, BranchName, ISNULL(BranchCode, N'')
+            FROM dbo.Branches
+            WHERE @business IS NULL OR BusinessID = @business
+            ORDER BY BranchName;
+            """,
+            connection);
+        command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = (object?)businessId ?? DBNull.Value;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            branches.Add(new BranchOption(reader.GetGuid(0), reader.GetString(1).Trim(), reader.GetString(2).Trim()));
+        }
+
+        return branches;
     }
 
     private static object OptionsPayload(InquiryOptions options) => new
@@ -639,7 +678,7 @@ public static class SalesInquiryEndpoints
         stations = options.Stations.Select(station => new { stationNumber = station.Number, stationName = station.Name, branchId = station.BranchId, branchName = station.BranchName }),
         users = options.Users.Select(user => new { userId = user.UserId, displayName = user.DisplayName }),
         options.Classes,
-        branches = options.Branches.Select(branch => new { branchId = branch.BranchId, branchName = branch.Name }),
+        branches = options.Branches.Select(branch => new { branchId = branch.BranchId, branchName = branch.Name, branchCode = branch.Code }),
     };
 
     private static async Task<string[]> Texts(SqlConnection connection, string sql, Guid? branchId, CancellationToken cancellationToken)
@@ -785,7 +824,7 @@ public static class SalesInquiryEndpoints
     private sealed record Filter(string Where, List<SqlParameter> Parameters);
 
     private sealed record UserOption(Guid UserId, string DisplayName);
-    private sealed record BranchOption(Guid BranchId, string Name);
+    private sealed record BranchOption(Guid BranchId, string Name, string Code);
     private sealed record StationOption(int Number, string Name, Guid BranchId, string BranchName);
 
     private sealed record InquiryOptions(StationOption[] Stations, UserOption[] Users, string[] Classes, BranchOption[] Branches);

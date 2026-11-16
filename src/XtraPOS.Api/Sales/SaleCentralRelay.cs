@@ -71,10 +71,27 @@ public static class SaleCentralRelay
             await BranchOperationLog.MarkAsync(branch, null, operationId, "Completed", "تم ترحيل البيعة إلى المركز.", cancellationToken);
             return "Completed";
         }
-        catch (SqlException exception) when (exception.Number is 208 or 547 or 2601 or 2627)
+        catch (SqlException exception)
         {
-            await BranchOperationLog.MarkAsync(branch, null, operationId, "Blocked", "تعذر ترحيل البيعة إلى جداول المركز.", cancellationToken);
-            return "Blocked";
+            var detail = SalesInquiryLocal.SqlFailure(exception.Number, exception.Message);
+            var blocked = exception.Number is 208 or 547 or 2601 or 2627;
+            if (blocked)
+            {
+                await BranchOperationLog.MarkAsync(branch, null, operationId, "Blocked", detail, cancellationToken);
+                return "Blocked";
+            }
+
+            await using var note = new SqlCommand(
+                """
+                UPDATE dbo.BranchOperationLog
+                SET ResultMessage = @message, LastAttemptAt = SYSUTCDATETIME()
+                WHERE OperationID = @operation AND Status NOT IN (N'Completed', N'Cancelled');
+                """,
+                branch);
+            note.Parameters.Add("@message", SqlDbType.NVarChar, -1).Value = detail;
+            note.Parameters.Add("@operation", SqlDbType.UniqueIdentifier).Value = operationId;
+            await note.ExecuteNonQueryAsync(cancellationToken);
+            throw;
         }
     }
 
