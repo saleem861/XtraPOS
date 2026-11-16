@@ -43,6 +43,24 @@ public sealed class LabtopBranchCleanup(CentralConnectionFileStore centrals, Sql
         await File.WriteAllTextAsync(marker, DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
     }
 
+    public async Task KeepAccessAsync(CancellationToken cancellationToken)
+    {
+        var settings = await centrals.ReadAsync(cancellationToken);
+        if (settings is not null)
+        {
+            await using var central = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+            await central.OpenAsync(cancellationToken);
+            await GrantLabtopAccessAsync(central, cancellationToken);
+        }
+
+        if (await branches.DatabaseExistsAsync(cancellationToken))
+        {
+            await using var local = new SqlConnection(branches.CreateBranchConnectionString());
+            await local.OpenAsync(cancellationToken);
+            await GrantLabtopAccessAsync(local, cancellationToken);
+        }
+    }
+
     public static async Task<bool> KeepAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         await using var find = new SqlCommand("SELECT TOP (1) BranchID FROM dbo.Branches WHERE BranchName = @name;", connection);
@@ -52,6 +70,7 @@ public sealed class LabtopBranchCleanup(CentralConnectionFileStore centrals, Sql
             return false;
         }
 
+        await GrantAsync(connection, keep, cancellationToken);
         await RunAsync(connection, keep, """
             IF OBJECT_ID(N'dbo.CentralPosRegistry', N'U') IS NOT NULL
                 DELETE FROM dbo.CentralPosRegistry WHERE BranchID <> @keep;
@@ -87,6 +106,40 @@ public sealed class LabtopBranchCleanup(CentralConnectionFileStore centrals, Sql
               AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.BranchID = branch.BranchID);
             """, cancellationToken);
         return true;
+    }
+
+    private static async Task GrantLabtopAccessAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var find = new SqlCommand("SELECT TOP (1) BranchID FROM dbo.Branches WHERE BranchName = @name;", connection);
+        find.Parameters.Add("@name", SqlDbType.NVarChar, 200).Value = BranchName;
+        if (await find.ExecuteScalarAsync(cancellationToken) is not Guid keep)
+        {
+            return;
+        }
+
+        await GrantAsync(connection, keep, cancellationToken);
+    }
+
+    private static async Task GrantAsync(SqlConnection connection, Guid keep, CancellationToken cancellationToken)
+    {
+        await RunAsync(connection, keep, """
+            IF OBJECT_ID(N'dbo.Users', N'U') IS NOT NULL AND OBJECT_ID(N'dbo.UserBranchAccess', N'U') IS NOT NULL
+            BEGIN
+                UPDATE access
+                SET IsActive = 1
+                FROM dbo.UserBranchAccess AS access
+                INNER JOIN dbo.Users AS users ON users.UserID = access.UserID
+                WHERE access.BranchID = @keep AND users.IsActive = 1;
+
+                INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
+                SELECT users.UserID, @keep, 1, SYSUTCDATETIME()
+                FROM dbo.Users AS users
+                WHERE users.IsActive = 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dbo.UserBranchAccess AS access
+                      WHERE access.UserID = users.UserID AND access.BranchID = @keep);
+            END
+            """, cancellationToken);
     }
 
     private static async Task<List<string>> ChildDeletesAsync(SqlConnection connection, CancellationToken cancellationToken)
@@ -154,7 +207,9 @@ public sealed class LabtopBranchCleanupService(IServiceProvider services, ILogge
         {
             await Task.Delay(TimeSpan.FromSeconds(8), stoppingToken);
             using var scope = services.CreateScope();
-            await scope.ServiceProvider.GetRequiredService<LabtopBranchCleanup>().RunOnceAsync(stoppingToken);
+            var cleanup = scope.ServiceProvider.GetRequiredService<LabtopBranchCleanup>();
+            await cleanup.RunOnceAsync(stoppingToken);
+            await cleanup.KeepAccessAsync(stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
