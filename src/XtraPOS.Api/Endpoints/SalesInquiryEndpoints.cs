@@ -349,12 +349,13 @@ public static class SalesInquiryEndpoints
         var modified = shape.PriceOverride
             ? "CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END"
             : "CAST(0 AS int)";
-        await using var rows = new SqlCommand(
+        await using var rows = new SqlCommand(SalesInquiryLocal.Page(
             "SELECT sale.SaleID, sale.SaleNumber, line.ItemNumberSnapshot, line.ItemNameSnapshot, line.Quantity, "
-            + original + ", " + customer + ", line.UnitPrice, "
-            + unitCost + ", line.LineTotal, " + lineCost + ", " + earn + ", "
-            + "sale.CompletedAt, customer.Name, customer.CustomerNumber, COALESCE(cashier.DisplayName, N''), COALESCE(station.StationNumber, 0), "
-            + modified + From + filter.Where + " ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY", connection);
+            + original + " AS OriginalPrice, " + customer + " AS CustomerPrice, line.UnitPrice, "
+            + unitCost + " AS UnitCost, line.LineTotal, " + lineCost + " AS LineCost, " + earn + " AS LineEarn, "
+            + "sale.CompletedAt, customer.Name, customer.CustomerNumber, COALESCE(cashier.DisplayName, N'') AS CashierName, COALESCE(station.StationNumber, 0) AS StationNumber, "
+            + modified + " AS PriceModified, ROW_NUMBER() OVER (ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber) AS RowNum "
+            + From + filter.Where), connection);
         rows.Parameters.Add(new SqlParameter("@skip", SqlDbType.Int) { Value = skip });
         rows.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
         foreach (var parameter in Clone(filter.Parameters)) rows.Parameters.Add(parameter);
@@ -551,7 +552,7 @@ public static class SalesInquiryEndpoints
     private static IResult ReadFailure(HttpContext http, SqlException exception)
     {
         DiagnosticLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>(), "sales-inquiry", exception.Number + " " + exception.Message);
-        return Results.Json(new { message = SalesInquiryLocal.FailureMessage(exception.Number) }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Json(new { message = SalesInquiryLocal.FailureMessage(exception.Number, exception.Message) }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 
     private static async Task<HashSet<string>> ColumnsAsync(SqlConnection connection, string table, CancellationToken cancellationToken)

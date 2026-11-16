@@ -21,9 +21,19 @@ public static class SalesInquiryLocal
         return localBranches.Any(name => string.Equals(name.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase));
     }
 
-    public static string FailureMessage(int number) => number switch
+    public static string Page(string query) =>
+        "SELECT page.* FROM (" + query + ") AS page WHERE page.RowNum > @skip AND page.RowNum <= @skip + @take ORDER BY page.RowNum";
+
+    public static string FailureMessage(int number, string? detail = null)
     {
-        207 or 208 => "قاعدة هذا الجهاز لا تحتوي جداول المبيعات المحدّثة.",
-        _ => "تعذر قراءة المبيعات من قاعدة هذا الجهاز (" + number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").",
-    };
+        if (number is 207 or 208) return "قاعدة هذا الجهاز لا تحتوي جداول المبيعات المحدّثة.";
+        var hint = "";
+        if (!string.IsNullOrWhiteSpace(detail))
+        {
+            hint = " " + detail.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (hint.Length > 140) hint = hint[..140];
+        }
+
+        return "تعذر قراءة المبيعات من قاعدة هذا الجهاز (" + number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")." + hint;
+    }
 }

@@ -24,7 +24,10 @@ public class SalesInquiryLocalTests
         Assert.Equal(new DateTime(2026, 11, 14, 22, 0, 0, DateTimeKind.Utc), start);
         Assert.Equal(new DateTime(2026, 11, 15, 22, 0, 0, DateTimeKind.Utc), end);
         Assert.Equal(120, SalesInquiryLocal.LocalOffsetMinutes(new DateOnly(2026, 11, 15), PlusTwo));
-        Assert.Equal("قاعدة هذا الجهاز لا تحتوي جداول المبيعات المحدّثة.", SalesInquiryLocal.FailureMessage(208));
+        Assert.Equal("قاعدة هذا الجهاز لا تحتوي جداول المبيعات المحدّثة.", SalesInquiryLocal.FailureMessage(208, "Invalid column"));
         Assert.Contains("9820", SalesInquiryLocal.FailureMessage(9820), StringComparison.Ordinal);
+        var page = SalesInquiryLocal.Page("SELECT 1 AS RowNum FROM dbo.Sales");
+        Assert.Contains("RowNum", page, StringComparison.Ordinal);
+        Assert.DoesNotContain("OFFSET", page, StringComparison.OrdinalIgnoreCase);
     }
 }
