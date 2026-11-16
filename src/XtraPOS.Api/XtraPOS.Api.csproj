@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Compile Remove="**/*-DESKTOP-*.cs" />
+    <Compile Remove="**/* (1).cs" />
     <Content Remove="**/*-DESKTOP-*.json" />
     <None Remove="**/*-DESKTOP-*.csproj" />
   </ItemGroup>
