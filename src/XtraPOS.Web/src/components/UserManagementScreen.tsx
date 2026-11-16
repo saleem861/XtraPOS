@@ -503,15 +503,7 @@ function UserPanel({
                     {distinctBy(catalog?.roles, (role) => role.roleCode).map((role) => <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>)}
                   </select>
                 </label>
-                <fieldset>
-                  <legend>الفروع المسموح بها</legend>
-                  {catalog?.branches.map((branch) => (
-                    <label className="check-line" key={branch.branchId}>
-                      <input type="checkbox" checked={draft.branchIds.includes(branch.branchId)} onChange={() => onToggleBranch(branch.branchId)} />
-                      {branch.branchName}
-                    </label>
-                  ))}
-                </fieldset>
+                <p>المستخدم الجديد يحصل على صلاحية كل الفروع الحالية، وأي فرع أو جهاز يُعد لاحقاً يمنح كل المستخدمين النشطين نفس الصلاحية عليه.</p>
                 <label className="check-line">
                   <input type="checkbox" checked={draft.isActive} onChange={(event) => onDraft({ ...draft, isActive: event.target.checked })} />
                   فعال

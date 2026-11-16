@@ -82,6 +82,14 @@ BEGIN
                 THROW 50005, N'Administrator branch access was not inserted.', 1;
         END
 
+        INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
+        SELECT users.UserID, @BranchId, 1, SYSUTCDATETIME()
+        FROM dbo.Users AS users
+        WHERE users.IsActive = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM dbo.UserBranchAccess AS access
+              WHERE access.UserID = users.UserID AND access.BranchID = @BranchId);
+
         SET @Result = 2;
         RETURN;
     END;
@@ -99,6 +107,15 @@ BEGIN
 
     IF @@ROWCOUNT <> 1
         THROW 50005, N'Administrator branch access was not inserted.', 1;
+
+    INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
+    SELECT users.UserID, @BranchId, 1, SYSUTCDATETIME()
+    FROM dbo.Users AS users
+    WHERE users.IsActive = 1
+      AND users.UserID <> @AdminUserId
+      AND NOT EXISTS (
+          SELECT 1 FROM dbo.UserBranchAccess AS access
+          WHERE access.UserID = users.UserID AND access.BranchID = @BranchId);
 
     SET @Result = 1;
 END;

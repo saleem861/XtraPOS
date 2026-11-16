@@ -981,6 +981,15 @@ public sealed class SharedDataSync(
         INNER JOIN {source}UserBranchAccess AS source
             ON source.UserID = target.UserID AND source.BranchID = target.BranchID;
 
+        INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
+        SELECT users.UserID, branch.BranchID, 1, SYSUTCDATETIME()
+        FROM dbo.Users AS users
+        CROSS JOIN dbo.Branches AS branch
+        WHERE users.IsActive = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM dbo.UserBranchAccess AS access
+              WHERE access.UserID = users.UserID AND access.BranchID = branch.BranchID);
+
         INSERT INTO dbo.PriceTypes (PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt)
         SELECT PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt
         FROM {source}PriceTypes AS source
