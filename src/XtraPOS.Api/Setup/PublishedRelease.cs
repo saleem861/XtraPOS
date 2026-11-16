@@ -7,6 +7,7 @@ namespace XtraPOS.Api.Setup;
 public static class PublishedRelease
 {
     public const string AssetName = "XtraPOS-BranchAgent.zip";
+    public const string StagingPackageUrl = "https://test-pos.sharbelfashion.com/downloads/branch-agent.zip";
     public const string LatestApi = "https://api.github.com/repos/saleem861/XtraPOS/releases/latest";
 
     public static string? FindAssetUrl(string json)
@@ -44,8 +45,18 @@ public static class PublishedRelease
             return false;
         }
 
-        return uri.Scheme == Uri.UriSchemeHttps
-            && uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+        if (uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+
+        if (uri.Host.Equals("test-pos.sharbelfashion.com", StringComparison.OrdinalIgnoreCase)
+            && uri.AbsolutePath.Equals("/downloads/branch-agent.zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             && uri.AbsolutePath.Contains("/releases/download/", StringComparison.Ordinal)
             && uri.AbsolutePath.EndsWith("/" + AssetName, StringComparison.OrdinalIgnoreCase);
     }
@@ -54,6 +65,15 @@ public static class PublishedRelease
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("XtraPOS", "1"));
+        using (var probe = new HttpRequestMessage(HttpMethod.Get, StagingPackageUrl))
+        using (var staged = await http.SendAsync(probe, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+        {
+            if (staged.IsSuccessStatusCode)
+            {
+                return StagingPackageUrl;
+            }
+        }
+
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         using var response = await http.GetAsync(LatestApi, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -68,7 +88,7 @@ public static class PublishedRelease
     {
         if (!IsAllowedDownload(downloadUrl))
         {
-            throw new InvalidOperationException("The published package address is not a GitHub release asset.");
+            throw new InvalidOperationException("The published package address is not the staging package or a GitHub release asset.");
         }
 
         var destination = installDirectory.Replace("'", "''", StringComparison.Ordinal);

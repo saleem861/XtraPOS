@@ -17,6 +17,7 @@ public sealed class PublishedReleaseTests
             """;
         var url = PublishedRelease.FindAssetUrl(json);
         Assert.True(PublishedRelease.IsAllowedDownload(url));
+        Assert.True(PublishedRelease.IsAllowedDownload(PublishedRelease.StagingPackageUrl));
         Assert.False(PublishedRelease.IsAllowedDownload("https://example.com/XtraPOS-BranchAgent.zip"));
         Assert.False(PublishedRelease.IsAllowedDownload("http://github.com/saleem861/XtraPOS/releases/download/v1/XtraPOS-BranchAgent.zip"));
     }
