@@ -229,8 +229,9 @@ public static class SalesInquiryEndpoints
         var range = useDate == true ? $"{dateFrom} → {dateTo}" : "بدون تاريخ";
         var headers = new List<string> { "رقم الطلبية", "رقم الصنف", "اسم الصنف", "الكمية", "السعر الأصلي", "سعر الزبون", "السعر المنفذ" };
         if (seeEarns) headers.Add("تكلفة الوحدة");
+        if (seeEarns) headers.Add("ربح الوحدة");
         headers.Add("الإجمالي");
-        if (seeEarns) headers.AddRange(["التكلفة", "الربح"]);
+        if (seeEarns) headers.AddRange(["تكلفة الكمية", "ربح الكمية"]);
         headers.AddRange(["التاريخ", "الوقت", "رقم الزبون", "اسم الزبون", "النقطة", "الموظف", "ملاحظات", "تم التعديل"]);
         var rows = lines.Select(line =>
         {
@@ -245,6 +246,7 @@ public static class SalesInquiryEndpoints
                 line.executedPrice.ToString(CultureInfo.InvariantCulture),
             };
             if (seeEarns) cells.Add(line.unitCost?.ToString(CultureInfo.InvariantCulture) ?? "");
+            if (seeEarns) cells.Add(line.unitProfit?.ToString(CultureInfo.InvariantCulture) ?? "");
             cells.Add(line.total.ToString(CultureInfo.InvariantCulture));
             if (seeEarns)
             {
@@ -350,9 +352,11 @@ public static class SalesInquiryEndpoints
     private static async Task<(int Total, decimal Sales, decimal? Earn)> SummariesAsync(SqlConnection connection, Filter filter, bool seeEarns, SaleShape shape, CancellationToken cancellationToken)
     {
         var cost = CostOf(shape);
-        var earn = "SUM(CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END)";
+        var earn = shape.LineProfit
+            ? "line.LineProfitSnapshot"
+            : "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
         var sumSql = seeEarns
-            ? "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0), " + earn + " "
+            ? "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0), SUM(" + earn + ") "
             : "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0) ";
         await using var sums = new SqlCommand(sumSql + Source(shape) + filter.Where, connection);
         foreach (var parameter in Clone(filter.Parameters)) sums.Parameters.Add(parameter);
@@ -368,7 +372,12 @@ public static class SalesInquiryEndpoints
         var unitCost = shape.UnitCost ? "line.UnitCostSnapshot" : "CAST(NULL AS decimal(19, 4))";
         var cost = CostOf(shape);
         var lineCost = cost;
-        var earn = "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
+        var earn = shape.LineProfit
+            ? "line.LineProfitSnapshot"
+            : "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
+        var unitProfit = shape.UnitProfit
+            ? "line.UnitProfitSnapshot"
+            : "CAST(NULL AS decimal(19, 4))";
         var modified = shape.PriceOverride
             ? "CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END"
             : "CAST(0 AS int)";
@@ -377,7 +386,7 @@ public static class SalesInquiryEndpoints
             + original + " AS OriginalPrice, " + customer + " AS CustomerPrice, line.UnitPrice, "
             + unitCost + " AS UnitCost, line.LineTotal, " + lineCost + " AS LineCost, " + earn + " AS LineEarn, "
             + "sale.CompletedAt, customer.Name, customer.CustomerNumber, COALESCE(cashier.DisplayName, N'') AS CashierName, COALESCE(station.StationNumber, 0) AS StationNumber, "
-            + modified + " AS PriceModified, ROW_NUMBER() OVER (ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber) AS RowNum "
+            + modified + " AS PriceModified, " + unitProfit + " AS UnitProfit, ROW_NUMBER() OVER (ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber) AS RowNum "
             + Source(shape) + filter.Where), connection);
         rows.Parameters.Add(new SqlParameter("@skip", SqlDbType.Int) { Value = skip });
         rows.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
@@ -400,6 +409,7 @@ public static class SalesInquiryEndpoints
                 total = reader.GetDecimal(9),
                 cost = seeEarns && !reader.IsDBNull(10) ? reader.GetDecimal(10) : null,
                 earn = seeEarns && !reader.IsDBNull(11) ? reader.GetDecimal(11) : null,
+                unitProfit = seeEarns && !reader.IsDBNull(18) ? reader.GetDecimal(18) : null,
                 completedAt = reader.IsDBNull(12) ? null : reader.GetDateTime(12),
                 customerName = reader.IsDBNull(13) ? null : reader.GetString(13),
                 customerNumber = reader.IsDBNull(14) ? null : reader.GetString(14),
@@ -652,7 +662,7 @@ public static class SalesInquiryEndpoints
         return names;
     }
 
-    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool Projected, bool PriceOverride, bool StockQuantity, string? CatalogCost, string Joins);
+    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool Projected, bool PriceOverride, bool StockQuantity, string? CatalogCost, string Joins, bool UnitProfit, bool LineProfit);
 
     private static string CostOf(SaleShape shape) =>
         SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected, shape.StockQuantity, shape.CatalogCost);
@@ -693,7 +703,9 @@ public static class SalesInquiryEndpoints
             columns.Contains("PriceOverrideMode"),
             stockQuantity,
             catalog.Count == 0 ? null : "COALESCE(" + string.Join(", ", catalog) + ")",
-            joins.ToString());
+            joins.ToString(),
+            columns.Contains("UnitProfitSnapshot"),
+            columns.Contains("LineProfitSnapshot"));
     }
 
     private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid businessId, CancellationToken cancellationToken)
@@ -943,6 +955,8 @@ public static class SalesInquiryEndpoints
         public decimal executedPrice { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public decimal? unitCost { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public decimal? unitProfit { get; init; }
         public decimal total { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public decimal? cost { get; init; }

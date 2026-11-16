@@ -95,6 +95,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string UnifiedChecksMigrationName = "Unified schema checks";
     public const string ItemPriceUniquenessMigrationId = "045_ItemPriceUniqueness";
     public const string ItemPriceUniquenessMigrationName = "Item price default and branch uniqueness";
+    public const string SaleLineProfitMigrationId = "046_SaleLineProfit";
+    public const string SaleLineProfitMigrationName = "Sale line unit and quantity profit";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -285,6 +287,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             ItemPriceUniquenessMigrationId,
             ItemPriceUniquenessMigrationName,
             "XtraPOS.Api.Data.Migrations.045_ItemPriceUniqueness.sql"),
+        new(
+            SaleLineProfitMigrationId,
+            SaleLineProfitMigrationName,
+            "XtraPOS.Api.Data.Migrations.046_SaleLineProfit.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

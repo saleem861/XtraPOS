@@ -42,6 +42,11 @@ public class SalesInquiryLocalTests
         Assert.Contains("LineCostSnapshot", cost, StringComparison.Ordinal);
         Assert.Contains("StockOwnerQuantity", cost, StringComparison.Ordinal);
         Assert.Contains("itemInventory.UnitCost", cost, StringComparison.Ordinal);
+        var sold = SaleLineEconomics.FromOwnerUnit(10m, 5m, 50m, 4m, 5m);
+        Assert.Equal(4m, sold.UnitCost);
+        Assert.Equal(6m, sold.UnitProfit);
+        Assert.Equal(20m, sold.QuantityCost);
+        Assert.Equal(30m, sold.QuantityProfit);
         var from = """
             FROM dbo.SaleItems AS line
             WHERE sale.Status = N'Completed'

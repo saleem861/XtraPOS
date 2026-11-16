@@ -18,6 +18,7 @@ interface SalesLine {
   customerPrice: number;
   executedPrice: number;
   unitCost?: number | null;
+  unitProfit?: number | null;
   total: number;
   cost?: number | null;
   earn?: number | null;
@@ -437,12 +438,12 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
               <thead>
                 <tr>
                   <th>عرض</th><th>رقم الطلبية</th><th>رقم الصنف</th><th>اسم الصنف</th><th>الكمية</th><th>السعر الأصلي</th><th>سعر الزبون</th><th>السعر المنفذ</th><th>الإجمالي</th>
-                  {seeEarns ? <><th>التكلفة</th><th>الربح</th></> : null}
+                  {seeEarns ? <><th>تكلفة الوحدة</th><th>ربح الوحدة</th><th>تكلفة الكمية</th><th>ربح الكمية</th></> : null}
                   <th>التاريخ</th><th>اسم الزبون</th><th>رقم الزبون</th><th>النقطة</th><th>ملاحظات</th><th>تم التعديل</th>
                 </tr>
               </thead>
               <tbody>
-                {message ? <tr><td colSpan={seeEarns ? 17 : 15}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={seeEarns ? 17 : 15}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
+                {message ? <tr><td colSpan={seeEarns ? 19 : 15}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={seeEarns ? 19 : 15}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
                   <tr key={`${line.saleId}-${index}`}>
                     <td><button type="button" className="sales-review-view" onClick={() => void openSale(line.saleId)}>عرض</button></td>
                     <td>{line.saleNumber}</td>
@@ -453,7 +454,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
                     <td>{money(line.customerPrice)}</td>
                     <td>{money(line.executedPrice)}</td>
                     <td>{money(line.total)}</td>
-                    {seeEarns ? <><td>{money(line.cost)}</td><td className="is-earn">{money(line.earn)}</td></> : null}
+                    {seeEarns ? <><td>{money(line.unitCost)}</td><td className="is-earn">{money(line.unitProfit)}</td><td>{money(line.cost)}</td><td className="is-earn">{money(line.earn)}</td></> : null}
                     <td>{line.completedAt ? new Date(line.completedAt).toLocaleDateString("en-GB", { timeZone: "Asia/Hebron" }) : "—"}</td>
                     <td>{line.customerName || "—"}</td>
                     <td>{line.customerNumber || "—"}</td>

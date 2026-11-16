@@ -208,6 +208,9 @@
     <EmbeddedResource Include="Data\Migrations\045_ItemPriceUniqueness.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.045_ItemPriceUniqueness.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\046_SaleLineProfit.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.046_SaleLineProfit.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>
@@ -258,6 +261,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\031_ItemPriceUniqueness.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.031_ItemPriceUniqueness.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\032_SaleLineProfit.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.032_SaleLineProfit.sql</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

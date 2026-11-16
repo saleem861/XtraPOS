@@ -874,6 +874,31 @@ var savedBranch = await app.Services.GetRequiredService<OperationalBranchConnect
 if (savedBranch is not null && OperationalDatabaseGuard.IsProductionCatalog(savedBranch.DatabaseName))
 {
     app.Services.GetRequiredService<OperationalBranchConnection>().Replace(savedBranch);
+    try
+    {
+        await app.Services.GetRequiredService<MigrationRunner>().ApplyPendingAsync(CancellationToken.None);
+    }
+    catch (Exception exception)
+    {
+        app.Logger.LogWarning(exception, "Branch schema update will retry.");
+    }
+}
+
+try
+{
+    await using var startupScope = app.Services.CreateAsyncScope();
+    var central = await startupScope.ServiceProvider.GetRequiredService<SyncEndpointStore>()
+        .ReadSettingsAsync(DatabaseRole.Central, CancellationToken.None);
+    if (central is not null && CentralDatabase.IsAllowedName(central.DatabaseName))
+    {
+        await app.Services.GetRequiredService<CentralMigrationRunner>().ApplyAsync(
+            central.BuildConnectionString(central.DatabaseName),
+            CancellationToken.None);
+    }
+}
+catch (Exception exception)
+{
+    app.Logger.LogWarning(exception, "Central schema update will retry.");
 }
 
 if (app.Environment.IsStaging())

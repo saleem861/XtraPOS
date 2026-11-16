@@ -398,7 +398,8 @@ public static class SaleCentralRelay
                    StockOwnerConversionFactor, StockOwnerQuantity, ReferenceItemID, ReferenceItemNumberSnapshot, ReferenceItemNameSnapshot,
                    EnteredScaleValue, ReferenceBasePrice, ReferencePriceSource, WeightKg, WeightGrams, VariableValueDiscountPercent, RawDiscountedValue,
                    FinalSellingPrice, RoundingPolicy, ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource, CreatedAt,
-                   ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode, AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice
+                   ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode, AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice,
+                   UnitProfitSnapshot, LineProfitSnapshot
             FROM dbo.SaleItems WHERE SaleID = @sale ORDER BY LineNumber;
             """,
             branch))
@@ -428,9 +429,10 @@ public static class SaleCentralRelay
                      StockOwnerConversionFactor, StockOwnerQuantity, ReferenceItemID, ReferenceItemNumberSnapshot, ReferenceItemNameSnapshot,
                      EnteredScaleValue, ReferenceBasePrice, ReferencePriceSource, WeightKg, WeightGrams, VariableValueDiscountPercent, RawDiscountedValue,
                      FinalSellingPrice, RoundingPolicy, ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource, CreatedAt,
-                     ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode, AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice)
+                     ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode, AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice,
+                     UnitProfitSnapshot, LineProfitSnapshot)
                 VALUES
-                    (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23,@p24,@p25,@p26,@p27,@p28,@p29,@p30,@p31,@p32,@p33,@p34,@p35,@p36,@p37,@p38,@p39,@p40,@p41,@p42);
+                    (@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23,@p24,@p25,@p26,@p27,@p28,@p29,@p30,@p31,@p32,@p33,@p34,@p35,@p36,@p37,@p38,@p39,@p40,@p41,@p42,@p43,@p44);
                 """,
                 central,
                 transaction);
