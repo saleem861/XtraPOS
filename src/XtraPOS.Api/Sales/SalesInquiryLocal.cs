@@ -44,6 +44,15 @@ public static class SalesInquiryLocal
         return parts.Count == 0 ? "CAST(NULL AS decimal(19, 4))" : "COALESCE(" + string.Join(", ", parts) + ")";
     }
 
+    public static string WithJoins(string fromSql, string? joins)
+    {
+        if (string.IsNullOrWhiteSpace(joins)) return fromSql;
+        var body = string.Join('\n', joins.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var index = fromSql.LastIndexOf("WHERE", StringComparison.OrdinalIgnoreCase);
+        if (index < 0) return fromSql.TrimEnd() + "\n" + body + "\n";
+        return fromSql[..index] + body + "\n" + fromSql[index..];
+    }
+
     public static string Page(string query) =>
         "SELECT page.* FROM (" + query + ") AS page WHERE page.RowNum > @skip AND page.RowNum <= @skip + @take ORDER BY page.RowNum";
 

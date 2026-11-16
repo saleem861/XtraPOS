@@ -657,8 +657,7 @@ public static class SalesInquiryEndpoints
     private static string CostOf(SaleShape shape) =>
         SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected, shape.StockQuantity, shape.CatalogCost);
 
-    private static string Source(SaleShape shape) =>
-        string.IsNullOrEmpty(shape.Joins) ? From : From.Replace("        WHERE", shape.Joins + "\n        WHERE", StringComparison.Ordinal);
+    private static string Source(SaleShape shape) => SalesInquiryLocal.WithJoins(From, shape.Joins);
 
     private static async Task<SaleShape> LoadShapeAsync(SqlConnection connection, CancellationToken cancellationToken)
     {

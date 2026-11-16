@@ -42,5 +42,12 @@ public class SalesInquiryLocalTests
         Assert.Contains("LineCostSnapshot", cost, StringComparison.Ordinal);
         Assert.Contains("StockOwnerQuantity", cost, StringComparison.Ordinal);
         Assert.Contains("itemInventory.UnitCost", cost, StringComparison.Ordinal);
+        var from = """
+            FROM dbo.SaleItems AS line
+            WHERE sale.Status = N'Completed'
+            """;
+        var joined = SalesInquiryLocal.WithJoins(from, "        LEFT JOIN dbo.BranchStockBalances AS ownerBalance ON ownerBalance.ItemID = line.ItemID\n        LEFT JOIN dbo.ItemBranchInventory AS ownerInventory ON ownerInventory.ItemID = line.ItemID\n");
+        Assert.True(joined.IndexOf("ownerBalance", StringComparison.Ordinal) < joined.IndexOf("WHERE", StringComparison.Ordinal));
+        Assert.Contains("ownerInventory", joined, StringComparison.Ordinal);
     }
 }
