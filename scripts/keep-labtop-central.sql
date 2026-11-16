@@ -38,6 +38,26 @@ COMMIT TRANSACTION;
 
 BEGIN TRANSACTION;
 
+DECLARE @childSql nvarchar(max) = N'';
+SELECT @childSql = @childSql
+    + N'DELETE child FROM ' + QUOTENAME(SCHEMA_NAME(child.schema_id)) + N'.' + QUOTENAME(child.name)
+    + N' AS child WHERE child.' + QUOTENAME(columnName.name) + N' <> @keep AND child.' + QUOTENAME(columnName.name) + N' IS NOT NULL;'
+FROM sys.foreign_keys AS link
+INNER JOIN sys.foreign_key_columns AS pair ON pair.constraint_object_id = link.object_id
+INNER JOIN sys.tables AS child ON child.object_id = link.parent_object_id
+INNER JOIN sys.columns AS columnName ON columnName.object_id = child.object_id AND columnName.column_id = pair.parent_column_id
+INNER JOIN sys.tables AS parent ON parent.object_id = link.referenced_object_id
+INNER JOIN sys.columns AS parentColumn ON parentColumn.object_id = parent.object_id AND parentColumn.column_id = pair.referenced_column_id
+WHERE parent.name = N'Branches' AND parentColumn.name = N'BranchID'
+  AND child.name NOT IN (N'Sales', N'SaleItems', N'SalePayments', N'POSStations', N'Devices', N'Branches');
+EXEC sys.sp_executesql @childSql, N'@keep uniqueidentifier', @keep = @keep;
+
+IF OBJECT_ID(N'dbo.Devices', N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Devices', N'BranchID') IS NOT NULL
+    DELETE device
+    FROM dbo.Devices AS device
+    WHERE device.BranchID <> @keep
+      AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.DeviceID = device.DeviceID);
+
 DELETE station
 FROM dbo.POSStations AS station
 WHERE station.BranchID <> @keep
