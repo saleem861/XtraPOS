@@ -538,6 +538,49 @@ html.pos-pro-shell .topbar {
   position: relative;
 }
 
+.brand-handoff {
+  min-height: 70vh;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.brand-handoff-ar,
+.brand-handoff-en {
+  margin: 0;
+  background: linear-gradient(90deg, #06264b, #0f766e, #175cd3, #d97706, #06264b);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: brand-shimmer 2.8s linear infinite, brand-float 2.6s ease-in-out infinite;
+}
+
+.brand-handoff-ar {
+  font-size: 72px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.brand-handoff-en {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  animation-direction: reverse, normal;
+}
+
+@keyframes brand-shimmer {
+  from { background-position: 0% 50%; }
+  to { background-position: 220% 50%; }
+}
+
+@keyframes brand-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
 .update-timer {
   position: absolute;
   inset: 0;

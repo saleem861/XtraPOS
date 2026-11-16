@@ -15,6 +15,7 @@ import {
   SetupClientError,
 } from "./api/client";
 import { AdminSetupScreen } from "./components/AdminSetupScreen";
+import { BrandHandoff, hasSetupHandoff, markSetupHandoff } from "./components/BrandHandoff";
 import { HomeScreen } from "./components/HomeScreen";
 import { LoginScreen } from "./components/LoginScreen";
 import { PasswordChangeScreen } from "./components/PasswordChangeScreen";
@@ -55,6 +56,7 @@ type Phase =
       existingBranch: { name: string; code: string } | null;
       remoteCompleted?: string;
     }
+  | { kind: "handoff" }
   | { kind: "unregistered"; intent?: "join" | "independent" | "central" }
   | { kind: "adminSetup"; session: DeviceSession; pending: boolean; error: string }
   | { kind: "login"; session: DeviceSession; pending: boolean; error: string }
@@ -155,6 +157,10 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
   }, []);
 
   async function refresh() {
+    if (hasSetupHandoff() && !isSetupForced()) {
+      setPhase({ kind: "handoff" });
+      return;
+    }
     setPhase({ kind: "loading" });
     try {
       const status = await getSetupStatus();
@@ -317,6 +323,7 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
   }
 
   async function openLocalPos(event: SetupStreamEvent) {
+    markSetupHandoff();
     const localAgent = await probeLocalAgentStatus(1500);
     const target = localPosAfterSetup(localAgent?.localAppUrl);
     if (target) {
@@ -329,24 +336,12 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
       try {
         await savePersistedDevice(session);
       } catch {
-        // The login screen can still use the session for this tab.
+        // The handoff screen can still claim the session for this tab.
       }
-      setDraft((current) => ({ ...current, password: "", confirmPassword: "" }));
-      setPhase({ kind: "login", session, pending: false, error: "" });
-      return;
     }
 
-    setPhase((current) =>
-      current.kind === "progress"
-        ? {
-            ...current,
-            running: false,
-            error: "",
-            existingBranch: null,
-            remoteCompleted: event.message || "تم تجهيز قاعدة الفرع على جهاز الفرع بنجاح.",
-          }
-        : current,
-    );
+    setDraft((current) => ({ ...current, password: "", confirmPassword: "" }));
+    setPhase({ kind: "handoff" });
   }
 
   function applySetupEvent(event: SetupStreamEvent) {
@@ -402,7 +397,8 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
       }
 
       setDraft((current) => ({ ...current, password: "", confirmPassword: "" }));
-      setPhase({ kind: "login", session, pending: false, error: "" });
+      markSetupHandoff();
+      setPhase({ kind: "handoff" });
       return;
     }
 
@@ -545,6 +541,12 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
       </header>
       <main className="workspace">
         {phase.kind === "loading" ? <StatusScreen title="XtraPOS" message="جاري التحقق من الإعداد" /> : null}
+        {phase.kind === "handoff" ? (
+          <BrandHandoff
+            onReady={(session) => setPhase({ kind: "login", session, pending: false, error: "" })}
+            onGiveUp={() => void refresh()}
+          />
+        ) : null}
         {phase.kind === "offline" ? (
           <StatusScreen
             title="XtraPOS"

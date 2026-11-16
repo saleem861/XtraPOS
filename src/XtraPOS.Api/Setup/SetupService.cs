@@ -1288,6 +1288,7 @@ public sealed class SetupService(
             {
                 await grant.ExecuteNonQueryAsync(cancellationToken);
                 await BranchAccessGrant.ApplyAsync(remote, null, cancellationToken);
+                await AccountAccessRepair.ApplyAsync(remote, null, cancellationToken);
             }
             catch (SqlException exception) when (exception.Number == 50000)
             {
@@ -1396,6 +1397,7 @@ public sealed class SetupService(
         {
             await command.ExecuteNonQueryAsync(cancellationToken);
             await BranchAccessGrant.ApplyAsync(connection, null, cancellationToken);
+            await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
         }
         catch (SqlException exception) when (environment.IsStaging() && exception.Number == 229)
         {
@@ -1408,6 +1410,7 @@ public sealed class SetupService(
         await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
         await connection.OpenAsync(cancellationToken);
         await BranchAccessGrant.ApplyAsync(connection, null, cancellationToken);
+        await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
     }
 
     private async Task SaveCentralRouteAsync(string route, CancellationToken cancellationToken)

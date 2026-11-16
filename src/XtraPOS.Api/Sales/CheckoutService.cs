@@ -140,6 +140,7 @@ public sealed class CheckoutService(
             {
                 var sessionId = await FindOpenSessionIdAsync(session.Connection, session.Transaction, actor, token)
                     ?? throw new CheckoutException(CheckoutCodes.CashSessionRequired, "يجب فتح الصندوق أولاً.", StatusCodes.Status409Conflict);
+                await EnsureProfitColumnsAsync(session, token);
                 var saleId = Guid.NewGuid();
                 var saleNumber = await InsertSaleAsync(session, actor, cartId, customerId, sessionId, saleId, total, token);
                 await FailAsync(fault, CheckoutFault.AfterSale);
@@ -205,6 +206,28 @@ public sealed class CheckoutService(
 
             throw;
         }
+        catch (SqlException exception)
+        {
+            throw new CheckoutException("CHECKOUT_FAILED", CheckoutFailure.Describe(exception), StatusCodes.Status500InternalServerError);
+        }
+        catch (StockPostingException)
+        {
+            throw new CheckoutException("CHECKOUT_FAILED", CheckoutFailure.StockMessage, StatusCodes.Status500InternalServerError);
+        }
+    }
+
+    private static async Task EnsureProfitColumnsAsync(StockPostingSession session, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            IF COL_LENGTH(N'dbo.SaleItems', N'UnitProfitSnapshot') IS NULL
+                ALTER TABLE dbo.SaleItems ADD UnitProfitSnapshot decimal(19, 4) NULL;
+            IF COL_LENGTH(N'dbo.SaleItems', N'LineProfitSnapshot') IS NULL
+                ALTER TABLE dbo.SaleItems ADD LineProfitSnapshot decimal(19, 4) NULL;
+            """,
+            session.Connection,
+            session.Transaction);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<PreparedLine> PrepareLineAsync(

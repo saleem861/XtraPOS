@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Data.Central;
+using XtraPOS.Api.Security;
 
 namespace XtraPOS.Api.Sync;
 
@@ -115,6 +116,13 @@ public sealed class SharedDataSync(
             transaction) { CommandTimeout = 600 };
         var items = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
         await transaction.CommitAsync(cancellationToken);
+        await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
+        await using (var centralConnection = new SqlConnection(central.BuildConnectionString(central.DatabaseName)))
+        {
+            await centralConnection.OpenAsync(cancellationToken);
+            await AccountAccessRepair.ApplyAsync(centralConnection, null, cancellationToken);
+        }
+
         if (!hasItemSearch)
         {
             await ArabicSearchKeyBackfill.ApplyAsync(connection, cancellationToken);

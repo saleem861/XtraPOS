@@ -180,15 +180,39 @@ public sealed class LabtopBranchCleanupService(IServiceProvider services, ILogge
             await Task.Delay(TimeSpan.FromSeconds(8), stoppingToken);
             using var scope = services.CreateScope();
             var cleanup = scope.ServiceProvider.GetRequiredService<LabtopBranchCleanup>();
-            await cleanup.RunOnceAsync(stoppingToken);
-            await cleanup.KeepAccessAsync(stoppingToken);
+            try
+            {
+                await cleanup.RunOnceAsync(stoppingToken);
+                await cleanup.KeepAccessAsync(stoppingToken);
+            }
+            catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogWarning(exception, "Keeping only the Labtop branch did not finish.");
+            }
+
+            var connections = scope.ServiceProvider.GetRequiredService<SqlConnectionFactory>();
+            var centralStore = scope.ServiceProvider.GetRequiredService<CentralConnectionFileStore>();
+            var centralSettings = await centralStore.ReadAsync(stoppingToken);
+            if (centralSettings is not null)
+            {
+                await using var central = new SqlConnection(centralSettings.BuildConnectionString(centralSettings.DatabaseName));
+                await central.OpenAsync(stoppingToken);
+                await AccountAccessRepair.ApplyAsync(central, null, stoppingToken);
+            }
+
+            if (await connections.DatabaseExistsAsync(stoppingToken))
+            {
+                await using var local = new SqlConnection(connections.CreateBranchConnectionString());
+                await local.OpenAsync(stoppingToken);
+                await AccountAccessRepair.ApplyAsync(local, null, stoppingToken);
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Keeping only the Labtop branch did not finish.");
+            logger.LogWarning(exception, "Account access repair will retry.");
         }
     }
 }

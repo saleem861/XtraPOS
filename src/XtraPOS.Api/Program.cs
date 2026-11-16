@@ -901,6 +901,30 @@ catch (Exception exception)
     app.Logger.LogWarning(exception, "Central schema update will retry.");
 }
 
+try
+{
+    await using var repairScope = app.Services.CreateAsyncScope();
+    var repairConnections = repairScope.ServiceProvider.GetRequiredService<SqlConnectionFactory>();
+    var repairCentral = await repairScope.ServiceProvider.GetRequiredService<CentralConnectionFileStore>().ReadAsync(CancellationToken.None);
+    if (repairCentral is not null && CentralDatabase.IsAllowedName(repairCentral.DatabaseName))
+    {
+        await using var centralRepair = new Microsoft.Data.SqlClient.SqlConnection(repairCentral.BuildConnectionString(repairCentral.DatabaseName));
+        await centralRepair.OpenAsync(CancellationToken.None);
+        await AccountAccessRepair.ApplyAsync(centralRepair, null, CancellationToken.None);
+    }
+
+    if (await repairConnections.DatabaseExistsAsync(CancellationToken.None))
+    {
+        await using var branchRepair = new Microsoft.Data.SqlClient.SqlConnection(repairConnections.CreateBranchConnectionString());
+        await branchRepair.OpenAsync(CancellationToken.None);
+        await AccountAccessRepair.ApplyAsync(branchRepair, null, CancellationToken.None);
+    }
+}
+catch (Exception exception)
+{
+    app.Logger.LogWarning(exception, "Account access repair will retry.");
+}
+
 if (app.Environment.IsStaging())
 {
     var forwarded = new ForwardedHeadersOptions
@@ -993,7 +1017,7 @@ app.MapGet("/health", () => Results.Ok(new
     status = "Healthy",
     version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0",
 }));
-app.MapPost("/api/local-update", (HttpContext http) =>
+app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment environment, CancellationToken cancellationToken) =>
 {
     var remote = http.Connection.RemoteIpAddress;
     if (remote is null || !System.Net.IPAddress.IsLoopback(remote))
@@ -1001,21 +1025,22 @@ app.MapPost("/api/local-update", (HttpContext http) =>
         return Results.NotFound();
     }
 
-    var script = @"D:\Google\XtraPOS\scripts\update-local.ps1";
-    if (!File.Exists(script))
+    try
     {
-        return Results.Json(new { message = "ملف التحديث غير موجود." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
+        var url = await PublishedRelease.LatestAssetUrlAsync(cancellationToken);
+        if (!PublishedRelease.IsAllowedDownload(url))
+        {
+            return Results.Json(new { message = "لا توجد حزمة منشورة بعد. ينشر المطوّر الحزمة أولاً." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
-    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        PublishedRelease.StartUpdater(PublishedRelease.BuildUpdaterScript(environment.ContentRootPath, url!));
+        return Results.Ok(new { message = "بدأ تنزيل آخر نشر. ستُعاد تشغيل الخدمة بعد اكتمال النسخ." });
+    }
+    catch (Exception exception)
     {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
-        WorkingDirectory = @"D:\Google\XtraPOS",
-        UseShellExecute = true,
-        WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-    });
-    return Results.Ok(new { message = "بدأ التحديث. حدّث الصفحة بعد ثوانٍ." });
+        app.Logger.LogWarning(exception, "Published release update did not start.");
+        return Results.Json(new { message = "تعذر الوصول إلى آخر نشر." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 });
 if (app.Environment.IsStaging())
 {

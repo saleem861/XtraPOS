@@ -30,7 +30,7 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
             sawDown = true;
             return;
           }
-          if (!finished && (sawDown || Date.now() - started > 8000)) {
+          if (!finished && sawDown && response.ok) {
             finished = true;
             window.location.reload();
           }
@@ -134,4 +134,4 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
   );
 }
 
-const UPDATE_SECONDS = 35;
+const UPDATE_SECONDS = 90;

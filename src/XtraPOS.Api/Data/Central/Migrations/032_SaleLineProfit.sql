@@ -14,6 +14,7 @@ IF COL_LENGTH(N'dbo.SaleItems', N'UnitProfitSnapshot') IS NULL
 IF COL_LENGTH(N'dbo.SaleItems', N'LineProfitSnapshot') IS NULL
     ALTER TABLE dbo.SaleItems ADD LineProfitSnapshot decimal(19, 4) NULL;
 
+BEGIN TRY
 IF OBJECT_ID(N'dbo.Sales', N'U') IS NOT NULL
    AND OBJECT_ID(N'dbo.BranchStockBalances', N'U') IS NOT NULL
    AND OBJECT_ID(N'dbo.ItemBranchInventory', N'U') IS NOT NULL
@@ -32,21 +33,28 @@ IF OBJECT_ID(N'dbo.Sales', N'U') IS NOT NULL
       AND line.ProjectedCostAtPricing IS NULL
       AND COALESCE(stock.UnitCost, ownerCard.UnitCost, itemCard.UnitCost) IS NOT NULL;
 
-IF COL_LENGTH(N'dbo.SaleItems', N'ProjectedCostAtPricing') IS NOT NULL
-    UPDATE dbo.SaleItems
-    SET LineCostSnapshot = ROUND(ProjectedCostAtPricing * Quantity, 4)
-    WHERE LineCostSnapshot IS NULL AND ProjectedCostAtPricing IS NOT NULL;
+    IF COL_LENGTH(N'dbo.SaleItems', N'ProjectedCostAtPricing') IS NOT NULL
+        UPDATE dbo.SaleItems
+        SET LineCostSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, ProjectedCostAtPricing) * CONVERT(float, Quantity), 4))
+        WHERE LineCostSnapshot IS NULL
+          AND ProjectedCostAtPricing IS NOT NULL
+          AND TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, ProjectedCostAtPricing) * CONVERT(float, Quantity), 4)) IS NOT NULL;
 
-IF COL_LENGTH(N'dbo.SaleItems', N'StockOwnerQuantity') IS NOT NULL
-    UPDATE dbo.SaleItems
-    SET LineCostSnapshot = ROUND(UnitCostSnapshot * COALESCE(StockOwnerQuantity, Quantity), 4)
-    WHERE LineCostSnapshot IS NULL AND UnitCostSnapshot IS NOT NULL;
+    IF COL_LENGTH(N'dbo.SaleItems', N'StockOwnerQuantity') IS NOT NULL
+        UPDATE dbo.SaleItems
+        SET LineCostSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitCostSnapshot) * CONVERT(float, COALESCE(StockOwnerQuantity, Quantity)), 4))
+        WHERE LineCostSnapshot IS NULL
+          AND UnitCostSnapshot IS NOT NULL
+          AND TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitCostSnapshot) * CONVERT(float, COALESCE(StockOwnerQuantity, Quantity)), 4)) IS NOT NULL;
 
-UPDATE dbo.SaleItems
-SET
-    UnitCostSnapshot = ROUND(LineCostSnapshot / Quantity, 4),
-    UnitProfitSnapshot = ROUND(UnitPrice - (LineCostSnapshot / Quantity), 4),
-    LineProfitSnapshot = ROUND(LineTotal - LineCostSnapshot, 4)
-WHERE LineCostSnapshot IS NOT NULL
-  AND Quantity <> 0
-  AND LineProfitSnapshot IS NULL;
+    UPDATE dbo.SaleItems
+    SET
+        UnitCostSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity), 4)),
+        UnitProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitPrice) - (CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity)), 4)),
+        LineProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineTotal) - CONVERT(float, LineCostSnapshot), 4))
+    WHERE LineCostSnapshot IS NOT NULL
+      AND Quantity <> 0
+      AND LineProfitSnapshot IS NULL;
+END TRY
+BEGIN CATCH
+END CATCH
