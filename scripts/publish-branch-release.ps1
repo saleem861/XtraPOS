@@ -7,6 +7,10 @@ dotnet publish (Join-Path $PWD "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release 
 if ($LASTEXITCODE -ne 0) { throw "API publish failed with $LASTEXITCODE." }
 Push-Location (Join-Path $PWD "src\XtraPOS.Web")
 try {
+  if (-not (Test-Path "node_modules\lucide-react")) {
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw "Web dependencies failed with $LASTEXITCODE." }
+  }
   npm run build
   if ($LASTEXITCODE -ne 0) { throw "Web build failed with $LASTEXITCODE." }
 }
