@@ -47,14 +47,15 @@ IF OBJECT_ID(N'dbo.Sales', N'U') IS NOT NULL
           AND UnitCostSnapshot IS NOT NULL
           AND TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitCostSnapshot) * CONVERT(float, COALESCE(StockOwnerQuantity, Quantity)), 4)) IS NOT NULL;
 
-    UPDATE dbo.SaleItems
-    SET
-        UnitCostSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity), 4)),
-        UnitProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitPrice) - (CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity)), 4)),
-        LineProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineTotal) - CONVERT(float, LineCostSnapshot), 4))
-    WHERE LineCostSnapshot IS NOT NULL
-      AND Quantity <> 0
-      AND LineProfitSnapshot IS NULL;
+    EXEC sys.sp_executesql N'
+        UPDATE dbo.SaleItems
+        SET
+            UnitCostSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity), 4)),
+            UnitProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, UnitPrice) - (CONVERT(float, LineCostSnapshot) / CONVERT(float, Quantity)), 4)),
+            LineProfitSnapshot = TRY_CONVERT(decimal(19, 4), ROUND(CONVERT(float, LineTotal) - CONVERT(float, LineCostSnapshot), 4))
+        WHERE LineCostSnapshot IS NOT NULL
+          AND Quantity <> 0
+          AND LineProfitSnapshot IS NULL;';
 END TRY
 BEGIN CATCH
 END CATCH
