@@ -33,6 +33,18 @@ interface InquiryUser {
   displayName: string;
 }
 
+interface InquiryBranch {
+  branchId: string;
+  branchName: string;
+}
+
+interface InquiryStation {
+  stationNumber: number;
+  stationName: string;
+  branchId: string;
+  branchName: string;
+}
+
 interface InquiryPayload {
   total: number;
   salesTotal: number;
@@ -41,7 +53,7 @@ interface InquiryPayload {
   unavailable?: boolean;
   message?: string;
   lines: SalesLine[];
-  options: { stations: string[]; users: InquiryUser[]; classes: string[]; branches?: string[] };
+  options: { stations: InquiryStation[]; users: InquiryUser[]; classes: string[]; branches?: InquiryBranch[] };
 }
 
 const pageSize = 50;
@@ -164,7 +176,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
     if (generation !== requestId.current) return;
     setOptions(payload.options);
     const branches = payload.options.branches ?? [];
-    if (branches.length === 1 && branchName !== branches[0]) setBranchName(branches[0]);
+    if (branches.length === 1 && branchName !== branches[0].branchName) setBranchName(branches[0].branchName);
     if (payload.unavailable) {
       setMessage(payload.message || "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية.");
       setSalesTotal(0);
@@ -223,7 +235,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
     setUseCustomerName(false);
     setCustomerName("");
     setUseBranch(false);
-    setBranchName(options.branches?.[0] || session.branchName);
+    setBranchName(session.branchName);
     setUseName(false);
     setItemName("");
     setUseCustomer(false);
@@ -269,10 +281,11 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const allClasses = options.classes.length > 0 && options.classes.every((name) => classifications.includes(name));
+  const visibleStations = options.stations.filter((station) => !useBranch || station.branchName === branchName);
 
   return (
     <section className={desktop && keyboardOpen ? "new-customer sales-review has-keyboard" : "new-customer sales-review"} dir="rtl" aria-label="مراجعة المبيعات" onKeyDown={moveToNextField}>
-      <ScreenHeader title="مراجعة المبيعات" onBack={onBack} />
+      <ScreenHeader title={openedOrder ? "تفاصيل الطلبية" : "مراجعة المبيعات"} onBack={openedOrder ? () => setOpenedOrder(null) : onBack} />
       <div className="sales-review-body">
         <aside className="sales-review-actions" aria-label="إجراءات سريعة">
           <h3><Zap aria-hidden="true" />إجراءات سريعة</h3>
@@ -333,13 +346,15 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
             <div className="sales-review-line is-four">
             <FilterCheck label="الفرع" checked={useBranch} onChange={setUseBranch}>
               <select aria-label="الفرع" disabled={!useBranch} value={branchName} onChange={(event) => setBranchName(event.target.value)}>
-                <option value={options.branches?.[0] || session.branchName}>{options.branches?.[0] || session.branchName}</option>
+                {(options.branches?.length ? options.branches : [{ branchId: session.branchId, branchName: session.branchName }]).map((branch) => (
+                  <option key={branch.branchId} value={branch.branchName}>{branch.branchName}</option>
+                ))}
               </select>
             </FilterCheck>
             <FilterCheck label="النقطة" checked={useStation} onChange={setUseStation}>
               <select aria-label="النقطة" disabled={!useStation} value={stationNumber} onChange={(event) => setStationNumber(event.target.value)}>
                 <option value="">اختر النقطة</option>
-                {options.stations.map((station) => <option key={station} value={station}>{station}</option>)}
+                {visibleStations.map((station) => <option key={`${station.branchId}-${station.stationNumber}`} value={String(station.stationNumber)}>{station.stationNumber} — {station.stationName}</option>)}
               </select>
             </FilterCheck>
             <FilterCheck label="رقم الزبون" checked={useCustomer} onChange={setUseCustomer}><input aria-label="رقم الزبون" placeholder="رقم الزبون" disabled={!useCustomer} value={customerNumber} onChange={(event) => setCustomerNumber(event.target.value)} /></FilterCheck>
@@ -368,14 +383,15 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
             <table>
               <thead>
                 <tr>
-                  <th>رقم الطلبية</th><th>رقم الصنف</th><th>اسم الصنف</th><th>الكمية</th><th>السعر الأصلي</th><th>سعر الزبون</th><th>السعر المنفذ</th><th>الإجمالي</th>
+                  <th>عرض</th><th>رقم الطلبية</th><th>رقم الصنف</th><th>اسم الصنف</th><th>الكمية</th><th>السعر الأصلي</th><th>سعر الزبون</th><th>السعر المنفذ</th><th>الإجمالي</th>
                   <th>التاريخ</th><th>اسم الزبون</th><th>رقم الزبون</th><th>النقطة</th><th>ملاحظات</th><th>تم التعديل</th>
                 </tr>
               </thead>
               <tbody>
-                {message ? <tr><td colSpan={14}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={14}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
-                  <tr key={`${line.saleId}-${index}`} onDoubleClick={() => void openSale(line.saleId)}>
-                    <td><button type="button" className="sales-review-order" onClick={() => void openSale(line.saleId)}>{line.saleNumber}</button></td>
+                {message ? <tr><td colSpan={15}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={15}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
+                  <tr key={`${line.saleId}-${index}`}>
+                    <td><button type="button" className="sales-review-view" onClick={() => void openSale(line.saleId)}>عرض</button></td>
+                    <td>{line.saleNumber}</td>
                     <td>{line.itemNumber}</td>
                     <td>{line.itemName}</td>
                     <td>{line.quantity}</td>
@@ -410,7 +426,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
       {desktop && keyboardOpen ? <FullKeyboard onEnter={() => setReloadKey((value) => value + 1)} /> : null}
       {openedOrder ? (
         <div className="sales-review-details">
-          <OrderDetailsScreen title="تفاصيل الطلبية" document={openedOrder} onClose={() => setOpenedOrder(null)} />
+          <OrderDetailsScreen embedded title="تفاصيل الطلبية" document={openedOrder} onClose={() => setOpenedOrder(null)} />
         </div>
       ) : null}
     </section>

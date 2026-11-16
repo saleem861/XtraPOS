@@ -29,10 +29,12 @@ export function OrderDetailsScreen({
   title,
   document: sheet,
   onClose,
+  embedded = false,
 }: {
   title: string;
   document: DebtDocument;
   onClose: () => void;
+  embedded?: boolean;
 }) {
   const [preview, setPreview] = useState<A4Document | null>(null);
   const [printingReceipt, setPrintingReceipt] = useState(false);
@@ -40,7 +42,7 @@ export function OrderDetailsScreen({
   const a4 = toA4(title, sheet);
   return (
     <section className={printingReceipt ? "new-customer debt-screen is-printing-receipt" : preview ? "new-customer debt-screen is-printing-a4" : "new-customer debt-screen"} dir="rtl" aria-label={title}>
-      <ScreenHeader title={title} onBack={onClose} />
+      {embedded ? null : <ScreenHeader title={title} onBack={onClose} />}
       <div className="debt-details">
         <div className="debt-facts">
           <Fact icon="user" label="اسم الزبون" value={sheet.customerName || "—"} />

@@ -301,6 +301,8 @@ public sealed class CreditSaleCoordinator(CreditReservationService credit, Credi
             await sale.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await XtraPOS.Api.Sales.SaleCentralRelay.EnqueueCompletedAsync(branch, transaction, saleId, cancellationToken);
+
         await using var complete = new SqlCommand(
             """
             UPDATE dbo.BranchFinancialOutbox

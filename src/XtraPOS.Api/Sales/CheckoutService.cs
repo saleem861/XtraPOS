@@ -186,6 +186,7 @@ public sealed class CheckoutService(
                     throw new InvalidOperationException("Could not complete the sale.");
                 }
 
+                await SaleCentralRelay.EnqueueCompletedAsync(session.Connection, session.Transaction, saleId, token);
                 return (CheckoutResult)new CheckoutSucceeded(new CheckoutCompleted(
                     saleId,
                     saleNumber,

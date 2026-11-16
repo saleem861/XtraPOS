@@ -9,6 +9,7 @@ using XtraPOS.Api.Data;
 using XtraPOS.Api.Diagnostics;
 using XtraPOS.Api.Sales;
 using XtraPOS.Api.Security;
+using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Endpoints;
 
@@ -67,9 +68,10 @@ public static class SalesInquiryEndpoints
         var seeEarns = CanSeeEarns(actor.User!);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var options = await SafeOptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
+        var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
         var optionPayload = OptionsPayload(options);
-        if (useBranch == true && !SalesInquiryLocal.IsCurrentBranch(options.Branches, branchName))
+        var deviceBranch = await LocalBranchNameAsync(connection, actor.Context.BranchId, cancellationToken);
+        if (useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
         {
             return Results.Ok(new InquiryResponse
             {
@@ -187,8 +189,9 @@ public static class SalesInquiryEndpoints
         var seeEarns = CanSeeEarns(actor.User!);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
-        var options = await SafeOptionsAsync(connection, actor.Context!.BranchId, cancellationToken);
-        if (useBranch == true && !SalesInquiryLocal.IsCurrentBranch(options.Branches, branchName))
+        var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
+        var deviceBranch = await LocalBranchNameAsync(connection, actor.Context.BranchId, cancellationToken);
+        if (useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
         {
             return Results.Json(new { message = "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية." }, statusCode: StatusCodes.Status400BadRequest);
         }
@@ -214,7 +217,7 @@ public static class SalesInquiryEndpoints
             return ReadFailure(http, exception);
         }
         var truncated = total > lines.Count;
-        var branchLabel = options.Branches.FirstOrDefault() ?? "";
+        var branchLabel = deviceBranch ?? "";
         var when = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, BusinessZone()).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         var range = useDate == true ? $"{dateFrom} → {dateTo}" : "بدون تاريخ";
         var headers = new List<string> { "رقم الطلبية", "رقم الصنف", "اسم الصنف", "الكمية", "السعر الأصلي", "سعر الزبون", "السعر المنفذ" };
@@ -537,16 +540,40 @@ public static class SalesInquiryEndpoints
     private static bool ReversedDates(bool? useDate, string? dateFrom, string? dateTo) =>
         useDate == true && TryDate(dateFrom, out var from) && TryDate(dateTo, out var to) && from > to;
 
-    private static async Task<InquiryOptions> SafeOptionsAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
+    private static async Task<InquiryOptions> SafeOptionsAsync(HttpContext http, SqlConnection local, Guid businessId, CancellationToken cancellationToken)
     {
+        var central = await TryCentralOptionsAsync(http, businessId, cancellationToken);
+        if (central is not null) return central;
         try
         {
-            return await OptionsAsync(connection, branchId, cancellationToken);
+            return await OptionsAsync(local, businessId, cancellationToken);
         }
         catch (SqlException)
         {
             return new InquiryOptions([], [], [], []);
         }
+    }
+
+    private static async Task<InquiryOptions?> TryCentralOptionsAsync(HttpContext http, Guid businessId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var settings = await http.RequestServices.GetRequiredService<SyncEndpointStore>().ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
+            if (settings is null) return null;
+            await using var connection = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+            await connection.OpenAsync(cancellationToken);
+            return await OptionsAsync(connection, businessId, cancellationToken);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string?> LocalBranchNameAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
+    {
+        var names = await Texts(connection, "SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", branchId, cancellationToken);
+        return names.FirstOrDefault();
     }
 
     private static IResult ReadFailure(HttpContext http, SqlException exception)
@@ -567,27 +594,52 @@ public static class SalesInquiryEndpoints
 
     private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool PriceOverride);
 
-    private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
+    private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid businessId, CancellationToken cancellationToken)
     {
-        var stations = await Texts(connection, "SELECT CONVERT(nvarchar(20), StationNumber) FROM dbo.POSStations WHERE BranchID = @branch AND IsActive = 1 ORDER BY StationNumber;", branchId, cancellationToken);
-        var branches = await Texts(connection, "SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", branchId, cancellationToken);
+        var stations = new List<StationOption>();
+        await using (var command = new SqlCommand(
+            """
+            SELECT station.StationNumber, station.StationName, station.BranchID, branch.BranchName
+            FROM dbo.POSStations AS station
+            INNER JOIN dbo.Branches AS branch ON branch.BranchID = station.BranchID
+            WHERE branch.BusinessID = @business
+            ORDER BY branch.BranchName, station.StationNumber;
+            """,
+            connection))
+        {
+            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                stations.Add(new StationOption(reader.GetInt32(0), reader.GetString(1), reader.GetGuid(2), reader.GetString(3)));
+            }
+        }
+
+        var branches = new List<BranchOption>();
+        await using (var command = new SqlCommand("SELECT BranchID, BranchName FROM dbo.Branches WHERE BusinessID = @business ORDER BY BranchName;", connection))
+        {
+            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = businessId;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) branches.Add(new BranchOption(reader.GetGuid(0), reader.GetString(1)));
+        }
+
         var classes = await Texts(connection, "SELECT DISTINCT Classification FROM dbo.Items WHERE Classification IS NOT NULL AND Classification <> N'' ORDER BY Classification;", null, cancellationToken);
         var users = new List<UserOption>();
-        await using (var command = new SqlCommand("SELECT UserID, DisplayName FROM dbo.Users WHERE IsActive = 1 ORDER BY DisplayName;", connection))
+        await using (var command = new SqlCommand("SELECT UserID, DisplayName FROM dbo.Users ORDER BY DisplayName;", connection))
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             while (await reader.ReadAsync(cancellationToken)) users.Add(new UserOption(reader.GetGuid(0), reader.GetString(1)));
         }
 
-        return new InquiryOptions(stations, users.ToArray(), classes, branches);
+        return new InquiryOptions(stations.ToArray(), users.ToArray(), classes, branches.ToArray());
     }
 
     private static object OptionsPayload(InquiryOptions options) => new
     {
-        options.Stations,
+        stations = options.Stations.Select(station => new { stationNumber = station.Number, stationName = station.Name, branchId = station.BranchId, branchName = station.BranchName }),
         users = options.Users.Select(user => new { userId = user.UserId, displayName = user.DisplayName }),
         options.Classes,
-        branches = options.Branches,
+        branches = options.Branches.Select(branch => new { branchId = branch.BranchId, branchName = branch.Name }),
     };
 
     private static async Task<string[]> Texts(SqlConnection connection, string sql, Guid? branchId, CancellationToken cancellationToken)
@@ -733,8 +785,10 @@ public static class SalesInquiryEndpoints
     private sealed record Filter(string Where, List<SqlParameter> Parameters);
 
     private sealed record UserOption(Guid UserId, string DisplayName);
+    private sealed record BranchOption(Guid BranchId, string Name);
+    private sealed record StationOption(int Number, string Name, Guid BranchId, string BranchName);
 
-    private sealed record InquiryOptions(string[] Stations, UserOption[] Users, string[] Classes, string[] Branches);
+    private sealed record InquiryOptions(StationOption[] Stations, UserOption[] Users, string[] Classes, BranchOption[] Branches);
 
     private sealed class InquiryResponse
     {

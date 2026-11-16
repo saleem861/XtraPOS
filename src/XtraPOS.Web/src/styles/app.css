@@ -6072,6 +6072,17 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 }
 
 .sales-review-table tbody tr:nth-child(even) { background: #f4f8fc; }
+.sales-review-view {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #175cd3;
+  border-radius: 8px;
+  background: #175cd3;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
 .sales-review-order {
   border: 0;
   background: transparent;

@@ -15,10 +15,10 @@ public static class SalesInquiryLocal
         return (int)zone.GetUtcOffset(local).TotalMinutes;
     }
 
-    public static bool IsCurrentBranch(IReadOnlyList<string> localBranches, string? requested)
+    public static bool IsDeviceBranch(string? deviceBranch, string? requested)
     {
-        if (localBranches.Count <= 1 || string.IsNullOrWhiteSpace(requested)) return true;
-        return localBranches.Any(name => string.Equals(name.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(requested) || string.IsNullOrWhiteSpace(deviceBranch)) return true;
+        return string.Equals(deviceBranch.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     public static string Page(string query) =>

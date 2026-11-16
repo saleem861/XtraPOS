@@ -8,13 +8,12 @@ public class SalesInquiryLocalTests
     private static readonly TimeZoneInfo PlusTwo = TimeZoneInfo.CreateCustomTimeZone("Test-Plus-Two", TimeSpan.FromHours(2), "Test-Plus-Two", "Test-Plus-Two");
 
     [Fact]
-    public void OneLocalBranchIsAlwaysTheCurrentDatabase()
+    public void AnotherBranchIsNotThisDevice()
     {
-        Assert.True(SalesInquiryLocal.IsCurrentBranch(["Labtop"], "Labtop"));
-        Assert.True(SalesInquiryLocal.IsCurrentBranch(["Labtop"], "labtop"));
-        Assert.True(SalesInquiryLocal.IsCurrentBranch(["Labtop"], "فرع آخر"));
-        Assert.False(SalesInquiryLocal.IsCurrentBranch(["Labtop", "مركز"], "مركز غير موجود"));
-        Assert.True(SalesInquiryLocal.IsCurrentBranch(["Labtop", "مركز"], "مركز"));
+        Assert.True(SalesInquiryLocal.IsDeviceBranch("Labtop", "Labtop"));
+        Assert.True(SalesInquiryLocal.IsDeviceBranch("Labtop", "labtop"));
+        Assert.True(SalesInquiryLocal.IsDeviceBranch("Labtop", null));
+        Assert.False(SalesInquiryLocal.IsDeviceBranch("Labtop", "فرع آخر"));
     }
 
     [Fact]
