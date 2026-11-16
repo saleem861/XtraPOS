@@ -5743,9 +5743,9 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   flex: 1 1 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 28%) minmax(0, 1fr);
+  grid-template-columns: minmax(210px, 20%) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 8px;
   padding: 8px;
 }
 
@@ -5814,8 +5814,8 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .sales-review-actions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  padding: 6px;
 }
 
 .sales-review-panel-title,
@@ -5911,14 +5911,16 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
   flex: 0 0 auto;
-  min-height: 36px;
+  min-height: 34px;
+  padding: 0 6px;
   border: 1px solid #d5e1ee;
   border-radius: 12px;
   background: #f7fbff;
   color: #14365c;
   font: inherit;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -6027,7 +6029,21 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 
 .sales-review-line.is-single {
   flex-wrap: nowrap;
-  overflow-x: auto;
+}
+
+.sales-review-line.is-single > .sales-review-filter {
+  flex: 1 1 0;
+  max-width: none;
+}
+
+.sales-review-line.is-single > .sales-review-check {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+.sales-review-line.is-single > .is-wide {
+  flex: 1.35 1 0;
+  max-width: none;
 }
 
 .sales-review-line > .sales-review-filter,
