@@ -388,6 +388,11 @@ if (args.Any(arg => string.Equals(arg, "--write-staging-central-connection", Str
 if (args.Any(arg => string.Equals(arg, "--apply-central-migrations", StringComparison.Ordinal)))
 {
     var confirmedCentral = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
+    if (StagingSqlDefaults.IsExperimentalCatalog(confirmedCentral))
+    {
+        Console.WriteLine($"Publish does not open the experimental database '{confirmedCentral}'. Real databases are migrated on their own servers.");
+        return;
+    }
     var configuredBranch = builder.Configuration[$"{SqlServerOptions.SectionName}:Database"];
     using var centralHost = builder.Build();
     var centralStore = centralHost.Services.GetRequiredService<CentralConnectionFileStore>();
@@ -460,6 +465,11 @@ if (args.Any(arg => string.Equals(arg, "--copy-customer-to-branch", StringCompar
 if (BranchMigrationCommand.IsRequested(args))
 {
     var confirmed = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
+    if (StagingSqlDefaults.IsExperimentalCatalog(confirmed))
+    {
+        Console.WriteLine($"Publish does not open the experimental database '{confirmed}'. Real databases are migrated on their own servers.");
+        return;
+    }
     var configured = builder.Configuration[$"{SqlServerOptions.SectionName}:Database"];
     if (!BranchMigrationCommand.TryAuthorize(configured, confirmed, out var migrationDenial))
     {
