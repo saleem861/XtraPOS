@@ -30,12 +30,17 @@ public static class SalesInquiryLocal
         return raw.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    public static string CostSql(bool lineCost, bool unitCost, bool projected)
+    public static string CostSql(bool lineCost, bool unitCost, bool projected) =>
+        CostSql(lineCost, unitCost, projected, false, null);
+
+    public static string CostSql(bool lineCost, bool unitCost, bool projected, bool stockQuantity, string? catalogCost)
     {
+        var quantity = stockQuantity ? "COALESCE(line.StockOwnerQuantity, line.Quantity)" : "line.Quantity";
         var parts = new List<string>();
         if (lineCost) parts.Add("line.LineCostSnapshot");
-        if (unitCost) parts.Add("(line.UnitCostSnapshot * line.Quantity)");
+        if (unitCost) parts.Add("(line.UnitCostSnapshot * " + quantity + ")");
         if (projected) parts.Add("(line.ProjectedCostAtPricing * line.Quantity)");
+        if (!string.IsNullOrWhiteSpace(catalogCost)) parts.Add(catalogCost);
         return parts.Count == 0 ? "CAST(NULL AS decimal(19, 4))" : "COALESCE(" + string.Join(", ", parts) + ")";
     }
 

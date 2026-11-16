@@ -6185,9 +6185,11 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .sales-review-class-menu { position: relative; flex: 1 1 auto; min-width: 0; }
 .sales-review-class-menu summary { display: flex; align-items: center; overflow: hidden; border: 1px solid #d5e1ee; border-radius: 8px; padding: 0 8px; background: #f7fbff; cursor: pointer; list-style: none; }
 .sales-review-class-menu summary::-webkit-details-marker { display: none; }
-.sales-review-class-pop { position: absolute; z-index: 30; top: calc(100% + 4px); inset-inline-start: 0; width: min(420px, 70vw); max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 8px; box-shadow: 0 12px 28px rgb(15 40 70 / 18%); }
+.sales-review-class-pop { position: absolute; z-index: 30; top: calc(100% + 4px); inset-inline-start: 0; width: min(420px, 70vw); max-height: 260px; overflow: hidden; display: flex; flex-direction: column; padding: 0; background: #fff; border: 1px solid #d5e1ee; border-radius: 8px; box-shadow: 0 12px 28px rgb(15 40 70 / 18%); }
+.sales-review-class-bar { position: sticky; top: 0; z-index: 2; display: flex; justify-content: flex-end; padding: 8px; background: #fff; border-bottom: 1px solid #e6eef6; }
+.sales-review-class-list { overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
 .sales-review-class-pop label { display: flex; align-items: center; gap: 4px; }
-.sales-review-class-done { align-self: flex-end; min-height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: #14365c; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.sales-review-class-done { min-height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: #14365c; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
 .sales-review-sum-panel {
   display: flex;
   flex-direction: column;

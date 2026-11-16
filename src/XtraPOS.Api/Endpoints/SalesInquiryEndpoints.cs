@@ -138,14 +138,7 @@ public static class SalesInquiryEndpoints
         string? selectedBranch,
         CancellationToken cancellationToken)
     {
-        var columns = await ColumnsAsync(connection, "SaleItems", cancellationToken);
-        var shape = new SaleShape(
-            columns.Contains("ReferenceBasePrice"),
-            columns.Contains("FinalSellingPrice"),
-            columns.Contains("UnitCostSnapshot"),
-            columns.Contains("LineCostSnapshot"),
-            columns.Contains("ProjectedCostAtPricing"),
-            columns.Contains("PriceOverrideMode"));
+        var shape = await LoadShapeAsync(connection, cancellationToken);
         var filter = BuildFilter(context, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride, centralScope, selectedBranch);
         var (total, salesTotal, earnTotal) = await SummariesAsync(connection, filter, seeEarns, shape, cancellationToken);
         var lines = sumsOnly == true
@@ -221,14 +214,7 @@ public static class SalesInquiryEndpoints
         List<InquiryLine> lines;
         try
         {
-            var columns = await ColumnsAsync(connection, "SaleItems", cancellationToken);
-            var shape = new SaleShape(
-                columns.Contains("ReferenceBasePrice"),
-                columns.Contains("FinalSellingPrice"),
-                columns.Contains("UnitCostSnapshot"),
-                columns.Contains("LineCostSnapshot"),
-                columns.Contains("ProjectedCostAtPricing"),
-                columns.Contains("PriceOverrideMode"));
+            var shape = await LoadShapeAsync(connection, cancellationToken);
             filter = BuildFilter(actor.Context!, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride, false, null);
             (total, _, _) = await SummariesAsync(connection, filter, false, shape, cancellationToken);
             lines = await LinesAsync(connection, filter, seeEarns, shape, 0, ExportCap, cancellationToken);
@@ -363,12 +349,12 @@ public static class SalesInquiryEndpoints
 
     private static async Task<(int Total, decimal Sales, decimal? Earn)> SummariesAsync(SqlConnection connection, Filter filter, bool seeEarns, SaleShape shape, CancellationToken cancellationToken)
     {
-        var cost = SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected);
+        var cost = CostOf(shape);
         var earn = "SUM(CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END)";
         var sumSql = seeEarns
             ? "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0), " + earn + " "
             : "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0) ";
-        await using var sums = new SqlCommand(sumSql + From + filter.Where, connection);
+        await using var sums = new SqlCommand(sumSql + Source(shape) + filter.Where, connection);
         foreach (var parameter in Clone(filter.Parameters)) sums.Parameters.Add(parameter);
         await using var reader = await sums.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return (0, 0m, null);
@@ -380,7 +366,7 @@ public static class SalesInquiryEndpoints
         var original = shape.ReferenceBase ? "COALESCE(line.ReferenceBasePrice, line.UnitPrice)" : "line.UnitPrice";
         var customer = shape.FinalPrice ? "COALESCE(line.FinalSellingPrice, line.UnitPrice)" : "line.UnitPrice";
         var unitCost = shape.UnitCost ? "line.UnitCostSnapshot" : "CAST(NULL AS decimal(19, 4))";
-        var cost = SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected);
+        var cost = CostOf(shape);
         var lineCost = cost;
         var earn = "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
         var modified = shape.PriceOverride
@@ -392,7 +378,7 @@ public static class SalesInquiryEndpoints
             + unitCost + " AS UnitCost, line.LineTotal, " + lineCost + " AS LineCost, " + earn + " AS LineEarn, "
             + "sale.CompletedAt, customer.Name, customer.CustomerNumber, COALESCE(cashier.DisplayName, N'') AS CashierName, COALESCE(station.StationNumber, 0) AS StationNumber, "
             + modified + " AS PriceModified, ROW_NUMBER() OVER (ORDER BY sale.CompletedAt DESC, sale.SaleNumber DESC, line.LineNumber) AS RowNum "
-            + From + filter.Where), connection);
+            + Source(shape) + filter.Where), connection);
         rows.Parameters.Add(new SqlParameter("@skip", SqlDbType.Int) { Value = skip });
         rows.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
         foreach (var parameter in Clone(filter.Parameters)) rows.Parameters.Add(parameter);
@@ -666,7 +652,50 @@ public static class SalesInquiryEndpoints
         return names;
     }
 
-    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool Projected, bool PriceOverride);
+    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool Projected, bool PriceOverride, bool StockQuantity, string? CatalogCost, string Joins);
+
+    private static string CostOf(SaleShape shape) =>
+        SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected, shape.StockQuantity, shape.CatalogCost);
+
+    private static string Source(SaleShape shape) =>
+        string.IsNullOrEmpty(shape.Joins) ? From : From.Replace("        WHERE", shape.Joins + "\n        WHERE", StringComparison.Ordinal);
+
+    private static async Task<SaleShape> LoadShapeAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        var columns = await ColumnsAsync(connection, "SaleItems", cancellationToken);
+        var inventory = await ColumnsAsync(connection, "ItemBranchInventory", cancellationToken);
+        var balances = await ColumnsAsync(connection, "BranchStockBalances", cancellationToken);
+        var stockOwner = columns.Contains("StockOwnerItemID");
+        var stockQuantity = columns.Contains("StockOwnerQuantity");
+        var quantity = stockQuantity ? "COALESCE(line.StockOwnerQuantity, line.Quantity)" : "line.Quantity";
+        var ownerItem = stockOwner ? "COALESCE(line.StockOwnerItemID, line.ItemID)" : "line.ItemID";
+        var joins = new StringBuilder();
+        var catalog = new List<string>();
+        if (balances.Contains("UnitCost"))
+        {
+            joins.Append("        LEFT JOIN dbo.BranchStockBalances AS ownerBalance ON ownerBalance.BranchID = sale.BranchID AND ownerBalance.ItemID = ").Append(ownerItem).Append('\n');
+            catalog.Add("(ownerBalance.UnitCost * " + quantity + ")");
+        }
+
+        if (inventory.Contains("UnitCost"))
+        {
+            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS ownerInventory ON ownerInventory.BranchID = sale.BranchID AND ownerInventory.ItemID = ").Append(ownerItem).Append('\n');
+            joins.Append("        LEFT JOIN dbo.ItemBranchInventory AS itemInventory ON itemInventory.BranchID = sale.BranchID AND itemInventory.ItemID = line.ItemID\n");
+            catalog.Add("(ownerInventory.UnitCost * " + quantity + ")");
+            catalog.Add("(itemInventory.UnitCost * line.Quantity)");
+        }
+
+        return new SaleShape(
+            columns.Contains("ReferenceBasePrice"),
+            columns.Contains("FinalSellingPrice"),
+            columns.Contains("UnitCostSnapshot"),
+            columns.Contains("LineCostSnapshot"),
+            columns.Contains("ProjectedCostAtPricing"),
+            columns.Contains("PriceOverrideMode"),
+            stockQuantity,
+            catalog.Count == 0 ? null : "COALESCE(" + string.Join(", ", catalog) + ")",
+            joins.ToString());
+    }
 
     private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid businessId, CancellationToken cancellationToken)
     {

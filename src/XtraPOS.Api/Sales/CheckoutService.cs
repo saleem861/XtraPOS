@@ -800,7 +800,11 @@ public sealed class CheckoutService(
     private static async Task<decimal?> ReadUnitCostAsync(SqlConnection connection, Guid branchId, Guid itemId, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
-            "SELECT UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND IsQuantityInitialized = 1;",
+            """
+            SELECT COALESCE(
+                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
+                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL));
+            """,
             connection);
         command.Parameters.AddWithValue("@branch", branchId);
         command.Parameters.AddWithValue("@item", itemId);

@@ -404,13 +404,17 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
               <details ref={classMenu} className="sales-review-class-menu">
                 <summary>{options.classes.length === 0 ? "لا توجد تصنيفات" : classifications.length === 0 || allClasses ? "الكل" : classifications.join("، ")}</summary>
                 <div className="sales-review-class-pop">
-                  <button type="button" className="sales-review-class-done" onClick={() => { if (classMenu.current) classMenu.current.open = false; }}>تم</button>
+                  <div className="sales-review-class-bar">
+                    <button type="button" className="sales-review-class-done" onClick={() => { if (classMenu.current) classMenu.current.open = false; }}>تم</button>
+                  </div>
+                  <div className="sales-review-class-list">
                   {options.classes.length > 0 ? (
                     <label><input type="checkbox" disabled={!useClass} checked={allClasses} onChange={() => setClassifications(allClasses ? [] : [...options.classes])} />الكل</label>
                   ) : <span>لا توجد تصنيفات</span>}
                   {distinctBy(options.classes, (name) => name).map((name) => (
                     <label key={name}><input type="checkbox" disabled={!useClass} checked={classifications.includes(name)} onChange={() => toggleClass(name)} />{name}</label>
                   ))}
+                  </div>
                 </div>
               </details>
             </FilterCheck>

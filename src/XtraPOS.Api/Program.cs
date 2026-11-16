@@ -205,6 +205,8 @@ builder.Services.AddSingleton<CentralPosRegistryService>();
 builder.Services.AddSingleton<CentralPosReplicaSync>();
 builder.Services.AddSingleton<BranchSqlSecretStore>();
 builder.Services.AddHostedService<PosReplicaHostedService>();
+builder.Services.AddScoped<LabtopBranchCleanup>();
+builder.Services.AddHostedService<LabtopBranchCleanupService>();
 builder.Services.AddScoped<SharedDataSync>();
 builder.Services.AddScoped<SyncEndpointStore>();
 builder.Services.AddScoped<StockPostingService>();

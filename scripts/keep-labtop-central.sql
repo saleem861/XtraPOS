@@ -1,3 +1,6 @@
+-- Manual form of the same cleanup the branch agent runs once after this build.
+-- It keeps the branch named Labtop. Sales stay. A branch that still has sales stays.
+-- Point numbers that do not belong to Labtop are released.
 -- One-time cleanup for XtraPOS_Central.
 -- Keeps the branch named Labtop and its stations.
 -- Frees point numbers by deleting registry rows that do not belong to Labtop.

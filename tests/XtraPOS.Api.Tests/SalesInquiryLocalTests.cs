@@ -38,9 +38,9 @@ public class SalesInquiryLocalTests
         Assert.Equal("مبيعات-Labtop.xlsx", SalesInquiryLocal.ExportFileName("Labtop", null));
         Assert.Equal("547 The INSERT statement conflicted.", SalesInquiryLocal.SqlFailure(547, "The INSERT statement conflicted."));
         Assert.Equal(["أرجيلة,زجاج", "ألبان"], SalesInquiryLocal.SplitClasses("أرجيلة,زجاج\u001eألبان"));
-        var cost = SalesInquiryLocal.CostSql(true, true, true);
+        var cost = SalesInquiryLocal.CostSql(true, true, true, true, "(itemInventory.UnitCost * line.Quantity)");
         Assert.Contains("LineCostSnapshot", cost, StringComparison.Ordinal);
-        Assert.Contains("UnitCostSnapshot", cost, StringComparison.Ordinal);
-        Assert.Contains("ProjectedCostAtPricing", cost, StringComparison.Ordinal);
+        Assert.Contains("StockOwnerQuantity", cost, StringComparison.Ordinal);
+        Assert.Contains("itemInventory.UnitCost", cost, StringComparison.Ordinal);
     }
 }

@@ -277,9 +277,9 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
     {
         await using var command = new SqlCommand(
             """
-            SELECT UnitCost
-            FROM dbo.BranchStockBalances
-            WHERE BranchID = @branch AND ItemID = @item;
+            SELECT COALESCE(
+                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
+                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL));
             """,
             connection);
         command.Parameters.AddWithValue("@branch", branchId);
