@@ -260,9 +260,9 @@ public sealed class CheckoutService(
                 Compare(changes, line.CartLineId, "UnitPrice", line.ExpectedUnitPrice, price.ResolvedPrice);
             }
             Compare(changes, line.CartLineId, "StockOwnerQuantity", line.ExpectedStockOwnerQuantity, ownerQuantity);
-            var ownerUnitCost = await ReadUnitCostAsync(connection, actor.BranchId, owner.StockOwnerItemId, cancellationToken);
+            var ownerCost = await ReadUnitCostAsync(connection, actor.BranchId, owner.StockOwnerItemId, cancellationToken);
             var charged = Charge(line, price.ResolvedPrice, price.PriceSource, line.Quantity);
-            var fixedMoney = SaleLineEconomics.FromOwnerUnit(charged.UnitPrice, line.Quantity, charged.LineTotal, ownerUnitCost, ownerQuantity);
+            var fixedMoney = SaleLineEconomics.FromOwnerUnit(charged.UnitPrice, line.Quantity, charged.LineTotal, ownerCost.UnitCost, ownerQuantity);
             return new PreparedLine(
                 Guid.NewGuid(),
                 line.CartLineId,
@@ -296,7 +296,7 @@ public sealed class CheckoutService(
                 null,
                 fixedMoney.UnitCost,
                 fixedMoney.QuantityCost,
-                ownerUnitCost is null ? VariableValuePricing.CostUnavailable : VariableValuePricing.CostFromOwner,
+                ownerCost.Source,
                 price.ResolvedPrice,
                 price.PriceSource,
                 charged.Mode,
@@ -830,19 +830,30 @@ public sealed class CheckoutService(
         return new CheckoutCompleted(saleId, number, total, payments, replay);
     }
 
-    private static async Task<decimal?> ReadUnitCostAsync(SqlConnection connection, Guid branchId, Guid itemId, CancellationToken cancellationToken)
+    private static async Task<(decimal? UnitCost, string Source)> ReadUnitCostAsync(SqlConnection connection, Guid branchId, Guid itemId, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             """
-            SELECT COALESCE(
-                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
-                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL));
+            SELECT
+                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
+                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL);
             """,
             connection);
         command.Parameters.AddWithValue("@branch", branchId);
         command.Parameters.AddWithValue("@item", itemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is decimal cost ? cost : null;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        if (!reader.IsDBNull(0))
+        {
+            return (reader.GetDecimal(0), VariableValuePricing.CostFromItemCard);
+        }
+
+        if (!reader.IsDBNull(1))
+        {
+            return (reader.GetDecimal(1), VariableValuePricing.CostFromOwner);
+        }
+
+        return (null, VariableValuePricing.CostUnavailable);
     }
 
     private static async Task<(string Number, string Name)> ReadItemAsync(SqlConnection connection, Guid itemId, CancellationToken cancellationToken)

@@ -11,6 +11,7 @@ public static class VariableValuePricing
     public const string RoundingPolicyName = "LegacyVariableValueV1";
     public const string CostUnavailable = "Unavailable";
     public const string CostFromOwner = "StockOwnerUnitCost";
+    public const string CostFromItemCard = "ItemCardUnitCost";
 
     public static decimal ApplyLegacyVariableValueRounding(decimal rawDiscountedValue)
     {
@@ -146,8 +147,8 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
             raw,
             finalPrice,
             VariableValuePricing.RoundingPolicyName,
-            unitCost is null ? null : quantity * unitCost.Value,
-            unitCost is null ? VariableValuePricing.CostUnavailable : VariableValuePricing.CostFromOwner,
+            unitCost.UnitCost is null ? null : quantity * unitCost.UnitCost.Value,
+            unitCost.Source,
             branchId);
     }
 
@@ -269,7 +270,7 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
         return (reader.GetGuid(0), reader.GetBoolean(1), reader.GetDecimal(2));
     }
 
-    private static async Task<decimal?> ReadOwnerUnitCostAsync(
+    private static async Task<(decimal? UnitCost, string Source)> ReadOwnerUnitCostAsync(
         SqlConnection connection,
         Guid branchId,
         Guid ownerItemId,
@@ -277,15 +278,26 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
     {
         await using var command = new SqlCommand(
             """
-            SELECT COALESCE(
-                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
-                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL));
+            SELECT
+                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
+                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL);
             """,
             connection);
         command.Parameters.AddWithValue("@branch", branchId);
         command.Parameters.AddWithValue("@item", ownerItemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null or DBNull ? null : Convert.ToDecimal(value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        if (!reader.IsDBNull(0))
+        {
+            return (reader.GetDecimal(0), VariableValuePricing.CostFromItemCard);
+        }
+
+        if (!reader.IsDBNull(1))
+        {
+            return (reader.GetDecimal(1), VariableValuePricing.CostFromOwner);
+        }
+
+        return (null, VariableValuePricing.CostUnavailable);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(

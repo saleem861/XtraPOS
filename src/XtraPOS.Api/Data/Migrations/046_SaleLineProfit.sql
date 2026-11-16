@@ -19,7 +19,7 @@ IF OBJECT_ID(N'dbo.Sales', N'U') IS NOT NULL
    AND OBJECT_ID(N'dbo.BranchStockBalances', N'U') IS NOT NULL
    AND OBJECT_ID(N'dbo.ItemBranchInventory', N'U') IS NOT NULL
     UPDATE line
-    SET UnitCostSnapshot = COALESCE(stock.UnitCost, ownerCard.UnitCost, itemCard.UnitCost)
+    SET UnitCostSnapshot = COALESCE(itemCard.UnitCost, ownerCard.UnitCost, stock.UnitCost)
     FROM dbo.SaleItems AS line
     INNER JOIN dbo.Sales AS sale ON sale.SaleID = line.SaleID
     LEFT JOIN dbo.BranchStockBalances AS stock
@@ -31,7 +31,7 @@ IF OBJECT_ID(N'dbo.Sales', N'U') IS NOT NULL
     WHERE line.UnitCostSnapshot IS NULL
       AND line.LineCostSnapshot IS NULL
       AND line.ProjectedCostAtPricing IS NULL
-      AND COALESCE(stock.UnitCost, ownerCard.UnitCost, itemCard.UnitCost) IS NOT NULL;
+      AND COALESCE(itemCard.UnitCost, ownerCard.UnitCost, stock.UnitCost) IS NOT NULL;
 
     IF COL_LENGTH(N'dbo.SaleItems', N'ProjectedCostAtPricing') IS NOT NULL
         UPDATE dbo.SaleItems

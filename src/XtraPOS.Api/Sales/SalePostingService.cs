@@ -495,21 +495,26 @@ public sealed class SalePostingService(
     {
         await using var command = new SqlCommand(
             """
-            SELECT COALESCE(
-                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
-                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL));
+            SELECT
+                (SELECT TOP (1) UnitCost FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL),
+                (SELECT TOP (1) UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND UnitCost IS NOT NULL);
             """,
             connection);
         command.Parameters.AddWithValue("@branch", branchId);
         command.Parameters.AddWithValue("@item", ownerItemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        if (value is not decimal unitCost)
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        decimal? unitCost = reader.IsDBNull(0) ? reader.IsDBNull(1) ? null : reader.GetDecimal(1) : reader.GetDecimal(0);
+        var source = reader.IsDBNull(0)
+            ? reader.IsDBNull(1) ? null : VariableValuePricing.CostFromOwner
+            : VariableValuePricing.CostFromItemCard;
+        if (unitCost is null)
         {
             return (null, null, null, null);
         }
 
-        var lineCost = decimal.Round(unitCost * ownerQuantity, 4, MidpointRounding.AwayFromZero);
-        return (unitCost, lineCost, lineCost, VariableValuePricing.CostFromOwner);
+        var lineCost = decimal.Round(unitCost.Value * ownerQuantity, 4, MidpointRounding.AwayFromZero);
+        return (unitCost, lineCost, lineCost, source);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(SqlConnection connection, string key, CancellationToken cancellationToken)
