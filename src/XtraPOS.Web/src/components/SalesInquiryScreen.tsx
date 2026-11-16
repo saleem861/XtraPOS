@@ -52,6 +52,7 @@ interface InquiryPayload {
   salesTotal: number;
   earnTotal?: number | null;
   seeEarns: boolean;
+  origin?: string;
   unavailable?: boolean;
   message?: string;
   lines: SalesLine[];
@@ -104,6 +105,8 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
   const [salesTotal, setSalesTotal] = useState(0);
   const [earnTotal, setEarnTotal] = useState<number | null>(null);
   const [seeEarns, setSeeEarns] = useState(false);
+  const [origin, setOrigin] = useState("local");
+  const classMenu = useRef<HTMLDetailsElement>(null);
   const [openedOrder, setOpenedOrder] = useState<DebtDocument | null>(null);
   const [message, setMessage] = useState("");
   const [page, setPage] = useState(0);
@@ -158,7 +161,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
       useBranch: String(source.useBranch),
       branchName: source.branchName,
       useClass: String(source.useClass && source.classifications.length > 0),
-      classifications: source.classifications.join(","),
+      classifications: source.classifications.join("\u001e"),
       modifiedOnly: String(source.modifiedOnly),
     });
     return params;
@@ -186,7 +189,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
       classes: distinctBy(payload.options?.classes, (name) => name),
       branches: distinctBy(payload.options?.branches, (branch) => branch.branchId || branch.branchName),
     });
-    const branches = payload.options.branches ?? [];
+    const branches = payload.options?.branches ?? [];
     if (branches.length === 1 && branchName !== branches[0].branchName) setBranchName(branches[0].branchName);
     if (payload.unavailable) {
       setMessage(payload.message || "بيانات الفرع المحدد غير متاحة من نقطة البيع الحالية.");
@@ -200,6 +203,8 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
     setSalesTotal(payload.salesTotal);
     setEarnTotal(payload.earnTotal ?? null);
     setSeeEarns(payload.seeEarns);
+    setOrigin(payload.origin || "local");
+    setMessage("");
     setTotal(payload.total);
     if (!sumsOnly) setLines(payload.lines ?? []);
   }
@@ -229,7 +234,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
   }
 
   async function openSale(saleId: string) {
-    const response = await fetch(`/api/pos/sales-inquiry/${saleId}`, { headers: deviceHeaders(session) });
+    const response = await fetch(`/api/pos/sales-inquiry/${saleId}?central=${origin === "central"}`, { headers: deviceHeaders(session) });
     if (!response.ok) {
       setMessage("تعذر فتح الطلبية.");
       return;
@@ -238,6 +243,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
   }
 
   function resetFilters() {
+    setMessage("");
     const now = today();
     const next = {
       useDate: true, dateFrom: now, dateTo: now, useTime: false, timeFrom: "00:00:00", timeTo: "23:59:59",
@@ -364,7 +370,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
             </div>
           </div>
           <div className="sales-review-filters">
-            <div className="sales-review-line">
+            <div className="sales-review-line is-single">
             <FilterCheck label="رقم الطلبية" checked={useSaleNumber} onChange={setUseSaleNumber}><input aria-label="رقم الطلبية" placeholder="رقم الطلبية" disabled={!useSaleNumber} value={saleNumber} onChange={(event) => setSaleNumber(event.target.value)} /></FilterCheck>
             <FilterCheck label="رقم الصنف" checked={useItem} onChange={setUseItem}><input aria-label="رقم الصنف" placeholder="رقم الصنف" disabled={!useItem} value={itemNumber} onChange={(event) => setItemNumber(event.target.value)} /></FilterCheck>
             <label className="sales-review-check"><input type="checkbox" checked={matchItem} onChange={(event) => { setMatchItem(event.target.checked); if (event.target.checked) setUseItem(true); }} />مطابقة تامة</label>
@@ -377,15 +383,15 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
             </FilterCheck>
             </div>
             <div className="sales-review-line is-four">
-            <FilterCheck label="الفرع" checked={useBranch} onChange={setUseBranch}>
+            <FilterCheck label="الفرع" checked={useBranch} onChange={(value) => { setUseBranch(value); if (!value) setUseStation(false); }}>
               <select aria-label="الفرع" disabled={!useBranch} value={branchName} onChange={(event) => setBranchName(event.target.value)}>
                 {distinctBy(options.branches?.length ? options.branches : [{ branchId: session.branchId, branchName: session.branchName }], (branch) => branch.branchName).map((branch) => (
                   <option key={branch.branchId} value={branch.branchName}>{branch.branchName}</option>
                 ))}
               </select>
             </FilterCheck>
-            <FilterCheck label="النقطة" checked={useStation} onChange={setUseStation}>
-              <select aria-label="النقطة" disabled={!useStation} value={stationNumber} onChange={(event) => setStationNumber(event.target.value)}>
+            <FilterCheck label="النقطة" checked={useStation} disabled={!useBranch} onChange={(value) => { if (useBranch) setUseStation(value); }}>
+              <select aria-label="النقطة" disabled={!useBranch || !useStation} value={stationNumber} onChange={(event) => setStationNumber(event.target.value)}>
                 <option value="">اختر النقطة</option>
                 {visibleStations.map((station) => <option key={`${station.branchId}-${station.stationNumber}`} value={`${station.branchId}:${station.stationNumber}`}>{station.stationNumber} — {station.stationName}</option>)}
               </select>
@@ -395,9 +401,10 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
             </div>
             <div className="sales-review-line is-two">
             <FilterCheck label="التصنيف" checked={useClass} onChange={setUseClass}>
-              <details className="sales-review-class-menu">
+              <details ref={classMenu} className="sales-review-class-menu">
                 <summary>{options.classes.length === 0 ? "لا توجد تصنيفات" : classifications.length === 0 || allClasses ? "الكل" : classifications.join("، ")}</summary>
                 <div className="sales-review-class-pop">
+                  <button type="button" className="sales-review-class-done" onClick={() => { if (classMenu.current) classMenu.current.open = false; }}>تم</button>
                   {options.classes.length > 0 ? (
                     <label><input type="checkbox" disabled={!useClass} checked={allClasses} onChange={() => setClassifications(allClasses ? [] : [...options.classes])} />الكل</label>
                   ) : <span>لا توجد تصنيفات</span>}
@@ -426,11 +433,12 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
               <thead>
                 <tr>
                   <th>عرض</th><th>رقم الطلبية</th><th>رقم الصنف</th><th>اسم الصنف</th><th>الكمية</th><th>السعر الأصلي</th><th>سعر الزبون</th><th>السعر المنفذ</th><th>الإجمالي</th>
+                  {seeEarns ? <><th>التكلفة</th><th>الربح</th></> : null}
                   <th>التاريخ</th><th>اسم الزبون</th><th>رقم الزبون</th><th>النقطة</th><th>ملاحظات</th><th>تم التعديل</th>
                 </tr>
               </thead>
               <tbody>
-                {message ? <tr><td colSpan={15}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={15}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
+                {message ? <tr><td colSpan={seeEarns ? 17 : 15}>{message}</td></tr> : lines.length === 0 ? <tr><td colSpan={seeEarns ? 17 : 15}>لا توجد مبيعات مطابقة.</td></tr> : lines.map((line, index) => (
                   <tr key={`${line.saleId}-${index}`}>
                     <td><button type="button" className="sales-review-view" onClick={() => void openSale(line.saleId)}>عرض</button></td>
                     <td>{line.saleNumber}</td>
@@ -441,6 +449,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
                     <td>{money(line.customerPrice)}</td>
                     <td>{money(line.executedPrice)}</td>
                     <td>{money(line.total)}</td>
+                    {seeEarns ? <><td>{money(line.cost)}</td><td className="is-earn">{money(line.earn)}</td></> : null}
                     <td>{line.completedAt ? new Date(line.completedAt).toLocaleDateString("en-GB", { timeZone: "Asia/Hebron" }) : "—"}</td>
                     <td>{line.customerName || "—"}</td>
                     <td>{line.customerNumber || "—"}</td>
@@ -500,11 +509,11 @@ function focusFilterField(container: HTMLElement | null) {
   }, 0);
 }
 
-function FilterCheck({ label, checked, onChange, children, className }: { label: string; checked: boolean; onChange: (value: boolean) => void; children: ReactNode; className?: string }) {
+function FilterCheck({ label, checked, disabled, onChange, children, className }: { label: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; children: ReactNode; className?: string }) {
   const box = useRef<HTMLDivElement>(null);
   return (
     <div ref={box} className={`${checked ? "sales-review-filter" : "sales-review-filter is-off"}${className ? ` ${className}` : ""}`}>
-      <label><input type="checkbox" checked={checked} onChange={(event) => { onChange(event.target.checked); if (event.target.checked) focusFilterField(box.current); }} />{label}</label>
+      <label><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => { onChange(event.target.checked); if (event.target.checked) focusFilterField(box.current); }} />{label}</label>
       {children}
     </div>
   );

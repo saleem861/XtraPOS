@@ -71,7 +71,8 @@ public static class SalesInquiryEndpoints
         var options = await SafeOptionsAsync(http, connection, actor.Context!.BusinessId, cancellationToken);
         var optionPayload = OptionsPayload(options);
         var deviceBranch = (await LocalBranchAsync(connection, actor.Context.BranchId, cancellationToken)).Name;
-        if (useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
+        var centralReview = useBranch == true && useStation == true && stationNumber is int;
+        if (!centralReview && useBranch == true && !SalesInquiryLocal.IsDeviceBranch(deviceBranch, branchName))
         {
             return Results.Ok(new InquiryResponse
             {
@@ -92,7 +93,21 @@ public static class SalesInquiryEndpoints
 
         try
         {
-            return await InquiryResultAsync(connection, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, cancellationToken);
+            if (centralReview)
+            {
+                var central = await OpenCentralAsync(http, cancellationToken);
+                if (central is null)
+                {
+                    return Results.Json(new { message = "تعذر قراءة مبيعات المركز." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+
+                await using (central)
+                {
+                    return await InquiryResultAsync(central, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, true, branchName, cancellationToken);
+                }
+            }
+
+            return await InquiryResultAsync(connection, actor.Context!, seeEarns, optionPayload, sumsOnly, skip, take, useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, false, null, cancellationToken);
         }
         catch (SqlException exception)
         {
@@ -119,6 +134,8 @@ public static class SalesInquiryEndpoints
         bool? useSaleNumber, string? saleNumber,
         bool? useClass, string? classifications,
         bool? modifiedOnly,
+        bool centralScope,
+        string? selectedBranch,
         CancellationToken cancellationToken)
     {
         var columns = await ColumnsAsync(connection, "SaleItems", cancellationToken);
@@ -127,9 +144,10 @@ public static class SalesInquiryEndpoints
             columns.Contains("FinalSellingPrice"),
             columns.Contains("UnitCostSnapshot"),
             columns.Contains("LineCostSnapshot"),
+            columns.Contains("ProjectedCostAtPricing"),
             columns.Contains("PriceOverrideMode"));
-        var filter = BuildFilter(context, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride);
-        var (total, salesTotal, earnTotal) = await SummariesAsync(connection, filter, seeEarns, shape.LineCost, cancellationToken);
+        var filter = BuildFilter(context, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride, centralScope, selectedBranch);
+        var (total, salesTotal, earnTotal) = await SummariesAsync(connection, filter, seeEarns, shape, cancellationToken);
         var lines = sumsOnly == true
             ? []
             : await LinesAsync(connection, filter, seeEarns, shape, Math.Max(0, skip ?? 0), Math.Clamp(take ?? PageSize, 1, PageSize), cancellationToken);
@@ -139,6 +157,7 @@ public static class SalesInquiryEndpoints
             salesTotal = salesTotal,
             earnTotal = seeEarns ? earnTotal : null,
             seeEarns = seeEarns,
+            origin = centralScope ? "central" : "local",
             lines = lines,
             options = optionPayload,
         });
@@ -208,9 +227,10 @@ public static class SalesInquiryEndpoints
                 columns.Contains("FinalSellingPrice"),
                 columns.Contains("UnitCostSnapshot"),
                 columns.Contains("LineCostSnapshot"),
+                columns.Contains("ProjectedCostAtPricing"),
                 columns.Contains("PriceOverrideMode"));
-            filter = BuildFilter(actor.Context!, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride);
-            (total, _, _) = await SummariesAsync(connection, filter, false, shape.LineCost, cancellationToken);
+            filter = BuildFilter(actor.Context!, BusinessZone(), useDate, dateFrom, dateTo, useTime, timeFrom, timeTo, useStation, stationNumber, useItem, matchItem, itemNumber, useName, itemName, useUser, userId, useCustomer, customerNumber, useCustomerName, customerName, useSaleNumber, saleNumber, useClass, classifications, modifiedOnly, shape.PriceOverride, false, null);
+            (total, _, _) = await SummariesAsync(connection, filter, false, shape, cancellationToken);
             lines = await LinesAsync(connection, filter, seeEarns, shape, 0, ExportCap, cancellationToken);
         }
         catch (SqlException exception)
@@ -274,14 +294,25 @@ public static class SalesInquiryEndpoints
         return Results.File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
 
-    private static async Task<IResult> DocumentAsync(Guid saleId, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, CancellationToken cancellationToken)
+    private static async Task<IResult> DocumentAsync(Guid saleId, bool? central, HttpContext http, AuthService auth, PermissionService permissions, SqlConnectionFactory connections, CancellationToken cancellationToken)
     {
         var actor = await ActorAsync(http, auth, permissions, cancellationToken);
         if (actor.Error is not null) return actor.Error;
-        var connectionString = connections.TryCreateBranchConnectionString();
-        if (connectionString is null) return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-        await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        SqlConnection? opened = null;
+        if (central == true)
+        {
+            opened = await OpenCentralAsync(http, cancellationToken);
+            if (opened is null) return Results.Json(new { message = "تعذر قراءة الطلبية من المركز." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        else
+        {
+            var connectionString = connections.TryCreateBranchConnectionString();
+            if (connectionString is null) return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            opened = new SqlConnection(connectionString);
+            await opened.OpenAsync(cancellationToken);
+        }
+
+        await using var connection = opened;
         await using var header = new SqlCommand(
             """
             SELECT sale.SaleNumber, customer.CustomerNumber, customer.Name, branch.BranchName, station.StationNumber,
@@ -291,11 +322,13 @@ public static class SalesInquiryEndpoints
             INNER JOIN dbo.POSStations AS station ON station.StationID = sale.POSStationID
             INNER JOIN dbo.Users AS cashier ON cashier.UserID = sale.CashierUserID
             LEFT JOIN dbo.Customers AS customer ON customer.CustomerID = sale.CustomerID
-            WHERE sale.SaleID = @sale AND sale.BranchID = @branch AND sale.BusinessID = @business AND sale.Status = N'Completed';
+            WHERE sale.SaleID = @sale AND sale.BusinessID = @business AND sale.Status = N'Completed'
+              AND (@central = 1 OR sale.BranchID = @branch);
             """, connection);
         header.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         header.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.Context!.BranchId;
         header.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = actor.Context.BusinessId;
+        header.Parameters.Add("@central", SqlDbType.Bit).Value = central == true;
         await using var reader = await header.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return Results.NotFound(new { message = "الطلبية غير موجودة." });
         var body = new
@@ -328,11 +361,10 @@ public static class SalesInquiryEndpoints
         return Results.Ok(new { body.saleNumber, body.customerNumber, body.customerName, body.branchName, body.posNumber, body.cashier, body.when, body.subtotal, body.discount, body.total, lines });
     }
 
-    private static async Task<(int Total, decimal Sales, decimal? Earn)> SummariesAsync(SqlConnection connection, Filter filter, bool seeEarns, bool lineCost, CancellationToken cancellationToken)
+    private static async Task<(int Total, decimal Sales, decimal? Earn)> SummariesAsync(SqlConnection connection, Filter filter, bool seeEarns, SaleShape shape, CancellationToken cancellationToken)
     {
-        var earn = lineCost
-            ? "COALESCE(SUM(CASE WHEN line.LineCostSnapshot IS NULL THEN 0 ELSE line.LineTotal - line.LineCostSnapshot END), 0)"
-            : "CAST(0 AS decimal(19, 4))";
+        var cost = SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected);
+        var earn = "SUM(CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END)";
         var sumSql = seeEarns
             ? "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0), " + earn + " "
             : "SELECT COUNT(*), COALESCE(SUM(line.LineTotal), 0) ";
@@ -340,7 +372,7 @@ public static class SalesInquiryEndpoints
         foreach (var parameter in Clone(filter.Parameters)) sums.Parameters.Add(parameter);
         await using var reader = await sums.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return (0, 0m, null);
-        return (reader.GetInt32(0), reader.GetDecimal(1), seeEarns ? reader.GetDecimal(2) : null);
+        return (reader.GetInt32(0), reader.GetDecimal(1), seeEarns && !reader.IsDBNull(2) ? reader.GetDecimal(2) : null);
     }
 
     private static async Task<List<InquiryLine>> LinesAsync(SqlConnection connection, Filter filter, bool seeEarns, SaleShape shape, int skip, int take, CancellationToken cancellationToken)
@@ -348,10 +380,9 @@ public static class SalesInquiryEndpoints
         var original = shape.ReferenceBase ? "COALESCE(line.ReferenceBasePrice, line.UnitPrice)" : "line.UnitPrice";
         var customer = shape.FinalPrice ? "COALESCE(line.FinalSellingPrice, line.UnitPrice)" : "line.UnitPrice";
         var unitCost = shape.UnitCost ? "line.UnitCostSnapshot" : "CAST(NULL AS decimal(19, 4))";
-        var lineCost = shape.LineCost ? "line.LineCostSnapshot" : "CAST(NULL AS decimal(19, 4))";
-        var earn = shape.LineCost
-            ? "CASE WHEN line.LineCostSnapshot IS NULL THEN NULL ELSE line.LineTotal - line.LineCostSnapshot END"
-            : "CAST(NULL AS decimal(19, 4))";
+        var cost = SalesInquiryLocal.CostSql(shape.LineCost, shape.UnitCost, shape.Projected);
+        var lineCost = cost;
+        var earn = "CASE WHEN " + cost + " IS NULL THEN NULL ELSE line.LineTotal - " + cost + " END";
         var modified = shape.PriceOverride
             ? "CASE WHEN line.PriceOverrideMode <> N'None' THEN 1 ELSE 0 END"
             : "CAST(0 AS int)";
@@ -401,6 +432,7 @@ public static class SalesInquiryEndpoints
         INNER JOIN dbo.Sales AS sale ON sale.SaleID = line.SaleID
         LEFT JOIN dbo.Users AS cashier ON cashier.UserID = sale.CashierUserID
         LEFT JOIN dbo.POSStations AS station ON station.StationID = sale.POSStationID
+        LEFT JOIN dbo.Branches AS branch ON branch.BranchID = sale.BranchID
         LEFT JOIN dbo.Customers AS customer ON customer.CustomerID = sale.CustomerID
         WHERE 
         """;
@@ -419,14 +451,25 @@ public static class SalesInquiryEndpoints
         bool? useSaleNumber, string? saleNumber,
         bool? useClass, string? classifications,
         bool? modifiedOnly,
-        bool priceOverride)
+        bool priceOverride,
+        bool centralScope,
+        string? selectedBranch)
     {
-        var clauses = new List<string> { "sale.BranchID = @branch", "sale.Status = N'Completed'", "sale.BusinessID = @business" };
+        var clauses = new List<string> { "sale.Status = N'Completed'", "sale.BusinessID = @business" };
         var parameters = new List<SqlParameter>
         {
-            new("@branch", SqlDbType.UniqueIdentifier) { Value = context.BranchId },
             new("@business", SqlDbType.UniqueIdentifier) { Value = context.BusinessId },
         };
+        if (centralScope)
+        {
+            clauses.Add("branch.BranchName = @selectedBranch");
+            parameters.Add(new("@selectedBranch", SqlDbType.NVarChar, 200) { Value = selectedBranch?.Trim() ?? "" });
+        }
+        else
+        {
+            clauses.Add("sale.BranchID = @branch");
+            parameters.Add(new("@branch", SqlDbType.UniqueIdentifier) { Value = context.BranchId });
+        }
         if (useDate == true && TryDate(dateFrom, out var from) && TryDate(dateTo, out var to) && from <= to)
         {
             var (start, end) = SalesInquiryLocal.LocalDayBounds(from, to, zone);
@@ -519,7 +562,7 @@ public static class SalesInquiryEndpoints
 
         if (useClass == true && !string.IsNullOrWhiteSpace(classifications))
         {
-            var names = classifications.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var names = SalesInquiryLocal.SplitClasses(classifications);
             var namesSql = new List<string>();
             for (var index = 0; index < names.Length; index++)
             {
@@ -562,6 +605,22 @@ public static class SalesInquiryEndpoints
             central.Users.Length > 0 ? central.Users : localOptions.Users,
             central.Classes.Length > 0 ? central.Classes : localOptions.Classes,
             central.Branches.Length > 0 ? central.Branches : localOptions.Branches);
+    }
+
+    private static async Task<SqlConnection?> OpenCentralAsync(HttpContext http, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var settings = await http.RequestServices.GetRequiredService<SyncEndpointStore>().ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
+            if (settings is null) return null;
+            var connection = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+            await connection.OpenAsync(cancellationToken);
+            return connection;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static async Task<InquiryOptions?> TryCentralOptionsAsync(HttpContext http, Guid businessId, CancellationToken cancellationToken)
@@ -607,7 +666,7 @@ public static class SalesInquiryEndpoints
         return names;
     }
 
-    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool PriceOverride);
+    private sealed record SaleShape(bool ReferenceBase, bool FinalPrice, bool UnitCost, bool LineCost, bool Projected, bool PriceOverride);
 
     private static async Task<InquiryOptions> OptionsAsync(SqlConnection connection, Guid businessId, CancellationToken cancellationToken)
     {
@@ -704,7 +763,7 @@ public static class SalesInquiryEndpoints
     }
 
     private static bool CanSeeEarns(CurrentUserResponse user) =>
-        user.Roles.Any(role => role.RoleCode is "Admin" or "Manager" or "Supervisor" || role.RoleName is "مشرف")
+        user.Roles.Any(role => role.RoleCode is "Admin" or "Manager" or "Supervisor" || role.RoleName is "مشرف" or "مدير" or "مدير النظام")
         || user.Permissions.Contains(PermissionCodes.SystemAdminister);
 
     private static SqlParameter[] Clone(IEnumerable<SqlParameter> parameters) =>
@@ -836,6 +895,7 @@ public static class SalesInquiryEndpoints
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public decimal? earnTotal { get; init; }
         public bool seeEarns { get; init; }
+        public string origin { get; init; } = "local";
         public bool unavailable { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? message { get; init; }

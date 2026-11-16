@@ -15,6 +15,22 @@ namespace XtraPOS.Api.Endpoints;
 
 public static class ApiEndpoints
 {
+    private static void ScheduleBranchServiceRemoval()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = "/c timeout /t 3 >nul & sc stop XtraPOSBranchAgent & sc delete XtraPOSBranchAgent",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        });
+    }
+
     private static readonly SemaphoreSlim CentralProbeGate = new(1, 1);
     private static DateTime CentralProbeAt = DateTime.MinValue;
     private static string CentralProbeState = "Disconnected";
@@ -228,23 +244,31 @@ public static class ApiEndpoints
                 return Results.Json(new { message = refusal }, statusCode: StatusCodes.Status409Conflict);
             }
 
-            if (body?.DeregisterCentral == true && body.PosNumber is int posNumber)
+            var stationNumber = await devices.CurrentStationNumberAsync(http.Request, cancellationToken);
+            if (body?.PosNumber is int requestedPos && requestedPos > 0)
+            {
+                stationNumber = requestedPos;
+            }
+
+            if (stationNumber > 0)
             {
                 var registry = http.RequestServices.GetRequiredService<CentralPosRegistryService>();
-                var revokedCentral = await registry.RevokeAsync(posNumber, cancellationToken);
-                if (!revokedCentral)
-                {
-                    var id = SetupLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath, http.RequestServices.GetRequiredService<IHostEnvironment>().EnvironmentName, "device-reset-central", "pending");
-                    return Results.Json(new { message = "تعذر إلغاء التسجيل في المركزية. بقيت إعدادات الجهاز حتى تكتمل التسوية.", diagnosticId = id }, statusCode: StatusCodes.Status503ServiceUnavailable);
-                }
+                await registry.DeleteAsync(stationNumber, cancellationToken);
             }
 
             if (!deleteDatabase)
             {
                 var revoked = await devices.RevokeCurrentAsync(http.Request, cancellationToken);
-                return revoked
-                    ? Results.Ok(new { status = "Reset", databaseDeleted = false })
-                    : Results.Unauthorized();
+                if (!revoked)
+                {
+                    return Results.Unauthorized();
+                }
+
+                http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
+                InstallationState.Clear(environment.ContentRootPath);
+                SetupAuthorization.Invalidate(environment.ContentRootPath);
+                ScheduleBranchServiceRemoval();
+                return Results.Ok(new { status = "Reset", databaseDeleted = false });
             }
 
             var db = http.RequestServices.GetRequiredService<BranchDbContext>();
@@ -272,6 +296,7 @@ public static class ApiEndpoints
             http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
             InstallationState.Clear(environment.ContentRootPath);
             SetupAuthorization.Invalidate(environment.ContentRootPath);
+            ScheduleBranchServiceRemoval();
             return Results.Ok(new { status = "Reset", databaseDeleted = true });
         });
         app.MapGet("/api/sync/status", async (SyncStatusStore sync, SyncEndpointStore endpoints, SqlConnectionFactory connections, CancellationToken cancellationToken) =>

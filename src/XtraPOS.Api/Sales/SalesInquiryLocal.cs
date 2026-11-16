@@ -21,6 +21,24 @@ public static class SalesInquiryLocal
         return string.Equals(deviceBranch.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
+    public const char ClassSeparator = '\u001e';
+
+    public static string[] SplitClasses(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return [];
+        var separator = raw.Contains(ClassSeparator) ? ClassSeparator : ',';
+        return raw.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    public static string CostSql(bool lineCost, bool unitCost, bool projected)
+    {
+        var parts = new List<string>();
+        if (lineCost) parts.Add("line.LineCostSnapshot");
+        if (unitCost) parts.Add("(line.UnitCostSnapshot * line.Quantity)");
+        if (projected) parts.Add("(line.ProjectedCostAtPricing * line.Quantity)");
+        return parts.Count == 0 ? "CAST(NULL AS decimal(19, 4))" : "COALESCE(" + string.Join(", ", parts) + ")";
+    }
+
     public static string Page(string query) =>
         "SELECT page.* FROM (" + query + ") AS page WHERE page.RowNum > @skip AND page.RowNum <= @skip + @take ORDER BY page.RowNum";
 

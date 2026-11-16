@@ -37,5 +37,10 @@ public class SalesInquiryLocalTests
         Assert.Equal("مبيعات-Labtop-12.xlsx", SalesInquiryLocal.ExportFileName("Labtop", "12"));
         Assert.Equal("مبيعات-Labtop.xlsx", SalesInquiryLocal.ExportFileName("Labtop", null));
         Assert.Equal("547 The INSERT statement conflicted.", SalesInquiryLocal.SqlFailure(547, "The INSERT statement conflicted."));
+        Assert.Equal(["أرجيلة,زجاج", "ألبان"], SalesInquiryLocal.SplitClasses("أرجيلة,زجاج\u001eألبان"));
+        var cost = SalesInquiryLocal.CostSql(true, true, true);
+        Assert.Contains("LineCostSnapshot", cost, StringComparison.Ordinal);
+        Assert.Contains("UnitCostSnapshot", cost, StringComparison.Ordinal);
+        Assert.Contains("ProjectedCostAtPricing", cost, StringComparison.Ordinal);
     }
 }

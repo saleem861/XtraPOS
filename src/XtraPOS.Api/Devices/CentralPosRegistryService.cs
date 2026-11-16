@@ -153,6 +153,28 @@ public sealed class CentralPosRegistryService(CentralConnectionFileStore central
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<bool> DeleteAsync(int posNumber, CancellationToken cancellationToken)
+    {
+        var settings = await centrals.ReadAsync(cancellationToken);
+        if (settings is null || posNumber <= 0)
+        {
+            return false;
+        }
+
+        await using var connection = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            DELETE FROM dbo.CentralPosRegistry WHERE PosNumber = @number;
+            IF OBJECT_ID(N'dbo.CentralPosReplica', N'U') IS NOT NULL
+                DELETE FROM dbo.CentralPosReplica WHERE PosNumber = @number;
+            """,
+            connection);
+        command.Parameters.Add("@number", SqlDbType.Int).Value = posNumber;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return true;
+    }
+
     public async Task<bool> RevokeAsync(int posNumber, CancellationToken cancellationToken)
     {
         var settings = await centrals.ReadAsync(cancellationToken);
