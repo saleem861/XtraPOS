@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location D:\Google\XtraPOS
+$serial = Get-Date -Format "yyyyMMdd-HHmmss"
+$env:VITE_RELEASE_SERIAL = $serial
 $publish = Join-Path $PWD "artifacts\branch-agent-release"
 $zip = Join-Path $PWD "artifacts\XtraPOS-BranchAgent.zip"
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
@@ -25,6 +27,6 @@ Get-ChildItem $publish -Filter "appsettings*.json" -File | Remove-Item -Force
 Get-ChildItem $publish -Include *.pdb,*.xml -Recurse -File | Remove-Item -Force
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $publish "*") -DestinationPath $zip
-$tag = "branch-agent-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+$tag = "branch-agent-" + $serial
 gh release create $tag $zip --repo saleem861/XtraPOS --title "XtraPOS Branch Agent $tag" --notes "Published branch agent package for the login update button."
 Write-Host "Published $tag"

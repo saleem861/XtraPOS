@@ -509,6 +509,7 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
             </svg>
           </span>
           <span className="brand-en">XtraPOS</span>
+          <span className="release-serial">{import.meta.env.VITE_RELEASE_SERIAL || "dev"}</span>
         </div>
         {sessionUser ? (
           <>

@@ -35,6 +35,7 @@ $release = Join-Path $root "artifacts\staging\$version"
 $apiOut = Join-Path $release "api"
 $webOut = Join-Path $release "web"
 
+$env:VITE_RELEASE_SERIAL = $version
 Push-Location (Join-Path $root "src\XtraPOS.Web")
 try {
     npm ci
