@@ -153,6 +153,74 @@ public sealed class CentralPosRegistryService(CentralConnectionFileStore central
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task ReleasePointAsync(int posNumber, Guid branchId, CancellationToken cancellationToken)
+    {
+        var settings = await centrals.ReadAsync(cancellationToken);
+        if (settings is null || posNumber <= 0 || branchId == Guid.Empty)
+        {
+            return;
+        }
+
+        await using var connection = new SqlConnection(settings.BuildConnectionString(settings.DatabaseName));
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            SET XACT_ABORT ON;
+            DECLARE @device uniqueidentifier =
+            (
+                SELECT TOP (1) DeviceID
+                FROM dbo.CentralPosRegistry
+                WHERE PosNumber = @number AND BranchID = @target
+            );
+
+            BEGIN TRANSACTION;
+            IF OBJECT_ID(N'dbo.CentralPosReplica', N'U') IS NOT NULL
+                DELETE replica FROM dbo.CentralPosReplica AS replica WHERE replica.PosNumber = @number;
+            DELETE registry FROM dbo.CentralPosRegistry AS registry
+            WHERE registry.PosNumber = @number AND registry.BranchID = @target;
+            COMMIT TRANSACTION;
+
+            IF OBJECT_ID(N'dbo.POSStations', N'U') IS NOT NULL
+                DELETE station FROM dbo.POSStations AS station
+                WHERE station.BranchID = @target AND station.StationNumber = @number
+                  AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.POSStationID = station.StationID)
+                  AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.POSStationID = station.StationID);
+
+            IF @device IS NOT NULL AND OBJECT_ID(N'dbo.Devices', N'U') IS NOT NULL
+                DELETE device FROM dbo.Devices AS device
+                WHERE device.DeviceID = @device
+                  AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.DeviceID = device.DeviceID)
+                  AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.DeviceID = device.DeviceID);
+
+            IF EXISTS (SELECT 1 FROM dbo.CentralPosRegistry WHERE BranchID = @target)
+                RETURN;
+
+            BEGIN TRANSACTION;
+            IF OBJECT_ID(N'dbo.POSCashSessions', N'U') IS NOT NULL
+                DELETE session FROM dbo.POSCashSessions AS session
+                WHERE session.BranchID = @target
+                  AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.CashSessionID = session.CashSessionID)
+                  AND NOT EXISTS (SELECT 1 FROM dbo.SalePayments AS payment WHERE payment.CashSessionID = session.CashSessionID);
+
+            DELETE station FROM dbo.POSStations AS station
+            WHERE station.BranchID = @target
+              AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.POSStationID = station.StationID)
+              AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.POSStationID = station.StationID);
+
+            DELETE branch FROM dbo.Branches AS branch
+            WHERE branch.BranchID = @target
+              AND NOT EXISTS (SELECT 1 FROM dbo.Sales AS sale WHERE sale.BranchID = branch.BranchID)
+              AND NOT EXISTS (SELECT 1 FROM dbo.POSStations AS station WHERE station.BranchID = branch.BranchID)
+              AND NOT EXISTS (SELECT 1 FROM dbo.POSCashSessions AS session WHERE session.BranchID = branch.BranchID)
+              AND NOT EXISTS (SELECT 1 FROM dbo.CentralPosRegistry AS registry WHERE registry.BranchID = branch.BranchID);
+            COMMIT TRANSACTION;
+            """,
+            connection);
+        command.Parameters.Add("@number", SqlDbType.Int).Value = posNumber;
+        command.Parameters.Add("@target", SqlDbType.UniqueIdentifier).Value = branchId;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task ReleaseBranchAsync(Guid branchId, CancellationToken cancellationToken)
     {
         var settings = await centrals.ReadAsync(cancellationToken);

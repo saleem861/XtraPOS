@@ -299,15 +299,15 @@ public static class ApiEndpoints
             }
 
             var branchId = await ReadConfiguredBranchIdAsync(connections, cancellationToken);
-            if (branchId is Guid id)
+            if (stationNumber > 0 && branchId is Guid id)
             {
                 try
                 {
-                    await registry.ReleaseBranchAsync(id, cancellationToken);
+                    await registry.ReleasePointAsync(stationNumber, id, cancellationToken);
                 }
                 catch (Exception exception)
                 {
-                    app.Logger.LogError(exception, "Central branch release failed during device reset.");
+                    app.Logger.LogError(exception, "Central point release failed during device reset.");
                 }
             }
 

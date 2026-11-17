@@ -135,6 +135,11 @@ public sealed class SharedDataSync(
             throw new InvalidOperationException("Central bootstrap changed branch operational stock.");
         }
 
+        if (beforeInventory == 0 && beforeBalances == 0 && beforeMovements == 0)
+        {
+            await SeedNewPointItemsAsync(connection, central, cancellationToken);
+        }
+
         return items;
     }
 
@@ -776,6 +781,55 @@ public sealed class SharedDataSync(
         command.Parameters.AddWithValue("@endpoint", endpointId);
         command.Parameters.AddWithValue("@stream", StreamName);
         command.Parameters.AddWithValue("@version", version);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task SeedNewPointItemsAsync(SqlConnection branch, SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        var centralName = CentralDatabase.Require(central.DatabaseName).Replace("]", "]]", StringComparison.Ordinal);
+        var sameInstance = SharesInstance(central);
+        string? costSql = null;
+        if (sameInstance && await CentralTableExistsAsync(central, "ItemBranchInventory", cancellationToken))
+        {
+            costSql = $"(SELECT MAX(cost.UnitCost) FROM [{centralName}].dbo.ItemBranchInventory AS cost WHERE cost.ItemID = item.ItemID AND cost.UnitCost IS NOT NULL)";
+        }
+
+        var unitCost = costSql ?? "CAST(NULL AS decimal(19, 4))";
+        await using var command = new SqlCommand(
+            $"""
+            DECLARE @branch uniqueidentifier =
+            (
+                SELECT TOP (1) TRY_CONVERT(uniqueidentifier, SettingValue)
+                FROM dbo.SystemSettings
+                WHERE SettingKey = N'BranchID'
+            );
+            IF @branch IS NULL
+                RETURN;
+
+            INSERT INTO dbo.ItemBranchInventory
+                (BranchID, ItemID, UnitCost, DailySalesRate, IsAvailable, IsActive, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, {unitCost}, NULL, 1, 1, SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.ItemBranchInventory AS card
+                WHERE card.BranchID = @branch AND card.ItemID = item.ItemID
+            );
+
+            INSERT INTO dbo.BranchStockBalances
+                (BranchID, ItemID, OnHandQuantity, IsQuantityInitialized, UnitCost, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, 0, 1, {unitCost}, SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.BranchStockBalances AS balance
+                WHERE balance.BranchID = @branch AND balance.ItemID = item.ItemID
+            );
+            """,
+            branch)
+        {
+            CommandTimeout = 300,
+        };
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
