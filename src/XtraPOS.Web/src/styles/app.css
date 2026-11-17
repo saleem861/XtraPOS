@@ -153,6 +153,13 @@ html.pos-pro-shell .app .new-customer {
   line-height: 1;
 }
 
+.release-serial {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  opacity: 0.9;
+}
+
 .topbar-pill,
 .topbar .topbar-logout,
 .topbar .xp-screen-back {
