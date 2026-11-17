@@ -63,6 +63,7 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
         try
         {
             await sync.SyncPriceTypesAsync(settings, stoppingToken);
+            await sync.FillMissingUnitCostsAsync(settings, stoppingToken);
         }
         catch (Exception exception)
         {

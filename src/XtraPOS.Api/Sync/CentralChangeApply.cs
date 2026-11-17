@@ -30,7 +30,7 @@ public static class CentralChangeApply
     };
 
     public static bool CanApply(string entityType) =>
-        entityType is "Items" or "ItemUnits" or "ItemPrices" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices" or "CustomerCreditPolicies" or "CustomerMembershipIdentities";
+        entityType is "Items" or "ItemUnits" or "ItemPrices" or "ItemCosts" or "Customers" or "CustomerClassifications" or "CustomerItemSpecialPrices" or "CustomerCreditPolicies" or "CustomerMembershipIdentities";
 
     public static async Task ApplyAsync(
         SqlConnection connection,
@@ -56,6 +56,10 @@ public static class CentralChangeApply
         else if (entityType == "ItemPrices")
         {
             await ApplyDefaultPriceAsync(connection, entityId, document.RootElement, cancellationToken);
+        }
+        else if (entityType == "ItemCosts")
+        {
+            await ApplyItemCostAsync(connection, entityId, document.RootElement, cancellationToken);
         }
         else if (entityType is "Customers" or "CustomerClassifications")
         {
@@ -112,6 +116,29 @@ public static class CentralChangeApply
     }
 
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
+
+    private static async Task ApplyItemCostAsync(SqlConnection connection, Guid itemId, JsonElement payload, CancellationToken cancellationToken)
+    {
+        if (!payload.TryGetProperty("unitCost", out var node) || !node.TryGetDecimal(out var unitCost))
+        {
+            return;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.ItemBranchInventory
+            SET UnitCost = @cost, UpdatedAt = SYSUTCDATETIME()
+            WHERE ItemID = @item;
+            IF OBJECT_ID(N'dbo.BranchStockBalances', N'U') IS NOT NULL
+                UPDATE dbo.BranchStockBalances
+                SET UnitCost = @cost, UpdatedAt = SYSUTCDATETIME()
+                WHERE ItemID = @item;
+            """,
+            connection);
+        command.Parameters.AddWithValue("@item", itemId);
+        command.Parameters.AddWithValue("@cost", unitCost);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 
     private static async Task ApplyCreditPolicyAsync(
         SqlConnection connection,

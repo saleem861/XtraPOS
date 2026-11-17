@@ -16,4 +16,15 @@ if ($LASTEXITCODE -ge 8) {
 }
 & sc.exe start XtraPOSBranchAgent
 Start-Sleep -Seconds 5
+$exe = Join-Path $dest "XtraPOS.Api.exe"
+Push-Location $dest
+try {
+    & $exe --apply-branch-migrations --confirm-database XtraPOS_Branch
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Branch migrations were not applied. The service is running."
+    }
+}
+finally {
+    Pop-Location
+}
 & sc.exe query XtraPOSBranchAgent

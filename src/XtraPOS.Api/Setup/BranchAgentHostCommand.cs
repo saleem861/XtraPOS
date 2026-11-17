@@ -11,7 +11,7 @@ using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Setup;
 
-public sealed record LocalAppHostState(string? BaseUrl);
+public sealed record LocalAppHostState(string? BaseUrl, string? PhoneOrigin = null);
 
 public static class BranchAgentHostCommand
 {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createUserClient, type ManagedUser, type UserAdminCatalog, type UserDraft, type UserQuery } from "../api/users";
+import { distinctBy } from "../distinct";
 import type { DeviceSession } from "../types/setup";
 import { ScreenHeader } from "./ScreenHeader";
 
@@ -309,13 +310,13 @@ export function UserManagementScreen({ session, onBack }: UserManagementScreenPr
         </select>
         <select aria-label="الدور" value={query.role} onChange={(event) => setQuery({ ...query, role: event.target.value })}>
           <option value="">كل الأدوار</option>
-          {catalog?.roles.map((role) => (
+          {distinctBy(catalog?.roles, (role) => role.roleCode).map((role) => (
             <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>
           ))}
         </select>
         <select aria-label="الفرع" value={query.branchId} onChange={(event) => setQuery({ ...query, branchId: event.target.value })}>
           <option value="">كل الفروع</option>
-          {catalog?.branches.map((branch) => (
+          {distinctBy(catalog?.branches, (branch) => branch.branchId).map((branch) => (
             <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>
           ))}
         </select>
@@ -499,18 +500,10 @@ function UserPanel({
               <>
                 <label>الدور
                   <select value={draft.roleCode} onChange={(event) => onDraft({ ...draft, roleCode: event.target.value })}>
-                    {catalog?.roles.map((role) => <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>)}
+                    {distinctBy(catalog?.roles, (role) => role.roleCode).map((role) => <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>)}
                   </select>
                 </label>
-                <fieldset>
-                  <legend>الفروع المسموح بها</legend>
-                  {catalog?.branches.map((branch) => (
-                    <label className="check-line" key={branch.branchId}>
-                      <input type="checkbox" checked={draft.branchIds.includes(branch.branchId)} onChange={() => onToggleBranch(branch.branchId)} />
-                      {branch.branchName}
-                    </label>
-                  ))}
-                </fieldset>
+                <p>المستخدم الجديد يحصل على صلاحية كل الفروع الحالية، وأي فرع أو جهاز يُعد لاحقاً يمنح كل المستخدمين النشطين نفس الصلاحية عليه.</p>
                 <label className="check-line">
                   <input type="checkbox" checked={draft.isActive} onChange={(event) => onDraft({ ...draft, isActive: event.target.checked })} />
                   فعال
@@ -536,7 +529,7 @@ function UserPanel({
         {panel === "role" ? (
           <label>الدور
             <select value={draft.roleCode} onChange={(event) => onDraft({ ...draft, roleCode: event.target.value })}>
-              {catalog?.roles.map((role) => <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>)}
+              {distinctBy(catalog?.roles, (role) => role.roleCode).map((role) => <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>)}
             </select>
           </label>
         ) : null}

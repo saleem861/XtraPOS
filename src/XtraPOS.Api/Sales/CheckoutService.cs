@@ -140,6 +140,7 @@ public sealed class CheckoutService(
             {
                 var sessionId = await FindOpenSessionIdAsync(session.Connection, session.Transaction, actor, token)
                     ?? throw new CheckoutException(CheckoutCodes.CashSessionRequired, "يجب فتح الصندوق أولاً.", StatusCodes.Status409Conflict);
+                await EnsureProfitColumnsAsync(session, token);
                 var saleId = Guid.NewGuid();
                 var saleNumber = await InsertSaleAsync(session, actor, cartId, customerId, sessionId, saleId, total, token);
                 await FailAsync(fault, CheckoutFault.AfterSale);
@@ -186,6 +187,7 @@ public sealed class CheckoutService(
                     throw new InvalidOperationException("Could not complete the sale.");
                 }
 
+                await SaleCentralRelay.EnqueueCompletedAsync(session.Connection, session.Transaction, saleId, token);
                 return (CheckoutResult)new CheckoutSucceeded(new CheckoutCompleted(
                     saleId,
                     saleNumber,
@@ -204,6 +206,28 @@ public sealed class CheckoutService(
 
             throw;
         }
+        catch (SqlException exception)
+        {
+            throw new CheckoutException("CHECKOUT_FAILED", CheckoutFailure.Describe(exception), StatusCodes.Status500InternalServerError);
+        }
+        catch (StockPostingException)
+        {
+            throw new CheckoutException("CHECKOUT_FAILED", CheckoutFailure.StockMessage, StatusCodes.Status500InternalServerError);
+        }
+    }
+
+    private static async Task EnsureProfitColumnsAsync(StockPostingSession session, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            IF COL_LENGTH(N'dbo.SaleItems', N'UnitProfitSnapshot') IS NULL
+                ALTER TABLE dbo.SaleItems ADD UnitProfitSnapshot decimal(19, 4) NULL;
+            IF COL_LENGTH(N'dbo.SaleItems', N'LineProfitSnapshot') IS NULL
+                ALTER TABLE dbo.SaleItems ADD LineProfitSnapshot decimal(19, 4) NULL;
+            """,
+            session.Connection,
+            session.Transaction);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<PreparedLine> PrepareLineAsync(
@@ -236,8 +260,9 @@ public sealed class CheckoutService(
                 Compare(changes, line.CartLineId, "UnitPrice", line.ExpectedUnitPrice, price.ResolvedPrice);
             }
             Compare(changes, line.CartLineId, "StockOwnerQuantity", line.ExpectedStockOwnerQuantity, ownerQuantity);
-            var unitCost = await ReadUnitCostAsync(connection, actor.BranchId, owner.StockOwnerItemId, cancellationToken);
+            var ownerCost = await ItemUnitCost.ReadAsync(connection, actor.BranchId, itemId, owner.StockOwnerItemId, cancellationToken);
             var charged = Charge(line, price.ResolvedPrice, price.PriceSource, line.Quantity);
+            var fixedMoney = SaleLineEconomics.FromOwnerUnit(charged.UnitPrice, line.Quantity, charged.LineTotal, ownerCost.UnitCost, ownerQuantity);
             return new PreparedLine(
                 Guid.NewGuid(),
                 line.CartLineId,
@@ -269,16 +294,18 @@ public sealed class CheckoutService(
                 null,
                 null,
                 null,
-                unitCost,
-                unitCost is null ? null : decimal.Round(unitCost.Value * ownerQuantity, 4, MidpointRounding.AwayFromZero),
-                unitCost is null ? VariableValuePricing.CostUnavailable : VariableValuePricing.CostFromOwner,
+                fixedMoney.UnitCost,
+                fixedMoney.QuantityCost,
+                ownerCost.Source,
                 price.ResolvedPrice,
                 price.PriceSource,
                 charged.Mode,
                 price.AppliedSpecialPriceId,
                 price.AppliedMinimumQuantity,
                 price.AppliedBundlePrice,
-                price.AppliedTargetUnitPrice);
+                price.AppliedTargetUnitPrice,
+                fixedMoney.UnitProfit,
+                fixedMoney.QuantityProfit);
         }
 
         if (line.LineType != VariableValuePricing.Mode)
@@ -304,6 +331,7 @@ public sealed class CheckoutService(
         var referenceName = await ReadItemNameAsync(connection, resolved.ReferenceItemId, cancellationToken);
         var lineCost = resolved.ProjectedCost is null ? (decimal?)null : decimal.Round(resolved.ProjectedCost.Value * portions, 4, MidpointRounding.AwayFromZero);
         var weighedCharge = Charge(line, resolved.FinalSellingPrice, resolved.ReferencePriceSource, portions);
+        var variableMoney = SaleLineEconomics.FromQuantityCost(weighedCharge.UnitPrice, portions, weighedCharge.LineTotal, lineCost);
         return new PreparedLine(
             Guid.NewGuid(),
             line.CartLineId,
@@ -335,12 +363,14 @@ public sealed class CheckoutService(
             resolved.FinalSellingPrice,
             resolved.RoundingPolicy,
             resolved.ProjectedCost,
-            resolved.ProjectedCost is null ? null : await ReadUnitCostAsync(connection, actor.BranchId, resolved.StockOwnerItemId, cancellationToken),
-            lineCost,
+            variableMoney.UnitCost,
+            variableMoney.QuantityCost,
             resolved.CostSource,
             resolved.FinalSellingPrice,
             resolved.ReferencePriceSource,
-            weighedCharge.Mode);
+            weighedCharge.Mode,
+            UnitProfit: variableMoney.UnitProfit,
+            LineProfit: variableMoney.QuantityProfit);
     }
 
     private static ChargedPrice Charge(CheckoutLine line, decimal resolvedUnit, string resolvedSource, decimal quantity)
@@ -684,7 +714,8 @@ public sealed class CheckoutService(
                 VariableValueDiscountPercent, RawDiscountedValue, FinalSellingPrice, RoundingPolicy,
                 ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource,
                 ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode,
-                AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice
+                AppliedSpecialPriceID, AppliedMinimumQuantity, AppliedBundlePrice, AppliedTargetUnitPrice,
+                UnitProfitSnapshot, LineProfitSnapshot
             )
             VALUES
             (
@@ -696,7 +727,8 @@ public sealed class CheckoutService(
                 @discount, @raw, @final, @rounding,
                 @projected, @unitCost, @lineCost, @costSource,
                 @resolvedUnit, @resolvedSource, @overrideMode,
-                @specialId, @specialMinimum, @specialBundle, @specialTarget
+                @specialId, @specialMinimum, @specialBundle, @specialTarget,
+                @unitProfit, @lineProfit
             );
             """,
             session.Connection,
@@ -734,6 +766,8 @@ public sealed class CheckoutService(
         AddNullableMoney(command, "@projected", line.ProjectedCost);
         AddNullableMoney(command, "@unitCost", line.UnitCost);
         AddNullableMoney(command, "@lineCost", line.LineCost);
+        AddNullableMoney(command, "@unitProfit", line.UnitProfit);
+        AddNullableMoney(command, "@lineProfit", line.LineProfit);
         command.Parameters.AddWithValue("@costSource", (object?)line.CostSource ?? DBNull.Value);
         AddMoney(command, "@resolvedUnit", line.ResolvedUnitPrice);
         command.Parameters.AddWithValue("@resolvedSource", line.ResolvedPriceSource);
@@ -794,17 +828,6 @@ public sealed class CheckoutService(
         }
 
         return new CheckoutCompleted(saleId, number, total, payments, replay);
-    }
-
-    private static async Task<decimal?> ReadUnitCostAsync(SqlConnection connection, Guid branchId, Guid itemId, CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand(
-            "SELECT UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item AND IsQuantityInitialized = 1;",
-            connection);
-        command.Parameters.AddWithValue("@branch", branchId);
-        command.Parameters.AddWithValue("@item", itemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is decimal cost ? cost : null;
     }
 
     private static async Task<(string Number, string Name)> ReadItemAsync(SqlConnection connection, Guid itemId, CancellationToken cancellationToken)
@@ -911,7 +934,9 @@ public sealed class CheckoutService(
         Guid? AppliedSpecialPriceId = null,
         decimal? AppliedMinimumQuantity = null,
         decimal? AppliedBundlePrice = null,
-        decimal? AppliedTargetUnitPrice = null);
+        decimal? AppliedTargetUnitPrice = null,
+        decimal? UnitProfit = null,
+        decimal? LineProfit = null);
 }
 
 public static class PriceOverrideModes

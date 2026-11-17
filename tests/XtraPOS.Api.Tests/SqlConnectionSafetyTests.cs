@@ -150,6 +150,15 @@ public class SqlConnectionSafetyTests
         Assert.Equal("XtraPOS_Branch2", factory.EffectiveDatabase);
     }
 
+    [Fact]
+    public void PublishSkipsExperimentalCatalogsAndKeepsRealNames()
+    {
+        Assert.True(StagingSqlDefaults.IsExperimentalCatalog(StagingSqlDefaults.BranchDatabaseName));
+        Assert.True(StagingSqlDefaults.IsExperimentalCatalog(StagingSqlDefaults.CentralDatabaseName));
+        Assert.False(StagingSqlDefaults.IsExperimentalCatalog(BranchDatabase.Name));
+        Assert.False(StagingSqlDefaults.IsExperimentalCatalog(CentralDatabase.Name));
+    }
+
     private static SqlConnectionFactory Factory(SqlServerOptions options, bool staging = false) =>
         new(Options.Create(options), staging ? new StagingEnvironment() : null);
 

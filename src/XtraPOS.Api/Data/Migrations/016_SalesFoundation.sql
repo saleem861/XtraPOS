@@ -117,6 +117,8 @@ BEGIN
         ProjectedCostAtPricing decimal(19, 4) NULL,
         UnitCostSnapshot decimal(19, 4) NULL,
         LineCostSnapshot decimal(19, 4) NULL,
+        UnitProfitSnapshot decimal(19, 4) NULL,
+        LineProfitSnapshot decimal(19, 4) NULL,
         CostSource nvarchar(50) NULL,
         CreatedAt datetime2(0) NOT NULL
             CONSTRAINT DF_SaleItems_CreatedAt DEFAULT (SYSUTCDATETIME()),

@@ -16,6 +16,9 @@ public static class BranchAgentEndpoints
         app.MapPost("/api/branch-agent/jobs/{id:guid}/events", Report);
         app.MapPost("/api/branch-agent/membership/enrollment", PublishEnrollment);
         app.MapGet("/api/branch-agent/membership/enrollment/{token}", ReadPublishedEnrollment);
+        app.MapPost("/api/branch-agent/membership/counter", PublishCounter);
+        app.MapGet("/api/branch-agent/membership/counter/{token}", ReadPublishedCounter);
+        app.MapPost("/api/branch-agent/membership/counter/{token}/consume", ConsumePublishedCounter);
     }
 
     private static IResult IssuePairingCode(HttpContext http, BranchAgentRegistry registry, IHostEnvironment environment)
@@ -133,6 +136,32 @@ public static class BranchAgentEndpoints
         {
             return Results.Json(new { code = exception.Code }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
+    }
+
+    private static IResult PublishCounter(HttpContext http, SharedCounterPublish? request, BranchAgentRegistry registry, MembershipRelay relay)
+    {
+        if (!Authorize(http, registry, out var failure)) return failure!;
+        if (request?.Token is not string token || !MembershipLinks.IsEnrollmentToken(token))
+        {
+            return Results.BadRequest(new { message = "رمز الكاونتر غير مكتمل." });
+        }
+
+        relay.TouchCounter(token, DateTime.UtcNow);
+        return Results.NoContent();
+    }
+
+    private static IResult ReadPublishedCounter(string token, HttpContext http, BranchAgentRegistry registry, MembershipRelay relay)
+    {
+        if (!Authorize(http, registry, out var failure)) return failure!;
+        var view = relay.ReadCounter(token, DateTime.UtcNow);
+        return view is null ? Results.NotFound() : Results.Ok(view);
+    }
+
+    private static IResult ConsumePublishedCounter(string token, HttpContext http, BranchAgentRegistry registry, MembershipRelay relay)
+    {
+        if (!Authorize(http, registry, out var failure)) return failure!;
+        relay.ClearCounterResult(token, DateTime.UtcNow);
+        return Results.NoContent();
     }
 
     private static bool Authorize(HttpContext http, BranchAgentRegistry registry, out IResult? failure)

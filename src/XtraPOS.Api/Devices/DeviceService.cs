@@ -109,6 +109,12 @@ public sealed class DeviceService(BranchDbContext db)
         return device;
     }
 
+    public async Task<int> CurrentStationNumberAsync(HttpRequest request, CancellationToken cancellationToken)
+    {
+        var device = await AuthenticateAsync(request, cancellationToken);
+        return device?.Station?.StationNumber ?? 0;
+    }
+
     public async Task<bool> RevokeCurrentAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         var device = await AuthenticateAsync(request, cancellationToken);

@@ -299,18 +299,17 @@ public sealed class ItemEditService(
             """
             IF EXISTS (SELECT 1 FROM dbo.ItemBranchInventory WHERE BranchID = @branch AND ItemID = @item)
                 UPDATE dbo.ItemBranchInventory
-                SET UnitCost = @cost, IsAvailable = @available, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
+                SET IsAvailable = @available, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
                 WHERE BranchID = @branch AND ItemID = @item;
             ELSE
                 INSERT INTO dbo.ItemBranchInventory
                     (BranchID, ItemID, UnitCost, DailySalesRate, IsAvailable, IsActive, CreatedAt, UpdatedAt)
                 VALUES
-                    (@branch, @item, @cost, NULL, @available, @active, SYSUTCDATETIME(), SYSUTCDATETIME());
+                    (@branch, @item, NULL, NULL, @available, @active, SYSUTCDATETIME(), SYSUTCDATETIME());
             """,
             connection);
         command.Parameters.AddWithValue("@branch", caller.BranchId);
         command.Parameters.AddWithValue("@item", itemId);
-        command.Parameters.AddWithValue("@cost", (object?)request.UnitCost ?? DBNull.Value);
         command.Parameters.AddWithValue("@available", request.IsAvailable);
         command.Parameters.AddWithValue("@active", request.IsActive);
         await command.ExecuteNonQueryAsync(cancellationToken);

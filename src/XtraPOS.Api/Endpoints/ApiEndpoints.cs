@@ -15,6 +15,37 @@ namespace XtraPOS.Api.Endpoints;
 
 public static class ApiEndpoints
 {
+    private static void ScheduleBranchServiceRemoval()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var install = AppContext.BaseDirectory.TrimEnd('\\');
+        var script = Path.Combine(Path.GetTempPath(), "xtrapos-reset-branch.ps1");
+        var body = """
+            $install = '__INSTALL__'
+            & sc.exe stop XtraPOSBranchAgent | Out-Null
+            for ($i = 0; $i -lt 40; $i++) {
+              $state = & sc.exe query XtraPOSBranchAgent 2>&1 | Out-String
+              if ($state -match 'FAILED 1060' -or $state -match 'STOPPED') { break }
+              Start-Sleep -Seconds 1
+            }
+            & sc.exe delete XtraPOSBranchAgent | Out-Null
+            if (Test-Path $install) { Remove-Item $install -Recurse -Force }
+            """;
+        body = body.Replace("__INSTALL__", install.Replace("'", "''"), StringComparison.Ordinal);
+        File.WriteAllText(script, body);
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        });
+    }
+
     private static readonly SemaphoreSlim CentralProbeGate = new(1, 1);
     private static DateTime CentralProbeAt = DateTime.MinValue;
     private static string CentralProbeState = "Disconnected";
@@ -23,6 +54,24 @@ public static class ApiEndpoints
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    private static async Task<Guid?> ReadConfiguredBranchIdAsync(SqlConnectionFactory connections, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqlCommand(
+                "SELECT TOP (1) CONVERT(uniqueidentifier, SettingValue) FROM dbo.SystemSettings WHERE SettingKey = N'BranchID';",
+                connection);
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value is Guid id ? id : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     public static void MapSetupEndpoints(this WebApplication app)
     {
@@ -219,7 +268,10 @@ public static class ApiEndpoints
             var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
             var connections = http.RequestServices.GetRequiredService<SqlConnectionFactory>();
             var deleteDatabase = body?.DeleteExclusiveDatabase == true;
+            var localBranch = string.Equals(connections.ConfiguredDatabase, Data.BranchDatabase.Name, StringComparison.OrdinalIgnoreCase)
+                && Setup.BranchAgentRules.TryNormalizeLocalInstance(connections.ConfiguredServer, out _);
             if (deleteDatabase
+                && !localBranch
                 && !connections.HasDroppableExclusiveInstallation
                 && !ProtectedDatabasePolicy.AllowsInstallationReset(connections.ConfiguredDatabase))
             {
@@ -228,51 +280,63 @@ public static class ApiEndpoints
                 return Results.Json(new { message = refusal }, statusCode: StatusCodes.Status409Conflict);
             }
 
-            if (body?.DeregisterCentral == true && body.PosNumber is int posNumber)
+            var stationNumber = await devices.CurrentStationNumberAsync(http.Request, cancellationToken);
+            if (body?.PosNumber is int requestedPos && requestedPos > 0)
             {
-                var registry = http.RequestServices.GetRequiredService<CentralPosRegistryService>();
-                var revokedCentral = await registry.RevokeAsync(posNumber, cancellationToken);
-                if (!revokedCentral)
+                stationNumber = requestedPos;
+            }
+
+            var registry = http.RequestServices.GetRequiredService<CentralPosRegistryService>();
+            if (stationNumber > 0)
+            {
+                await registry.DeleteAsync(stationNumber, cancellationToken);
+            }
+
+            var branchId = await ReadConfiguredBranchIdAsync(connections, cancellationToken);
+            if (stationNumber > 0 && branchId is Guid id)
+            {
+                try
                 {
-                    var id = SetupLog.Write(http.RequestServices.GetRequiredService<IHostEnvironment>().ContentRootPath, http.RequestServices.GetRequiredService<IHostEnvironment>().EnvironmentName, "device-reset-central", "pending");
-                    return Results.Json(new { message = "تعذر إلغاء التسجيل في المركزية. بقيت إعدادات الجهاز حتى تكتمل التسوية.", diagnosticId = id }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                    await registry.ReleasePointAsync(stationNumber, id, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    app.Logger.LogError(exception, "Central point release failed during device reset.");
                 }
             }
 
-            if (!deleteDatabase)
+            if (deleteDatabase)
+            {
+                var db = http.RequestServices.GetRequiredService<BranchDbContext>();
+                await db.Database.CloseConnectionAsync();
+                try
+                {
+                    await connections.DropRequestedLocalBranchAsync(cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    app.Logger.LogError(exception, "Installation database reset failed.");
+                    return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                http.RequestServices.GetRequiredService<OperationalBranchConnectionStore>().Clear();
+                http.RequestServices.GetRequiredService<OperationalBranchConnection>().Replace(null);
+                http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
+            }
+            else
             {
                 var revoked = await devices.RevokeCurrentAsync(http.Request, cancellationToken);
-                return revoked
-                    ? Results.Ok(new { status = "Reset", databaseDeleted = false })
-                    : Results.Unauthorized();
-            }
-
-            var db = http.RequestServices.GetRequiredService<BranchDbContext>();
-            await db.Database.CloseConnectionAsync();
-            try
-            {
-                if (connections.HasDroppableExclusiveInstallation)
+                if (!revoked)
                 {
-                    await connections.DropExclusiveOperationalInstallationAsync(cancellationToken);
-                }
-                else
-                {
-                    await connections.DropConfiguredInstallationAsync(cancellationToken);
+                    return Results.Unauthorized();
                 }
             }
-            catch (Exception exception)
-            {
-                app.Logger.LogError(exception, "Installation database reset failed.");
-                return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
-            }
 
-            http.RequestServices.GetRequiredService<OperationalBranchConnectionStore>().Clear();
-            http.RequestServices.GetRequiredService<OperationalBranchConnection>().Replace(null);
             http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
-            http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
             InstallationState.Clear(environment.ContentRootPath);
             SetupAuthorization.Invalidate(environment.ContentRootPath);
-            return Results.Ok(new { status = "Reset", databaseDeleted = true });
+            ScheduleBranchServiceRemoval();
+            return Results.Ok(new { status = "Reset", databaseDeleted = deleteDatabase });
         });
         app.MapGet("/api/sync/status", async (SyncStatusStore sync, SyncEndpointStore endpoints, SqlConnectionFactory connections, CancellationToken cancellationToken) =>
         {

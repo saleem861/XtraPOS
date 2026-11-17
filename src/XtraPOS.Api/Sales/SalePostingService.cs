@@ -83,7 +83,8 @@ public sealed class SalePostingService(
         var lineTotal = decimal.Round(price.ResolvedPrice * line.Quantity, 4, MidpointRounding.AwayFromZero);
         Compare(changes, lineNumber, "UnitPrice", line.ExpectedUnitPrice, price.ResolvedPrice);
         Compare(changes, lineNumber, "StockOwnerQuantity", line.ExpectedStockOwnerQuantity, ownerQuantity);
-        var cost = await ReadOwnerCostAsync(connection, branchId, owner.StockOwnerItemId, ownerQuantity, cancellationToken);
+        var cost = await ReadOwnerCostAsync(connection, branchId, line.ItemId, owner.StockOwnerItemId, ownerQuantity, cancellationToken);
+        var money = SaleLineEconomics.FromOwnerUnit(price.ResolvedPrice, line.Quantity, lineTotal, cost.UnitCost, ownerQuantity);
         return new LineSnapshot(
             lineNumber,
             PricingResolver.FixedMode,
@@ -114,9 +115,11 @@ public sealed class SalePostingService(
             null,
             null,
             cost.Projected,
-            cost.UnitCost,
-            cost.LineCost,
-            cost.Source);
+            money.UnitCost,
+            money.QuantityCost,
+            cost.Source,
+            money.UnitProfit,
+            money.QuantityProfit);
     }
 
     private async Task<LineSnapshot> BuildVariableAsync(
@@ -140,6 +143,7 @@ public sealed class SalePostingService(
         var lineTotal = decimal.Round(price.FinalSellingPrice * portions, 4, MidpointRounding.AwayFromZero);
         var totalOwnerQuantity = price.ProjectedStockOwnerQuantity * portions;
         var lineCost = price.ProjectedCost is null ? (decimal?)null : decimal.Round(price.ProjectedCost.Value * portions, 4, MidpointRounding.AwayFromZero);
+        var money = SaleLineEconomics.FromQuantityCost(price.FinalSellingPrice, portions, lineTotal, lineCost);
         var referenceName = await ReadItemNameAsync(price.ReferenceItemId, cancellationToken);
         var priceTypeId = await ReadPriceTypeIdAsync(price.ReferencePriceTypeCode, cancellationToken);
         return new LineSnapshot(
@@ -172,9 +176,11 @@ public sealed class SalePostingService(
             price.FinalSellingPrice,
             price.RoundingPolicy,
             price.ProjectedCost,
-            null,
-            lineCost,
-            price.CostSource);
+            money.UnitCost,
+            money.QuantityCost,
+            price.CostSource,
+            money.UnitProfit,
+            money.QuantityProfit);
     }
 
     private static async Task RejectUnsupportedAssortmentParentAsync(
@@ -289,7 +295,8 @@ public sealed class SalePostingService(
                 EnteredScaleValue, ReferenceBasePrice, ReferencePriceSource, WeightKg, WeightGrams,
                 VariableValueDiscountPercent, RawDiscountedValue, FinalSellingPrice, RoundingPolicy,
                 ProjectedCostAtPricing, UnitCostSnapshot, LineCostSnapshot, CostSource,
-                ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode
+                ResolvedUnitPrice, ResolvedPriceSource, PriceOverrideMode,
+                UnitProfitSnapshot, LineProfitSnapshot
             )
             VALUES
             (
@@ -300,7 +307,8 @@ public sealed class SalePostingService(
                 @entered, @basePrice, @baseSource, CONVERT(decimal(38, 28), @weightKg), CONVERT(decimal(38, 28), @weightGrams),
                 @discount, @raw, @final, @rounding,
                 @projected, @unitCost, @lineCost, @costSource,
-                @resolvedUnit, @resolvedSource, @overrideMode
+                @resolvedUnit, @resolvedSource, @overrideMode,
+                @unitProfit, @lineProfit
             );
             """,
             connection,
@@ -338,6 +346,8 @@ public sealed class SalePostingService(
         AddNullableMoney(command, "@projected", line.ProjectedCost);
         AddNullableMoney(command, "@unitCost", line.UnitCost);
         AddNullableMoney(command, "@lineCost", line.LineCost);
+        AddNullableMoney(command, "@unitProfit", line.UnitProfit);
+        AddNullableMoney(command, "@lineProfit", line.LineProfit);
         command.Parameters.AddWithValue("@costSource", (object?)line.CostSource ?? DBNull.Value);
         AddMoney(command, "@resolvedUnit", line.UnitPrice);
         command.Parameters.AddWithValue("@resolvedSource", line.PriceSource);
@@ -479,23 +489,19 @@ public sealed class SalePostingService(
     private static async Task<(decimal? UnitCost, decimal? LineCost, decimal? Projected, string? Source)> ReadOwnerCostAsync(
         SqlConnection connection,
         Guid branchId,
+        Guid itemId,
         Guid ownerItemId,
         decimal ownerQuantity,
         CancellationToken cancellationToken)
     {
-        await using var command = new SqlCommand(
-            "SELECT UnitCost FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item;",
-            connection);
-        command.Parameters.AddWithValue("@branch", branchId);
-        command.Parameters.AddWithValue("@item", ownerItemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        if (value is not decimal unitCost)
+        var cost = await ItemUnitCost.ReadAsync(connection, branchId, itemId, ownerItemId, cancellationToken);
+        if (cost.UnitCost is null)
         {
             return (null, null, null, null);
         }
 
-        var lineCost = decimal.Round(unitCost * ownerQuantity, 4, MidpointRounding.AwayFromZero);
-        return (unitCost, lineCost, lineCost, VariableValuePricing.CostFromOwner);
+        var lineCost = decimal.Round(cost.UnitCost.Value * ownerQuantity, 4, MidpointRounding.AwayFromZero);
+        return (cost.UnitCost, lineCost, lineCost, cost.Source);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(SqlConnection connection, string key, CancellationToken cancellationToken)
@@ -572,5 +578,7 @@ public sealed class SalePostingService(
         decimal? ProjectedCost,
         decimal? UnitCost,
         decimal? LineCost,
-        string? CostSource);
+        string? CostSource,
+        decimal? UnitProfit = null,
+        decimal? LineProfit = null);
 }

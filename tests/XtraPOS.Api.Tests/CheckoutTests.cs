@@ -205,6 +205,8 @@ public sealed class CheckoutTests(BranchApiFixture fixture)
             Assert.Equal(-3m, await QueryDecimalAsync($"SELECT OnHandQuantity FROM dbo.BranchStockBalances WHERE ItemID = '{negativeId}';"));
             Assert.Equal(4m, await QueryDecimalAsync($"SELECT UnitCostSnapshot FROM dbo.SaleItems WHERE SaleID = '{negative.SaleId}';"));
             Assert.Equal(20m, await QueryDecimalAsync($"SELECT LineCostSnapshot FROM dbo.SaleItems WHERE SaleID = '{negative.SaleId}';"));
+            Assert.Equal(6m, await QueryDecimalAsync($"SELECT UnitProfitSnapshot FROM dbo.SaleItems WHERE SaleID = '{negative.SaleId}';"));
+            Assert.Equal(30m, await QueryDecimalAsync($"SELECT LineProfitSnapshot FROM dbo.SaleItems WHERE SaleID = '{negative.SaleId}';"));
             await Stock().PostDeltaAsync(new StockDeltaRequest(
                 actor.BranchId, negativeId, StockSourceTypes.Purchase, Guid.NewGuid(), Guid.NewGuid(), 10m, 4m, DateTime.UtcNow, actor.UserId), null, CancellationToken.None);
             Assert.Equal(7m, await QueryDecimalAsync($"SELECT OnHandQuantity FROM dbo.BranchStockBalances WHERE ItemID = '{negativeId}';"));

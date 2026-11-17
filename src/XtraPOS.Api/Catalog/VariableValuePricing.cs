@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Sales;
 using XtraPOS.Api.Sync;
 
 namespace XtraPOS.Api.Catalog;
@@ -11,6 +12,7 @@ public static class VariableValuePricing
     public const string RoundingPolicyName = "LegacyVariableValueV1";
     public const string CostUnavailable = "Unavailable";
     public const string CostFromOwner = "StockOwnerUnitCost";
+    public const string CostFromItemCard = "ItemCardUnitCost";
 
     public static decimal ApplyLegacyVariableValueRounding(decimal rawDiscountedValue)
     {
@@ -126,7 +128,7 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
         var quantity = weightKg * owner.Factor;
         var raw = enteredScaleValue * (1m - (discountPercent / 100m));
         var finalPrice = VariableValuePricing.ApplyLegacyVariableValueRounding(raw);
-        var unitCost = await ReadOwnerUnitCostAsync(connection, branchId, owner.ItemId, cancellationToken);
+        var unitCost = await ItemUnitCost.ReadAsync(connection, branchId, reference.Value.ItemId, owner.ItemId, cancellationToken);
         return new VariableValueResolution(
             VariableValuePricing.Mode,
             reference.Value.ItemId,
@@ -146,8 +148,8 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
             raw,
             finalPrice,
             VariableValuePricing.RoundingPolicyName,
-            unitCost is null ? null : quantity * unitCost.Value,
-            unitCost is null ? VariableValuePricing.CostUnavailable : VariableValuePricing.CostFromOwner,
+            unitCost.UnitCost is null ? null : quantity * unitCost.UnitCost.Value,
+            unitCost.Source,
             branchId);
     }
 
@@ -267,25 +269,6 @@ public sealed class VariableValuePricingResolver(SqlConnectionFactory connection
         }
 
         return (reader.GetGuid(0), reader.GetBoolean(1), reader.GetDecimal(2));
-    }
-
-    private static async Task<decimal?> ReadOwnerUnitCostAsync(
-        SqlConnection connection,
-        Guid branchId,
-        Guid ownerItemId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand(
-            """
-            SELECT UnitCost
-            FROM dbo.BranchStockBalances
-            WHERE BranchID = @branch AND ItemID = @item;
-            """,
-            connection);
-        command.Parameters.AddWithValue("@branch", branchId);
-        command.Parameters.AddWithValue("@item", ownerItemId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null or DBNull ? null : Convert.ToDecimal(value);
     }
 
     private static async Task<Guid> ReadGuidSettingAsync(

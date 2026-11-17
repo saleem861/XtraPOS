@@ -628,6 +628,8 @@ public sealed class SetupService(
                     cancellationToken);
             }
 
+            await GrantEveryoneAsync(cancellationToken);
+
             await emit(SetupEvent.Progress(SetupSteps.CreateStation, "started"), cancellationToken);
             var usedStationNumbers = await db.PosStations
                 .Where(item => item.BranchId == branchId)
@@ -828,6 +830,7 @@ public sealed class SetupService(
             GrantedAt = now,
         });
         await db.SaveChangesAsync(cancellationToken);
+        await GrantEveryoneAsync(cancellationToken);
     }
 
     private async Task<bool> AdminExistsAsync(CancellationToken cancellationToken)
@@ -1161,6 +1164,7 @@ public sealed class SetupService(
         try
         {
             await copy.ExecuteNonQueryAsync(cancellationToken);
+            await GrantEveryoneAsync(cancellationToken);
         }
         catch (SqlException exception) when (exception.Number == 50000)
         {
@@ -1283,6 +1287,8 @@ public sealed class SetupService(
             try
             {
                 await grant.ExecuteNonQueryAsync(cancellationToken);
+                await BranchAccessGrant.ApplyAsync(remote, null, cancellationToken);
+                await AccountAccessRepair.ApplyAsync(remote, null, cancellationToken);
             }
             catch (SqlException exception) when (exception.Number == 50000)
             {
@@ -1390,11 +1396,21 @@ public sealed class SetupService(
         try
         {
             await command.ExecuteNonQueryAsync(cancellationToken);
+            await BranchAccessGrant.ApplyAsync(connection, null, cancellationToken);
+            await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
         }
         catch (SqlException exception) when (environment.IsStaging() && exception.Number == 229)
         {
             logger.LogWarning("Staging did not register its branch in the existing central database because INSERT on Branches is not granted.");
         }
+    }
+
+    private async Task GrantEveryoneAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connections.CreateBranchConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await BranchAccessGrant.ApplyAsync(connection, null, cancellationToken);
+        await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
     }
 
     private async Task SaveCentralRouteAsync(string route, CancellationToken cancellationToken)

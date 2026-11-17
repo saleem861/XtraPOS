@@ -30,9 +30,8 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showCustomers, setShowCustomers] = useState(false);
   const [showOperationLog, setShowOperationLog] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
-  const [resetError, setResetError] = useState("");
-  const [deregisterCentral, setDeregisterCentral] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
+  const [resetError, setResetError] = useState("");
   const client = useMemo(() => createItemClient(session), [session]);
   const roleNames = user.roles.map((role) => role.roleName).join("، ");
   const isAdmin = user.permissions.includes("System.Administer");
@@ -47,6 +46,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowUsers(false);
       setShowCentral(false);
       setShowCustomers(false);
+      setShowOperationLog(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -59,7 +59,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       method: "POST",
       headers: { ...deviceHeaders(session), "Content-Type": "application/json" },
       body: JSON.stringify({
-        deregisterCentral,
+        deregisterCentral: true,
         deleteExclusiveDatabase: deleteDatabase,
         exclusiveLocal: false,
         backupVerified: false,
@@ -122,16 +122,11 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
         />
         {resetOpen ? (
           <form className="form" onSubmit={(event) => { event.preventDefault(); void resetDevice(); }}>
-            <p>ستُمسح تهيئة هذه النقطة فقط. قاعدة الفرع المشتركة وXtraPOS_Central وقاعدة المقاطعة لا تُحذف.</p>
-            <label className="check-line">
-              <input type="checkbox" checked={deregisterCentral} onChange={(event) => setDeregisterCentral(event.target.checked)} />
-              <span>إلغاء تسجيل النقطة في المركزية</span>
-            </label>
+            <p>يُحذف تسجيل هذه النقطة في المركز، وتتوقف خدمة الجهاز وتُحذف ملفات التثبيت. قاعدة البيانات المحلية تبقى إلا إذا حددت حذفها.</p>
             <label className="check-line">
               <input type="checkbox" checked={deleteDatabase} onChange={(event) => setDeleteDatabase(event.target.checked)} />
-              <span>حذف قاعدة البيانات المحلية الحصرية أيضًا</span>
+              <span>حذف قاعدة البيانات المحلية</span>
             </label>
-            <p>تحديد حذف القاعدة يزيل قاعدة هذا التثبيت وتسجيل أجهزته، ثم تعود شاشة الإعداد الأولى. XtraPOS_Central وقاعدة المقاطعة لا تُحذف.</p>
             <label className="check-line">
               <input type="checkbox" required />
               <span>أؤكد إعادة تهيئة هذا الجهاز</span>
@@ -161,7 +156,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
               </button>
             ) : null}
             {isAdmin ? (
-              <button className="home-nav-card" type="button" disabled={pending} onClick={() => { setResetError(""); setDeregisterCentral(false); setDeleteDatabase(false); setResetOpen(true); }}>
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => { setResetError(""); setDeleteDatabase(false); setResetOpen(true); }}>
                 <span className="home-nav-icon" aria-hidden="true"><RotateCcw /></span>
                 <span><strong>إعادة تهيئة النقطة</strong></span>
               </button>

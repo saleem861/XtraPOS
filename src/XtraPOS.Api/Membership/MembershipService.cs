@@ -22,6 +22,7 @@ public sealed class MembershipService(
     SqlConnectionFactory connections,
     SyncEndpointStore endpoints,
     LocalAppHostState localHost,
+    MembershipRelay relay,
     IOptions<MembershipOptions> options)
 {
     public const string SessionCookie = "xtrapos-membership";
@@ -379,6 +380,76 @@ public sealed class MembershipService(
 
     public async Task<MembershipPublicStatus> CounterStatusAsync(string token, CancellationToken cancellationToken)
     {
+        var relayed = RelayCounterStatus(token);
+        MembershipPublicStatus? stored = null;
+        try
+        {
+            stored = await ReadStoredCounterStatusAsync(token, cancellationToken);
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+            stored = null;
+        }
+
+        if (relayed is not null && (stored is null || stored.Status is "Missing")) return relayed;
+        return stored ?? relayed ?? new MembershipPublicStatus("Missing", null, "MEMBERSHIP_SERVER_UNAVAILABLE");
+    }
+
+    public bool CounterRelayRecognized(string token) =>
+        relay.ReadCounter(token, DateTime.UtcNow)?.Status == "Verified";
+
+    public async Task<string?> ReadCounterTokenAsync(Guid counterId, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT PublicToken FROM dbo.MembershipCounterCodes WHERE CounterID = @id;", connection);
+        command.Parameters.AddWithValue("@id", counterId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value as string;
+    }
+
+    public async Task ApplyRemoteCounterAsync(string token, SharedCounterView view, CancellationToken cancellationToken)
+    {
+        if (view.Status != "Verified" || string.IsNullOrWhiteSpace(view.Subject)) return;
+        await using var connection = await OpenCentralAsync(cancellationToken);
+        Guid? customer = null;
+        await using (var lookup = new SqlCommand(
+            """
+            SELECT TOP (1) CustomerID
+            FROM dbo.CustomerMembershipIdentities
+            WHERE Provider = @provider AND ProviderSubject = @subject AND Status = N'Active';
+            """,
+            connection))
+        {
+            lookup.Parameters.AddWithValue("@provider", string.IsNullOrWhiteSpace(view.Provider) ? "Google" : view.Provider);
+            lookup.Parameters.AddWithValue("@subject", view.Subject);
+            var value = await lookup.ExecuteScalarAsync(cancellationToken);
+            if (value is Guid id) customer = id;
+        }
+
+        await using var update = new SqlCommand(
+            """
+            UPDATE dbo.MembershipCounterCodes
+            SET Status = @status, RecognizedCustomerID = @customer, UpdatedAt = SYSUTCDATETIME()
+            WHERE PublicToken = @token AND Status = N'Waiting';
+            """,
+            connection);
+        update.Parameters.AddWithValue("@status", customer is null ? "Unlinked" : "Verified");
+        update.Parameters.AddWithValue("@customer", (object?)customer ?? DBNull.Value);
+        update.Parameters.AddWithValue("@token", token);
+        await update.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private MembershipPublicStatus? RelayCounterStatus(string token)
+    {
+        var relayed = relay.ReadCounter(token, DateTime.UtcNow);
+        if (relayed is null) return null;
+        if (relayed.Status == "Expired") return new MembershipPublicStatus("Expired", null, "MEMBERSHIP_COUNTER_IDLE");
+        return new MembershipPublicStatus("Pending", DateTime.UtcNow, null);
+    }
+
+    private async Task<MembershipPublicStatus> ReadStoredCounterStatusAsync(string token, CancellationToken cancellationToken)
+    {
         await using var connection = await OpenCentralAsync(cancellationToken);
         await using var command = new SqlCommand(
             "SELECT UpdatedAt FROM dbo.MembershipCounterCodes WHERE PublicToken = @token;", connection);
@@ -405,8 +476,16 @@ public sealed class MembershipService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task CompleteCounterAsync(string token, string? sessionToken, CancellationToken cancellationToken)
+    public async Task<string> CompleteCounterAsync(string token, string? sessionToken, CancellationToken cancellationToken)
     {
+        var relayed = relay.ReadCounter(token, DateTime.UtcNow);
+        if (relayed is not null)
+        {
+            if (relayed.Status == "Verified") return "Sent";
+            if (relayed.Status == "Expired") throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
+            throw new MembershipException("MEMBERSHIP_SESSION_REQUIRED");
+        }
+
         await using var connection = await OpenCentralAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         DateTime updated;
@@ -432,6 +511,7 @@ public sealed class MembershipService(
         command.Parameters.AddWithValue("@token", token);
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
         await transaction.CommitAsync(cancellationToken);
+        return "Verified";
     }
 
     private static async Task<CounterTokenRow?> ReadCounterAsync(SqlConnection connection, SqlTransaction? transaction, Guid counterId, CancellationToken cancellationToken)
@@ -511,34 +591,34 @@ public sealed class MembershipService(
         return (enrollmentId, token, expires);
     }
 
-    public async Task SaveSharedEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
+    public Task SaveSharedEnrollmentAsync(SharedEnrollmentPublish publish, CancellationToken cancellationToken)
     {
         if (publish.EnrollmentId == Guid.Empty || publish.BusinessId == Guid.Empty || publish.CashierUserId == Guid.Empty) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
         if (!MembershipLinks.IsEnrollmentToken(publish.Token)) throw new MembershipException("MEMBERSHIP_REQUEST_NOT_FOUND");
         var expires = DateTime.SpecifyKind(publish.ExpiresAtUtc, DateTimeKind.Utc);
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled(cancellationToken);
         if (expires <= DateTime.UtcNow || expires > DateTime.UtcNow.AddMinutes(15)) throw new MembershipException("MEMBERSHIP_QR_EXPIRED");
-        await using var connection = await OpenCentralAsync(cancellationToken);
-        await using var command = new SqlCommand(
-            """
-            IF NOT EXISTS (SELECT 1 FROM dbo.MembershipEnrollmentRequests WHERE TokenHash = @hash)
-            INSERT INTO dbo.MembershipEnrollmentRequests
-                (EnrollmentID, BusinessID, CustomerID, TokenHash, Status, ExpiresAt, CreatedAt, CashierUserID)
-            VALUES
-                (@id, @business, @customer, @hash, N'Pending', @expires, SYSUTCDATETIME(), @cashier);
-            """,
-            connection);
-        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = publish.EnrollmentId;
-        command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = publish.BusinessId;
-        command.Parameters.Add("@customer", SqlDbType.UniqueIdentifier).Value = publish.CustomerId is Guid customer && customer != Guid.Empty ? customer : DBNull.Value;
-        command.Parameters.Add("@hash", SqlDbType.Binary, 32).Value = MembershipTokens.Hash(publish.Token!);
-        command.Parameters.Add("@expires", SqlDbType.DateTime2).Value = expires;
-        command.Parameters.Add("@cashier", SqlDbType.UniqueIdentifier).Value = publish.CashierUserId;
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        relay.Publish(publish, DateTime.UtcNow);
+        return Task.CompletedTask;
     }
 
     public async Task<SharedEnrollmentView?> ReadSharedEnrollmentAsync(string token, CancellationToken cancellationToken)
     {
         if (!MembershipLinks.IsEnrollmentToken(token)) return null;
+        var relayed = relay.Read(token, DateTime.UtcNow);
+        if (relayed is not null) return relayed;
+        try
+        {
+            return await ReadSharedEnrollmentFromSqlAsync(token, cancellationToken);
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<SharedEnrollmentView?> ReadSharedEnrollmentFromSqlAsync(string token, CancellationToken cancellationToken)
+    {
         await using var connection = await OpenCentralAsync(cancellationToken);
         string status;
         DateTime expires;

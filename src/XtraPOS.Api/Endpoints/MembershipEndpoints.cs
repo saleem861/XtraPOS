@@ -135,7 +135,19 @@ public static class MembershipEndpoints
                 const string counterPrefix = "/membership/counter/";
                 if (back.StartsWith(counterPrefix, StringComparison.Ordinal))
                 {
-                    await membership.MarkCounterAsync(back[counterPrefix.Length..], "Unlinked", null, cancellationToken);
+                    var counterToken = back[counterPrefix.Length..];
+                    if (membership.CounterRelayRecognized(counterToken))
+                    {
+                        return Results.Redirect(back);
+                    }
+
+                    try
+                    {
+                        await membership.MarkCounterAsync(counterToken, "Unlinked", null, cancellationToken);
+                    }
+                    catch (Exception exception) when (exception is MembershipException or SqlException)
+                    {
+                    }
                 }
                 return Results.Redirect(back + "?unlinked=1");
             }
@@ -194,7 +206,10 @@ public static class MembershipEndpoints
         {
             Guid? enrollmentCustomer = request?.CustomerId is Guid customerId && customerId != Guid.Empty ? customerId : null;
             var localHost = http.RequestServices.GetService<LocalAppHostState>();
-            var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, localHost?.BaseUrl, $"{http.Request.Scheme}://{http.Request.Host}");
+            var requestOrigin = $"{http.Request.Scheme}://{http.Request.Host}";
+            var origin = localHost?.BaseUrl is not null
+                ? MembershipLinks.BranchEnrollmentOrigin(membership.Options.PublicOrigin, localHost.PhoneOrigin)
+                : MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, localHost?.BaseUrl, requestOrigin);
             string token;
             DateTime expires;
             if (localHost?.BaseUrl is not null)
@@ -506,8 +521,10 @@ public static class MembershipEndpoints
 
     private static string? PhonePage(HttpContext http, MembershipService membership, string path)
     {
-        var local = http.RequestServices.GetService<LocalAppHostState>()?.BaseUrl;
-        var origin = MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, local, $"{http.Request.Scheme}://{http.Request.Host}");
+        var host = http.RequestServices.GetService<LocalAppHostState>();
+        var origin = host?.BaseUrl is not null
+            ? MembershipLinks.BranchEnrollmentOrigin(membership.Options.PublicOrigin, host.PhoneOrigin)
+            : MembershipLinks.EnrollmentOrigin(membership.Options.PublicOrigin, host?.BaseUrl, $"{http.Request.Scheme}://{http.Request.Host}");
         return MembershipLinks.IsPhoneReachable(origin) ? origin + path : null;
     }
 
@@ -525,6 +542,11 @@ public static class MembershipEndpoints
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
         if (device is null) return Results.Unauthorized();
         var counter = await membership.EnsureCounterTokenAsync(device.BusinessId, device.BranchId, device.StationId, cancellationToken);
+        var agent = http.RequestServices.GetService<BranchAgentWorker>();
+        if (agent is not null)
+        {
+            await agent.PublishCounterAsync(counter.Token, cancellationToken);
+        }
         var phoneUrl = PhonePage(http, membership, "/membership/counter/" + counter.Token);
         if (phoneUrl is null)
         {
@@ -538,6 +560,7 @@ public static class MembershipEndpoints
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
         if (device is null || request is null || request.SaleContextId == Guid.Empty) return Results.Unauthorized();
         await membership.WatchCounterAsync(device.StationId, request.SaleContextId, request.CustomerId, cancellationToken);
+        await PublishLiveCounterAsync(http, membership, device.StationId, cancellationToken);
         return Results.Ok(new { watching = true });
     }
 
@@ -545,8 +568,50 @@ public static class MembershipEndpoints
     {
         var device = await auth.GetPosDeviceContextAsync(http, cancellationToken);
         if (device is null) return Results.Unauthorized();
+        string? token = null;
+        try
+        {
+            token = await membership.ReadCounterTokenAsync(device.StationId, cancellationToken);
+            var agent = http.RequestServices.GetService<BranchAgentWorker>();
+            if (agent is not null && !string.IsNullOrWhiteSpace(token))
+            {
+                var remote = await agent.ReadCounterAsync(token, cancellationToken);
+                if (remote is not null)
+                {
+                    await membership.ApplyRemoteCounterAsync(token, remote, cancellationToken);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+        }
+
         var result = await membership.ConsumeCounterResultAsync(device.StationId, cancellationToken);
+        if (result.Status != "Waiting" && !string.IsNullOrWhiteSpace(token))
+        {
+            var agent = http.RequestServices.GetService<BranchAgentWorker>();
+            if (agent is not null)
+            {
+                await agent.ClearCounterAsync(token, cancellationToken);
+            }
+        }
         return Results.Ok(new { status = result.Status, customerId = result.CustomerId });
+    }
+
+    private static async Task PublishLiveCounterAsync(HttpContext http, MembershipService membership, Guid stationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var agent = http.RequestServices.GetService<BranchAgentWorker>();
+            var token = await membership.ReadCounterTokenAsync(stationId, cancellationToken);
+            if (agent is not null && !string.IsNullOrWhiteSpace(token))
+            {
+                await agent.PublishCounterAsync(token, cancellationToken);
+            }
+        }
+        catch (Exception exception) when (exception is MembershipException or SqlException)
+        {
+        }
     }
 
     private static async Task<IResult> CompleteCounterAsync(string token, HttpContext http, MembershipService membership, CancellationToken cancellationToken)
@@ -564,12 +629,12 @@ public static class MembershipEndpoints
         http.Request.Cookies.TryGetValue(MembershipService.SessionCookie, out var session);
         try
         {
-            await membership.CompleteCounterAsync(token, session, cancellationToken);
+            var status = await membership.CompleteCounterAsync(token, session, cancellationToken);
             if (!string.IsNullOrWhiteSpace(session))
             {
                 http.Response.Cookies.Append(MembershipService.SessionCookie, session, SessionCookie(http));
             }
-            return Results.Ok(new { status = "Verified" });
+            return Results.Ok(new { status });
         }
         catch (MembershipException exception)
         {

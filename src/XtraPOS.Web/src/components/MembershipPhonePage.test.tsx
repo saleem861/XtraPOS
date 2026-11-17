@@ -33,7 +33,8 @@ describe("MembershipPhonePage", () => {
     }));
     render(<MembershipPhonePage pathname="/membership/verify/opaque-token" />);
     await waitFor(() => expect(screen.getByText("يلزم تسجيل الدخول إلى العضوية.")).toBeTruthy());
-    expect(screen.getByRole("link", { name: "Google" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Google" }).getAttribute("href")).toContain("return=%2Fmembership%2Fverify%2Fopaque-token");
+    expect(screen.getByRole("link", { name: "Apple" }).getAttribute("href")).toContain("return=%2Fmembership%2Fverify%2Fopaque-token");
     expect(screen.queryByText("تم التعرف على عضويتك بنجاح")).toBeNull();
   });
 });

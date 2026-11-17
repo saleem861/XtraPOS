@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { deviceHeaders } from "../api/client";
+import { distinctBy } from "../distinct";
 import type { DeviceSession } from "../types/setup";
 import { ScreenHeader } from "./ScreenHeader";
 
@@ -103,7 +104,7 @@ export function OperationLogScreen({ session, onBack }: { session: DeviceSession
         <label>الوجهة
           <select value={destination} onChange={(event) => setDestination(event.target.value)}>
             <option value="">الكل</option>
-            {page.destinations.map((name) => <option key={name} value={name}>{name}</option>)}
+            {distinctBy(page.destinations, (name) => name).map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
         <button className="ghost-button" type="button" onClick={() => void load()}>تحديث</button>
@@ -131,12 +132,13 @@ export function OperationLogScreen({ session, onBack }: { session: DeviceSession
               <th>الوجهة</th>
               <th>الحالة</th>
               <th>النتيجة</th>
+              <th>سبب التوقف</th>
               <th>إجراءات</th>
             </tr>
           </thead>
           <tbody>
             {page.rows.length === 0 ? (
-              <tr><td colSpan={9}>لا توجد أوامر ترحيل.</td></tr>
+              <tr><td colSpan={10}>لا توجد أوامر ترحيل.</td></tr>
             ) : page.rows.map((row) => (
               <tr key={row.operationId} className={row.serial === page.headSerial ? "operation-log-stuck" : undefined}>
                 <td>{row.referenceNumber || row.serial}</td>
@@ -147,6 +149,10 @@ export function OperationLogScreen({ session, onBack }: { session: DeviceSession
                 <td>{row.destinationName}</td>
                 <td>{statusText[row.status] ?? row.status}</td>
                 <td>{row.resultMessage}</td>
+                <td className="operation-log-error">
+                  <input readOnly aria-label="سبب التوقف" value={row.resultMessage || ""} onFocus={(event) => event.currentTarget.select()} />
+                  <button className="ghost-button" type="button" disabled={!row.resultMessage} onClick={() => void navigator.clipboard.writeText(row.resultMessage)}>نسخ</button>
+                </td>
                 <td className="operation-log-actions">
                   <button className="ghost-button" type="button" disabled={pendingId === row.operationId || row.status === "Completed" || row.status === "Cancelled"} onClick={() => void retry(row)}>إعادة محاولة</button>
                   <button className="ghost-button" type="button" disabled={pendingId === row.operationId} onClick={() => setConfirmDelete(row)}>حذف</button>

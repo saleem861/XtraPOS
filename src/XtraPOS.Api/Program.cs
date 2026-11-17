@@ -93,7 +93,10 @@ builder.Services.AddScoped<SetupService>();
 builder.Services.AddSingleton<DevicePairingService>();
 builder.Services.AddSingleton<BranchAgentRegistry>();
 builder.Services.AddSingleton<BranchAgentRelay>();
-builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null));
+var branchAgentPhoneOrigin = isBranchAgent && XtraPOS.Api.Membership.MembershipLinks.IsPhoneReachable(branchAgentServer)
+    ? branchAgentServer!.Trim().TrimEnd('/')
+    : null;
+builder.Services.AddSingleton(new LocalAppHostState(isBranchAgent ? BranchAgentHostCommand.LocalAppUrl : null, branchAgentPhoneOrigin));
 builder.Services.AddSingleton<LocalPosSessionStore>();
 builder.Services.AddSingleton<BranchAgentWorker>();
 if (isBranchAgent)
@@ -135,6 +138,7 @@ if (builder.Environment.IsStaging() || isBranchAgent)
         }
     });
 }
+builder.Services.AddSingleton<MembershipRelay>();
 builder.Services.AddScoped<MembershipService>();
 builder.Services.AddScoped<MembershipCodeExchange>();
 builder.Services.AddScoped<IMembershipIdTokenValidator, MembershipIdTokenValidator>();
@@ -201,6 +205,8 @@ builder.Services.AddSingleton<CentralPosRegistryService>();
 builder.Services.AddSingleton<CentralPosReplicaSync>();
 builder.Services.AddSingleton<BranchSqlSecretStore>();
 builder.Services.AddHostedService<PosReplicaHostedService>();
+builder.Services.AddScoped<LabtopBranchCleanup>();
+builder.Services.AddHostedService<LabtopBranchCleanupService>();
 builder.Services.AddScoped<SharedDataSync>();
 builder.Services.AddScoped<SyncEndpointStore>();
 builder.Services.AddScoped<StockPostingService>();
@@ -214,6 +220,7 @@ builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<HeldSaleService>();
 builder.Services.AddScoped<CentralItemApi>();
 builder.Services.AddScoped<ItemEditService>();
+builder.Services.AddScoped<WarehouseCostService>();
 builder.Services.AddSingleton<LegacyItemImportService>();
 builder.Services.AddSingleton<ILegacyItemSource, SqlLegacyItemSource>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -382,6 +389,11 @@ if (args.Any(arg => string.Equals(arg, "--write-staging-central-connection", Str
 if (args.Any(arg => string.Equals(arg, "--apply-central-migrations", StringComparison.Ordinal)))
 {
     var confirmedCentral = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
+    if (StagingSqlDefaults.IsExperimentalCatalog(confirmedCentral))
+    {
+        Console.WriteLine($"Publish does not open the experimental database '{confirmedCentral}'. Real databases are migrated on their own servers.");
+        return;
+    }
     var configuredBranch = builder.Configuration[$"{SqlServerOptions.SectionName}:Database"];
     using var centralHost = builder.Build();
     var centralStore = centralHost.Services.GetRequiredService<CentralConnectionFileStore>();
@@ -454,6 +466,11 @@ if (args.Any(arg => string.Equals(arg, "--copy-customer-to-branch", StringCompar
 if (BranchMigrationCommand.IsRequested(args))
 {
     var confirmed = DevelopmentDatabaseReset.ReadConfirmedDatabase(args);
+    if (StagingSqlDefaults.IsExperimentalCatalog(confirmed))
+    {
+        Console.WriteLine($"Publish does not open the experimental database '{confirmed}'. Real databases are migrated on their own servers.");
+        return;
+    }
     var configured = builder.Configuration[$"{SqlServerOptions.SectionName}:Database"];
     if (!BranchMigrationCommand.TryAuthorize(configured, confirmed, out var migrationDenial))
     {
@@ -463,6 +480,18 @@ if (BranchMigrationCommand.IsRequested(args))
     }
 
     using var migrationHost = builder.Build();
+    var savedOperational = await migrationHost.Services.GetRequiredService<OperationalBranchConnectionStore>().ReadAsync(CancellationToken.None);
+    if (savedOperational is not null && OperationalDatabaseGuard.IsProductionCatalog(savedOperational.DatabaseName))
+    {
+        migrationHost.Services.GetRequiredService<OperationalBranchConnection>().Replace(savedOperational);
+        if (!string.Equals(confirmed, savedOperational.DatabaseName, StringComparison.Ordinal))
+        {
+            Console.WriteLine($"Branch migration requires --confirm-database {savedOperational.DatabaseName}.");
+            Environment.ExitCode = 1;
+            return;
+        }
+    }
+
     var migrationConnections = migrationHost.Services.GetRequiredService<SqlConnectionFactory>();
     var migrationRunner = migrationHost.Services.GetRequiredService<MigrationRunner>();
     try
@@ -856,6 +885,55 @@ var savedBranch = await app.Services.GetRequiredService<OperationalBranchConnect
 if (savedBranch is not null && OperationalDatabaseGuard.IsProductionCatalog(savedBranch.DatabaseName))
 {
     app.Services.GetRequiredService<OperationalBranchConnection>().Replace(savedBranch);
+    try
+    {
+        await app.Services.GetRequiredService<MigrationRunner>().ApplyPendingAsync(CancellationToken.None);
+    }
+    catch (Exception exception)
+    {
+        app.Logger.LogWarning(exception, "Branch schema update will retry.");
+    }
+}
+
+try
+{
+    await using var startupScope = app.Services.CreateAsyncScope();
+    var central = await startupScope.ServiceProvider.GetRequiredService<SyncEndpointStore>()
+        .ReadSettingsAsync(DatabaseRole.Central, CancellationToken.None);
+    if (central is not null && CentralDatabase.IsAllowedName(central.DatabaseName))
+    {
+        await app.Services.GetRequiredService<CentralMigrationRunner>().ApplyAsync(
+            central.BuildConnectionString(central.DatabaseName),
+            CancellationToken.None);
+    }
+}
+catch (Exception exception)
+{
+    app.Logger.LogWarning(exception, "Central schema update will retry.");
+}
+
+try
+{
+    await using var repairScope = app.Services.CreateAsyncScope();
+    var repairConnections = repairScope.ServiceProvider.GetRequiredService<SqlConnectionFactory>();
+    var repairCentral = await repairScope.ServiceProvider.GetRequiredService<CentralConnectionFileStore>().ReadAsync(CancellationToken.None);
+    if (repairCentral is not null && CentralDatabase.IsAllowedName(repairCentral.DatabaseName))
+    {
+        await using var centralRepair = new Microsoft.Data.SqlClient.SqlConnection(repairCentral.BuildConnectionString(repairCentral.DatabaseName));
+        await centralRepair.OpenAsync(CancellationToken.None);
+        await AccountAccessRepair.ApplyAsync(centralRepair, null, CancellationToken.None);
+    }
+
+    if (await repairConnections.DatabaseExistsAsync(CancellationToken.None))
+    {
+        await using var branchRepair = new Microsoft.Data.SqlClient.SqlConnection(repairConnections.CreateBranchConnectionString());
+        await branchRepair.OpenAsync(CancellationToken.None);
+        await AccountAccessRepair.ApplyAsync(branchRepair, null, CancellationToken.None);
+    }
+}
+catch (Exception exception)
+{
+    app.Logger.LogWarning(exception, "Account access repair will retry.");
 }
 
 if (app.Environment.IsStaging())
@@ -904,7 +982,18 @@ if (isBranchAgent)
     {
         var fileProvider = new PhysicalFileProvider(webRoot);
         app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = fileProvider });
-        app.UseStaticFiles(new StaticFileOptions { FileProvider = fileProvider });
+        app.UseStaticFiles(new StaticFileOptions
+        {
+            FileProvider = fileProvider,
+            OnPrepareResponse = context =>
+            {
+                var name = context.File.Name;
+                if (name.Equals("index.html", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Context.Response.Headers.CacheControl = "no-cache";
+                }
+            },
+        });
     }
 }
 
@@ -939,7 +1028,7 @@ app.MapGet("/health", () => Results.Ok(new
     status = "Healthy",
     version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0",
 }));
-app.MapPost("/api/local-update", (HttpContext http) =>
+app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment environment, CancellationToken cancellationToken) =>
 {
     var remote = http.Connection.RemoteIpAddress;
     if (remote is null || !System.Net.IPAddress.IsLoopback(remote))
@@ -947,21 +1036,22 @@ app.MapPost("/api/local-update", (HttpContext http) =>
         return Results.NotFound();
     }
 
-    var script = @"D:\Google\XtraPOS\scripts\update-local.ps1";
-    if (!File.Exists(script))
+    try
     {
-        return Results.Json(new { message = "ملف التحديث غير موجود." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
+        var url = await PublishedRelease.LatestAssetUrlAsync(cancellationToken);
+        if (!PublishedRelease.IsAllowedDownload(url))
+        {
+            return Results.Json(new { message = "لا توجد حزمة منشورة بعد. ينشر المطوّر الحزمة أولاً." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
-    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        PublishedRelease.StartUpdater(PublishedRelease.BuildUpdaterScript(environment.ContentRootPath, url!));
+        return Results.Ok(new { message = "بدأ تنزيل آخر نشر. ستُعاد تشغيل الخدمة بعد اكتمال النسخ." });
+    }
+    catch (Exception exception)
     {
-        FileName = "powershell.exe",
-        Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
-        WorkingDirectory = @"D:\Google\XtraPOS",
-        UseShellExecute = true,
-        WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-    });
-    return Results.Ok(new { message = "بدأ التحديث. حدّث الصفحة بعد ثوانٍ." });
+        app.Logger.LogWarning(exception, "Published release update did not start.");
+        return Results.Json(new { message = "تعذر الوصول إلى آخر نشر." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 });
 if (app.Environment.IsStaging())
 {

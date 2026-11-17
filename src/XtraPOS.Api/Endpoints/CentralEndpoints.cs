@@ -19,6 +19,7 @@ public static class CentralEndpoints
         group.MapPost("/link", LinkAsync);
         group.MapPost("/bootstrap", BootstrapAsync);
         group.MapPost("/sync", SyncAsync);
+        group.MapPost("/refresh-prices", RefreshPricesAsync);
         group.MapPost("/branch-remote", PrepareRemoteAsync);
     }
 
@@ -223,6 +224,30 @@ public static class CentralEndpoints
         }
 
         var result = await sync.PullAsync(view.EndpointId, settings, cancellationToken);
+        return Results.Ok(result);
+    }
+
+    private static async Task<IResult> RefreshPricesAsync(
+        HttpContext http,
+        AuthService auth,
+        SyncEndpointStore store,
+        SharedDataSync sync,
+        CancellationToken cancellationToken)
+    {
+        if (await auth.GetCurrentAsync(http, cancellationToken) is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var view = await store.GetAsync(DatabaseRole.Central, cancellationToken);
+        var settings = await store.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
+        if (view is null || settings is null)
+        {
+            return Results.BadRequest(new { message = "لم يتم ربط الفرع بقاعدة مركزية." });
+        }
+
+        var result = await sync.PullAsync(view.EndpointId, settings, cancellationToken);
+        await sync.FillMissingUnitCostsAsync(settings, cancellationToken);
         return Results.Ok(result);
     }
 

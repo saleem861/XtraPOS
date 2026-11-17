@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Data;
 using XtraPOS.Api.Data.Central;
+using XtraPOS.Api.Security;
 
 namespace XtraPOS.Api.Sync;
 
@@ -115,6 +116,13 @@ public sealed class SharedDataSync(
             transaction) { CommandTimeout = 600 };
         var items = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
         await transaction.CommitAsync(cancellationToken);
+        await AccountAccessRepair.ApplyAsync(connection, null, cancellationToken);
+        await using (var centralConnection = new SqlConnection(central.BuildConnectionString(central.DatabaseName)))
+        {
+            await centralConnection.OpenAsync(cancellationToken);
+            await AccountAccessRepair.ApplyAsync(centralConnection, null, cancellationToken);
+        }
+
         if (!hasItemSearch)
         {
             await ArabicSearchKeyBackfill.ApplyAsync(connection, cancellationToken);
@@ -127,6 +135,12 @@ public sealed class SharedDataSync(
             throw new InvalidOperationException("Central bootstrap changed branch operational stock.");
         }
 
+        if (beforeInventory == 0 && beforeBalances == 0 && beforeMovements == 0)
+        {
+            await SeedNewPointItemsAsync(connection, central, cancellationToken);
+        }
+
+        await FillMissingUnitCostsAsync(central, cancellationToken);
         return items;
     }
 
@@ -632,6 +646,7 @@ public sealed class SharedDataSync(
             }
 
             await SaveCheckpointAsync(connection, endpointId, checkpoint, cancellationToken);
+            await RepairNullSaleCostsAsync(connection, centralConnection, cancellationToken);
             await SetEndpointStateAsync(connection, endpointId, null, cancellationToken);
             LastErrorDiagnostic = null;
             return new SyncRunResult(applied, null, true);
@@ -769,6 +784,220 @@ public sealed class SharedDataSync(
         command.Parameters.AddWithValue("@stream", StreamName);
         command.Parameters.AddWithValue("@version", version);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task SeedNewPointItemsAsync(SqlConnection branch, SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            $"""
+            DECLARE @branch uniqueidentifier =
+            (
+                SELECT TOP (1) TRY_CONVERT(uniqueidentifier, SettingValue)
+                FROM dbo.SystemSettings
+                WHERE SettingKey = N'BranchID'
+            );
+            IF @branch IS NULL
+                RETURN;
+
+            INSERT INTO dbo.ItemBranchInventory
+                (BranchID, ItemID, UnitCost, DailySalesRate, IsAvailable, IsActive, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, CAST(NULL AS decimal(19, 4)), NULL, 1, 1, SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.ItemBranchInventory AS card
+                WHERE card.BranchID = @branch AND card.ItemID = item.ItemID
+            );
+
+            INSERT INTO dbo.BranchStockBalances
+                (BranchID, ItemID, OnHandQuantity, IsQuantityInitialized, UnitCost, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, 0, 1, CAST(NULL AS decimal(19, 4)), SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.BranchStockBalances AS balance
+                WHERE balance.BranchID = @branch AND balance.ItemID = item.ItemID
+            );
+            """,
+            branch)
+        {
+            CommandTimeout = 300,
+        };
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task FillMissingUnitCostsAsync(SqlEndpointSettings central, CancellationToken cancellationToken)
+    {
+        if (!await CentralTableExistsAsync(central, "ItemBranchInventory", cancellationToken))
+        {
+            return;
+        }
+
+        await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
+        await branch.OpenAsync(cancellationToken);
+        await using var missing = new SqlCommand(
+            """
+            SELECT CASE
+                WHEN EXISTS (SELECT 1 FROM dbo.ItemBranchInventory WHERE UnitCost IS NULL)
+                  OR EXISTS (SELECT 1 FROM dbo.BranchStockBalances WHERE UnitCost IS NULL)
+                THEN 1 ELSE 0 END;
+            """,
+            branch);
+        if (Convert.ToInt32(await missing.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
+        {
+            await using var centralOnly = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+            await centralOnly.OpenAsync(cancellationToken);
+            await RepairNullSaleCostsAsync(branch, centralOnly, cancellationToken);
+            return;
+        }
+
+        var table = new DataTable();
+        table.Columns.Add("ItemID", typeof(Guid));
+        table.Columns.Add("UnitCost", typeof(decimal));
+        await using (var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName)))
+        {
+            await remote.OpenAsync(cancellationToken);
+            await using var read = new SqlCommand(
+                """
+                SELECT item.ItemID, COALESCE(warehouse.UnitCost, uniform.UnitCost)
+                FROM (SELECT DISTINCT ItemID FROM dbo.ItemBranchInventory WHERE UnitCost IS NOT NULL) AS item
+                OUTER APPLY (
+                    SELECT TOP (1) inv.UnitCost
+                    FROM dbo.ItemBranchInventory AS inv
+                    INNER JOIN dbo.Branches AS branch ON branch.BranchID = inv.BranchID
+                    WHERE inv.ItemID = item.ItemID
+                      AND inv.UnitCost IS NOT NULL
+                      AND branch.BranchType = N'Warehouse') AS warehouse
+                OUTER APPLY (
+                    SELECT MIN(inv.UnitCost) AS UnitCost
+                    FROM dbo.ItemBranchInventory AS inv
+                    WHERE inv.ItemID = item.ItemID AND inv.UnitCost IS NOT NULL
+                    HAVING MIN(inv.UnitCost) = MAX(inv.UnitCost)) AS uniform
+                WHERE COALESCE(warehouse.UnitCost, uniform.UnitCost) IS NOT NULL;
+                """,
+                remote)
+            {
+                CommandTimeout = 180,
+            };
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                table.Rows.Add(reader.GetGuid(0), reader.GetDecimal(1));
+            }
+        }
+
+        if (table.Rows.Count == 0)
+        {
+            return;
+        }
+
+        await using (var create = new SqlCommand(
+            "CREATE TABLE #CentralUnitCost (ItemID uniqueidentifier NOT NULL PRIMARY KEY, UnitCost decimal(19, 4) NOT NULL);",
+            branch))
+        {
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        using (var bulk = new SqlBulkCopy(branch) { DestinationTableName = "#CentralUnitCost", BulkCopyTimeout = 180 })
+        {
+            bulk.ColumnMappings.Add("ItemID", "ItemID");
+            bulk.ColumnMappings.Add("UnitCost", "UnitCost");
+            await bulk.WriteToServerAsync(table, cancellationToken);
+        }
+
+        await using var apply = new SqlCommand(
+            """
+            UPDATE card
+            SET UnitCost = cost.UnitCost,
+                UpdatedAt = SYSUTCDATETIME()
+            FROM dbo.ItemBranchInventory AS card
+            INNER JOIN #CentralUnitCost AS cost ON cost.ItemID = card.ItemID
+            WHERE card.UnitCost IS NULL;
+
+            UPDATE balance
+            SET UnitCost = cost.UnitCost,
+                UpdatedAt = SYSUTCDATETIME()
+            FROM dbo.BranchStockBalances AS balance
+            INNER JOIN #CentralUnitCost AS cost ON cost.ItemID = balance.ItemID
+            WHERE balance.UnitCost IS NULL;
+            """,
+            branch)
+        {
+            CommandTimeout = 300,
+        };
+        await apply.ExecuteNonQueryAsync(cancellationToken);
+        await using var centralConnection = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await centralConnection.OpenAsync(cancellationToken);
+        await RepairNullSaleCostsAsync(branch, centralConnection, cancellationToken);
+    }
+
+    private static async Task RepairNullSaleCostsAsync(SqlConnection branch, SqlConnection? central, CancellationToken cancellationToken)
+    {
+        await using var local = new SqlCommand(
+            """
+            UPDATE line
+            SET UnitCostSnapshot = card.UnitCost,
+                LineCostSnapshot = ROUND(card.UnitCost * CONVERT(decimal(19, 4), COALESCE(NULLIF(line.StockOwnerQuantity, 0), line.Quantity)), 4),
+                UnitProfitSnapshot = line.UnitPrice - card.UnitCost,
+                LineProfitSnapshot = line.LineTotal - ROUND(card.UnitCost * CONVERT(decimal(19, 4), COALESCE(NULLIF(line.StockOwnerQuantity, 0), line.Quantity)), 4),
+                CostSource = N'ItemCardUnitCost'
+            OUTPUT inserted.SaleItemID, inserted.UnitCostSnapshot, inserted.LineCostSnapshot, inserted.UnitProfitSnapshot, inserted.LineProfitSnapshot
+            FROM dbo.SaleItems AS line
+            INNER JOIN dbo.Sales AS sale ON sale.SaleID = line.SaleID
+            INNER JOIN dbo.ItemBranchInventory AS card
+                ON card.BranchID = sale.BranchID AND card.ItemID = line.ItemID AND card.UnitCost IS NOT NULL
+            WHERE line.UnitCostSnapshot IS NULL;
+            """,
+            branch)
+        {
+            CommandTimeout = 180,
+        };
+        var repaired = new List<(Guid Id, decimal Unit, decimal Line, decimal UnitProfit, decimal LineProfit)>();
+        try
+        {
+            await using var reader = await local.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                repaired.Add((reader.GetGuid(0), reader.GetDecimal(1), reader.GetDecimal(2), reader.GetDecimal(3), reader.GetDecimal(4)));
+            }
+        }
+        catch (SqlException)
+        {
+            return;
+        }
+
+        if (central is null || repaired.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in repaired)
+        {
+            await using var update = new SqlCommand(
+                """
+                UPDATE dbo.SaleItems
+                SET UnitCostSnapshot = @unit,
+                    LineCostSnapshot = @line,
+                    UnitProfitSnapshot = @unitProfit,
+                    LineProfitSnapshot = @lineProfit,
+                    CostSource = N'ItemCardUnitCost'
+                WHERE SaleItemID = @id AND UnitCostSnapshot IS NULL;
+                """,
+                central);
+            update.Parameters.AddWithValue("@id", row.Id);
+            update.Parameters.AddWithValue("@unit", row.Unit);
+            update.Parameters.AddWithValue("@line", row.Line);
+            update.Parameters.AddWithValue("@unitProfit", row.UnitProfit);
+            update.Parameters.AddWithValue("@lineProfit", row.LineProfit);
+            try
+            {
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (SqlException)
+            {
+                return;
+            }
+        }
     }
 
     private static async Task SetEndpointStateAsync(SqlConnection connection, Guid endpointId, string? error, CancellationToken cancellationToken)
@@ -980,6 +1209,15 @@ public sealed class SharedDataSync(
         FROM dbo.UserBranchAccess AS target
         INNER JOIN {source}UserBranchAccess AS source
             ON source.UserID = target.UserID AND source.BranchID = target.BranchID;
+
+        INSERT INTO dbo.UserBranchAccess (UserID, BranchID, IsActive, GrantedAt)
+        SELECT users.UserID, branch.BranchID, 1, SYSUTCDATETIME()
+        FROM dbo.Users AS users
+        CROSS JOIN dbo.Branches AS branch
+        WHERE users.IsActive = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM dbo.UserBranchAccess AS access
+              WHERE access.UserID = users.UserID AND access.BranchID = branch.BranchID);
 
         INSERT INTO dbo.PriceTypes (PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt)
         SELECT PriceTypeID, PriceCode, PriceName, SortOrder, IsActive, CreatedAt

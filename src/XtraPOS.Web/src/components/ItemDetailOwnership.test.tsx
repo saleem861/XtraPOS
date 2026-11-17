@@ -123,7 +123,7 @@ describe("item ownership screen", () => {
     expect(screen.getByText(/تعديل البيانات الأساسية يحتاج اتصالًا بالمركز/)).toBeTruthy();
     expect(screen.getByLabelText("اسم الصنف")).toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", { name: "حفظ البيانات الأساسية" })).toBeNull();
-    expect(screen.getByLabelText("تكلفة الوحدة")).toHaveProperty("disabled", false);
+    expect(screen.getByLabelText("تكلفة الوحدة")).toHaveProperty("disabled", true);
   });
 
   it("lets a standalone branch edit its own master fields through the branch API", async () => {

@@ -150,10 +150,20 @@ public sealed class UserAdministrationService(
                 await EnsureActorAsync(connection, transaction, actorUserId, cancellationToken);
                 await EnsureMirrorReadyAsync(branchSchema, roleCode, branchIds, cancellationToken);
                 await EnsureAvailableAsync(connection, transaction, userId, username, employeeNumber, cancellationToken);
-                await EnsureBranchesAsync(connection, transaction, branchIds, cancellationToken);
+                var everyBranch = await AllBranchIdsAsync(connection, transaction, cancellationToken);
+                foreach (var branchId in branchIds)
+                {
+                    if (!everyBranch.Contains(branchId))
+                    {
+                        everyBranch.Add(branchId);
+                    }
+                }
+
+                await EnsureBranchesAsync(connection, transaction, everyBranch, cancellationToken);
                 await InsertUserAsync(connection, transaction, branchSchema, userId, username, fullName, employeeNumber, hash, request?.IsActive ?? true, cancellationToken);
                 await ReplaceRoleAsync(connection, transaction, userId, roleCode, cancellationToken);
-                await ReplaceBranchesAsync(connection, transaction, userId, branchIds, cancellationToken);
+                await ReplaceBranchesAsync(connection, transaction, userId, everyBranch, cancellationToken);
+                await BranchAccessGrant.ApplyAsync(connection, transaction, cancellationToken);
                 await AuditAsync(connection, transaction, actorUserId, userId, UserAdminActions.Created, cancellationToken);
             },
             cancellationToken);
@@ -559,6 +569,8 @@ public sealed class UserAdministrationService(
             await grant.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await BranchAccessGrant.ApplyAsync(branch, transaction, cancellationToken);
+
         foreach (var audit in audits)
         {
             await using var insert = Command(
@@ -817,6 +829,19 @@ public sealed class UserAdministrationService(
         {
             throw new UserAdministrationException("رقم الموظف مستخدم بالفعل.");
         }
+    }
+
+    private static async Task<List<Guid>> AllBranchIdsAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var ids = new List<Guid>();
+        await using var command = Command(connection, transaction, "SELECT BranchID FROM dbo.Branches;");
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            ids.Add(reader.GetGuid(0));
+        }
+
+        return ids;
     }
 
     private static async Task EnsureBranchesAsync(SqlConnection connection, SqlTransaction transaction, IReadOnlyCollection<Guid> branchIds, CancellationToken cancellationToken)

@@ -61,6 +61,7 @@ public sealed class CentralPosReplicaSync(CentralConnectionFileStore centrals, S
                 await merge.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            await RemoveMissingAsync(local, rows.Select(row => row.Number).Distinct().ToArray(), cancellationToken);
             status.Report("Success", "pos-replica", null, null);
             return rows.Count;
         }
@@ -71,6 +72,27 @@ public sealed class CentralPosReplicaSync(CentralConnectionFileStore centrals, S
             status.Report("Error", "pos-replica", detail, id);
             return 0;
         }
+    }
+
+    private static async Task RemoveMissingAsync(SqlConnection connection, int[] numbers, CancellationToken cancellationToken)
+    {
+        if (numbers.Length == 0)
+        {
+            await using var clear = new SqlCommand("DELETE FROM dbo.CentralPosReplica;", connection);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+            return;
+        }
+
+        var names = new string[numbers.Length];
+        await using var remove = new SqlCommand { Connection = connection };
+        for (var index = 0; index < numbers.Length; index++)
+        {
+            names[index] = "@n" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            remove.Parameters.Add(names[index], SqlDbType.Int).Value = numbers[index];
+        }
+
+        remove.CommandText = "DELETE FROM dbo.CentralPosReplica WHERE PosNumber NOT IN (" + string.Join(", ", names) + ");";
+        await remove.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName, CancellationToken cancellationToken)
