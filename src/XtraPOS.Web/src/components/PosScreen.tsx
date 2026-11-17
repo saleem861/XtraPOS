@@ -1071,6 +1071,16 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     setMessage(repriced.status === "NeedsReprice" ? "تعذر إعادة تسعير بعض الأسطر. السلة محفوظة." : "");
   }
 
+  async function refreshPricesAndCosts() {
+    if (!cart) return;
+    try {
+      await fetch("/api/central/refresh-prices", { method: "POST", headers: deviceHeaders(session) });
+    } catch {
+      setMessage("تعذر تحديث الأسعار والتكاليف.");
+    }
+    await changeCustomer(cart.customerId);
+  }
+
   async function changeCustomer(customerId: string | null) {
     if (!cart) return;
     const next = await repriceCart(cart, customerId, pricingGateway(cart));
@@ -1356,16 +1366,16 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       {receipt ? <p className="status-ok">تمت عملية البيع بنجاح. رقم الفاتورة {receipt.saleNumber}. المجموع {receipt.total} ₪.{receipt.payments.some((payment) => Number(payment.changeAmount) > 0) ? ` الباقي ${receipt.payments.find((payment) => payment.method === "Cash")?.changeAmount ?? ""} ₪.` : ""}</p> : null}
       {message && !searchOpen ? <p className="status-error">{message}</p> : null}
       <div className="actions pos-action-bar" onMouseDown={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.preventDefault(); }}>
-        <button className="nav-button" type="button" onClick={() => void changeCustomer(cart.customerId)}><RefreshCw className="pos-pro-icon" aria-hidden="true" />تحديث الأسعار</button>
+        <button className="nav-button" type="button" onClick={() => void refreshPricesAndCosts()}><RefreshCw className="pos-pro-icon" aria-hidden="true" />تحديث الأسعار والتكاليف</button>
         {confirmClear ? (
           <button className="danger-button" type="button" onClick={() => { setConfirmClear(false); void persist(clearCart(cart)); }}>تأكيد مسح السلة</button>
         ) : (
           <button className="nav-button" type="button" onClick={() => setConfirmClear(true)}><Trash2 className="pos-pro-icon" aria-hidden="true" />مسح السلة</button>
         )}
         {cashStatus === "ready" && !cashSession ? (
-          <button className="primary-button" type="button" onClick={() => { setCashMessage(""); setOpening(true); }}>بدء الوردية</button>
+          <button className="primary-button pos-commit" type="button" onClick={() => { setCashMessage(""); setOpening(true); }}>بدء الوردية</button>
         ) : (
-          <button className="primary-button" type="button" disabled={cart.lines.length === 0 || !cashSession || checkoutPending} onClick={() => { setPaying(true); setReceipt(null); }}><ShoppingCart className="pos-pro-icon" aria-hidden="true" />إتمام البيع</button>
+          <button className="primary-button pos-commit" type="button" disabled={cart.lines.length === 0 || !cashSession || checkoutPending} onClick={() => { setPaying(true); setReceipt(null); }}><ShoppingCart className="pos-pro-icon" aria-hidden="true" />إتمام البيع</button>
         )}
       </div>
       </div>

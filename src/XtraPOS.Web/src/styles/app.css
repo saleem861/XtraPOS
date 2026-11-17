@@ -2646,6 +2646,14 @@ html.pos-pro-shell .topbar {
   -webkit-overflow-scrolling: touch;
 }
 
+.pos-action-bar .pos-commit {
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
 .pos-top,
 .pos-summary,
 .pos-action-bar {

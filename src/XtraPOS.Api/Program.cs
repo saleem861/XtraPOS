@@ -220,6 +220,7 @@ builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<HeldSaleService>();
 builder.Services.AddScoped<CentralItemApi>();
 builder.Services.AddScoped<ItemEditService>();
+builder.Services.AddScoped<WarehouseCostService>();
 builder.Services.AddSingleton<LegacyItemImportService>();
 builder.Services.AddSingleton<ILegacyItemSource, SqlLegacyItemSource>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)

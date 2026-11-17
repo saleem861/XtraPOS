@@ -20,6 +20,57 @@ public static class ItemEndpoints
         group.MapPut("/{id:guid}/prices/default", UpdateDefaultPriceAsync);
         group.MapPut("/{id:guid}/prices/branch", UpdateBranchPriceAsync);
         group.MapPut("/{id:guid}/branch-state", UpdateBranchStateAsync);
+        group.MapPost("/warehouse-cost", SetWarehouseCostAsync);
+        group.MapPost("/warehouse-receipt", ReceiveWarehouseAsync);
+    }
+
+    private static async Task<IResult> SetWarehouseCostAsync(HttpContext http, AuthService auth, WarehouseCostService costs, WarehouseCostRequest? request, CancellationToken cancellationToken)
+    {
+        var caller = await RequireAdminAsync(http, auth, cancellationToken);
+        if (caller is null || request is null || request.ItemId == Guid.Empty)
+        {
+            return Results.Unauthorized();
+        }
+
+        try
+        {
+            await costs.SetCostAsync(request.ItemId, request.UnitCost, caller.UserId, cancellationToken);
+            return Results.Ok(new { unitCost = request.UnitCost });
+        }
+        catch (ItemEditException exception)
+        {
+            return Results.Json(new { message = exception.Message }, statusCode: exception.StatusCode);
+        }
+    }
+
+    private static async Task<IResult> ReceiveWarehouseAsync(HttpContext http, AuthService auth, WarehouseCostService costs, WarehouseReceiptRequest? request, CancellationToken cancellationToken)
+    {
+        var caller = await RequireAdminAsync(http, auth, cancellationToken);
+        if (caller is null || request is null || request.ItemId == Guid.Empty || request.Quantity <= 0)
+        {
+            return Results.BadRequest(new { message = "بيانات فاتورة المخزن غير مكتملة." });
+        }
+
+        try
+        {
+            var unitCost = await costs.ReceiveAsync(request.ItemId, request.Quantity, request.UnitCost, caller.UserId, cancellationToken);
+            return Results.Ok(new { unitCost });
+        }
+        catch (ItemEditException exception)
+        {
+            return Results.Json(new { message = exception.Message }, statusCode: exception.StatusCode);
+        }
+    }
+
+    private static async Task<CurrentUserResponse?> RequireAdminAsync(HttpContext http, AuthService auth, CancellationToken cancellationToken)
+    {
+        var current = await auth.GetCurrentAsync(http, cancellationToken);
+        if (current is null || !current.Permissions.Contains(PermissionCodes.SystemAdminister, StringComparer.Ordinal))
+        {
+            return null;
+        }
+
+        return current;
     }
 
     private static async Task<IResult> ListAsync(
@@ -320,6 +371,19 @@ public static class ItemEndpoints
         "all" => ItemActivityFilter.All,
         _ => ItemActivityFilter.Active,
     };
+
+    private sealed class WarehouseCostRequest
+    {
+        public Guid ItemId { get; set; }
+        public decimal UnitCost { get; set; }
+    }
+
+    private sealed class WarehouseReceiptRequest
+    {
+        public Guid ItemId { get; set; }
+        public decimal Quantity { get; set; }
+        public decimal UnitCost { get; set; }
+    }
 
     private static ItemSort ParseSort(string? value) =>
         string.Equals(value?.Trim(), "name", StringComparison.OrdinalIgnoreCase)

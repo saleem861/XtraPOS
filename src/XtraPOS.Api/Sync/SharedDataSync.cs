@@ -646,6 +646,7 @@ public sealed class SharedDataSync(
             }
 
             await SaveCheckpointAsync(connection, endpointId, checkpoint, cancellationToken);
+            await RepairNullSaleCostsAsync(connection, centralConnection, cancellationToken);
             await SetEndpointStateAsync(connection, endpointId, null, cancellationToken);
             LastErrorDiagnostic = null;
             return new SyncRunResult(applied, null, true);
@@ -844,6 +845,9 @@ public sealed class SharedDataSync(
             branch);
         if (Convert.ToInt32(await missing.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
         {
+            await using var centralOnly = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+            await centralOnly.OpenAsync(cancellationToken);
+            await RepairNullSaleCostsAsync(branch, centralOnly, cancellationToken);
             return;
         }
 
@@ -922,6 +926,78 @@ public sealed class SharedDataSync(
             CommandTimeout = 300,
         };
         await apply.ExecuteNonQueryAsync(cancellationToken);
+        await using var centralConnection = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
+        await centralConnection.OpenAsync(cancellationToken);
+        await RepairNullSaleCostsAsync(branch, centralConnection, cancellationToken);
+    }
+
+    private static async Task RepairNullSaleCostsAsync(SqlConnection branch, SqlConnection? central, CancellationToken cancellationToken)
+    {
+        await using var local = new SqlCommand(
+            """
+            UPDATE line
+            SET UnitCostSnapshot = card.UnitCost,
+                LineCostSnapshot = ROUND(card.UnitCost * CONVERT(decimal(19, 4), COALESCE(NULLIF(line.StockOwnerQuantity, 0), line.Quantity)), 4),
+                UnitProfitSnapshot = line.UnitPrice - card.UnitCost,
+                LineProfitSnapshot = line.LineTotal - ROUND(card.UnitCost * CONVERT(decimal(19, 4), COALESCE(NULLIF(line.StockOwnerQuantity, 0), line.Quantity)), 4),
+                CostSource = N'ItemCardUnitCost'
+            OUTPUT inserted.SaleItemID, inserted.UnitCostSnapshot, inserted.LineCostSnapshot, inserted.UnitProfitSnapshot, inserted.LineProfitSnapshot
+            FROM dbo.SaleItems AS line
+            INNER JOIN dbo.Sales AS sale ON sale.SaleID = line.SaleID
+            INNER JOIN dbo.ItemBranchInventory AS card
+                ON card.BranchID = sale.BranchID AND card.ItemID = line.ItemID AND card.UnitCost IS NOT NULL
+            WHERE line.UnitCostSnapshot IS NULL;
+            """,
+            branch)
+        {
+            CommandTimeout = 180,
+        };
+        var repaired = new List<(Guid Id, decimal Unit, decimal Line, decimal UnitProfit, decimal LineProfit)>();
+        try
+        {
+            await using var reader = await local.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                repaired.Add((reader.GetGuid(0), reader.GetDecimal(1), reader.GetDecimal(2), reader.GetDecimal(3), reader.GetDecimal(4)));
+            }
+        }
+        catch (SqlException)
+        {
+            return;
+        }
+
+        if (central is null || repaired.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in repaired)
+        {
+            await using var update = new SqlCommand(
+                """
+                UPDATE dbo.SaleItems
+                SET UnitCostSnapshot = @unit,
+                    LineCostSnapshot = @line,
+                    UnitProfitSnapshot = @unitProfit,
+                    LineProfitSnapshot = @lineProfit,
+                    CostSource = N'ItemCardUnitCost'
+                WHERE SaleItemID = @id AND UnitCostSnapshot IS NULL;
+                """,
+                central);
+            update.Parameters.AddWithValue("@id", row.Id);
+            update.Parameters.AddWithValue("@unit", row.Unit);
+            update.Parameters.AddWithValue("@line", row.Line);
+            update.Parameters.AddWithValue("@unitProfit", row.UnitProfit);
+            update.Parameters.AddWithValue("@lineProfit", row.LineProfit);
+            try
+            {
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (SqlException)
+            {
+                return;
+            }
+        }
     }
 
     private static async Task SetEndpointStateAsync(SqlConnection connection, Guid endpointId, string? error, CancellationToken cancellationToken)

@@ -251,7 +251,7 @@ function ProfileTab({
           <div className="edit-grid">
             <label>
               تكلفة الوحدة
-              <input aria-label="تكلفة الوحدة" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} />
+              <input aria-label="تكلفة الوحدة" value={unitCost} disabled readOnly />
             </label>
             <label className="check-line">
               <input type="checkbox" aria-label="متاح في الفرع" checked={available} onChange={(event) => setAvailable(event.target.checked)} />
