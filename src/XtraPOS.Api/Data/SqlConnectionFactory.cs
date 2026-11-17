@@ -395,6 +395,36 @@ public sealed class SqlConnectionFactory
         SqlConnection.ClearAllPools();
     }
 
+    public async Task DropRequestedLocalBranchAsync(CancellationToken cancellationToken)
+    {
+        var databaseName = RequireBranchName();
+        if (Devices.ProtectedDatabasePolicy.IsProtected(databaseName) || !BranchDatabase.IsAllowedName(databaseName))
+        {
+            throw new InvalidOperationException("Refusing to drop a protected or shared database.");
+        }
+
+        if (!Setup.BranchAgentRules.TryNormalizeLocalInstance(ConfiguredServer, out _))
+        {
+            throw new InvalidOperationException("Refusing to drop a database that is not on this machine.");
+        }
+
+        SqlConnection.ClearAllPools();
+        await using var connection = new SqlConnection(CreateMasterConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            $"""
+            IF DB_ID(N'{databaseName}') IS NOT NULL
+            BEGIN
+                ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                DROP DATABASE [{databaseName}];
+            END
+            """,
+            connection);
+        command.CommandTimeout = 60;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        SqlConnection.ClearAllPools();
+    }
+
     private async Task<DatabaseState> WaitUntilOnlineAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 20; attempt++)

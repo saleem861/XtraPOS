@@ -15,7 +15,7 @@ namespace XtraPOS.Api.Endpoints;
 
 public static class ApiEndpoints
 {
-    private static void ScheduleBranchServiceRemoval(string server, string database)
+    private static void ScheduleBranchServiceRemoval()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -25,11 +25,7 @@ public static class ApiEndpoints
         var install = AppContext.BaseDirectory.TrimEnd('\\');
         var script = Path.Combine(Path.GetTempPath(), "xtrapos-reset-branch.ps1");
         var body = """
-            $server = '__SERVER__'
-            $database = '__DATABASE__'
             $install = '__INSTALL__'
-            $localHost = ($server -split '\\')[0].Trim()
-            $isLocal = $localHost -in @('localhost', '.', '(local)', '127.0.0.1')
             & sc.exe stop XtraPOSBranchAgent | Out-Null
             for ($i = 0; $i -lt 40; $i++) {
               $state = & sc.exe query XtraPOSBranchAgent 2>&1 | Out-String
@@ -37,14 +33,9 @@ public static class ApiEndpoints
               Start-Sleep -Seconds 1
             }
             & sc.exe delete XtraPOSBranchAgent | Out-Null
-            if ($database -eq 'XtraPOS_Branch' -and $isLocal) {
-              & sqlcmd -S $server -E -b -Q "IF DB_ID(N'XtraPOS_Branch') IS NOT NULL BEGIN ALTER DATABASE [XtraPOS_Branch] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [XtraPOS_Branch]; END"
-            }
             if (Test-Path $install) { Remove-Item $install -Recurse -Force }
             """;
-        body = body.Replace("__SERVER__", server.Replace("'", "''"), StringComparison.Ordinal)
-            .Replace("__DATABASE__", database.Replace("'", "''"), StringComparison.Ordinal)
-            .Replace("__INSTALL__", install.Replace("'", "''"), StringComparison.Ordinal);
+        body = body.Replace("__INSTALL__", install.Replace("'", "''"), StringComparison.Ordinal);
         File.WriteAllText(script, body);
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
         {
@@ -277,7 +268,10 @@ public static class ApiEndpoints
             var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
             var connections = http.RequestServices.GetRequiredService<SqlConnectionFactory>();
             var deleteDatabase = body?.DeleteExclusiveDatabase == true;
+            var localBranch = string.Equals(connections.ConfiguredDatabase, Data.BranchDatabase.Name, StringComparison.OrdinalIgnoreCase)
+                && Setup.BranchAgentRules.TryNormalizeLocalInstance(connections.ConfiguredServer, out _);
             if (deleteDatabase
+                && !localBranch
                 && !connections.HasDroppableExclusiveInstallation
                 && !ProtectedDatabasePolicy.AllowsInstallationReset(connections.ConfiguredDatabase))
             {
@@ -311,48 +305,38 @@ public static class ApiEndpoints
                 }
             }
 
-            if (!deleteDatabase)
+            if (deleteDatabase)
+            {
+                var db = http.RequestServices.GetRequiredService<BranchDbContext>();
+                await db.Database.CloseConnectionAsync();
+                try
+                {
+                    await connections.DropRequestedLocalBranchAsync(cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    app.Logger.LogError(exception, "Installation database reset failed.");
+                    return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
+                }
+
+                http.RequestServices.GetRequiredService<OperationalBranchConnectionStore>().Clear();
+                http.RequestServices.GetRequiredService<OperationalBranchConnection>().Replace(null);
+                http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
+            }
+            else
             {
                 var revoked = await devices.RevokeCurrentAsync(http.Request, cancellationToken);
                 if (!revoked)
                 {
                     return Results.Unauthorized();
                 }
-
-                http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
-                InstallationState.Clear(environment.ContentRootPath);
-                SetupAuthorization.Invalidate(environment.ContentRootPath);
-                ScheduleBranchServiceRemoval(connections.ConfiguredServer, connections.ConfiguredDatabase);
-                return Results.Ok(new { status = "Reset", databaseDeleted = true });
             }
 
-            var db = http.RequestServices.GetRequiredService<BranchDbContext>();
-            await db.Database.CloseConnectionAsync();
-            try
-            {
-                if (connections.HasDroppableExclusiveInstallation)
-                {
-                    await connections.DropExclusiveOperationalInstallationAsync(cancellationToken);
-                }
-                else
-                {
-                    await connections.DropConfiguredInstallationAsync(cancellationToken);
-                }
-            }
-            catch (Exception exception)
-            {
-                app.Logger.LogError(exception, "Installation database reset failed.");
-                return Results.Json(new { message = "تعذر حذف قاعدة هذا التثبيت." }, statusCode: StatusCodes.Status500InternalServerError);
-            }
-
-            http.RequestServices.GetRequiredService<OperationalBranchConnectionStore>().Clear();
-            http.RequestServices.GetRequiredService<OperationalBranchConnection>().Replace(null);
             http.RequestServices.GetRequiredService<LocalPosSessionStore>().Clear();
-            http.RequestServices.GetRequiredService<BranchAgentWorker>().ForgetConfiguredBranch();
             InstallationState.Clear(environment.ContentRootPath);
             SetupAuthorization.Invalidate(environment.ContentRootPath);
-            ScheduleBranchServiceRemoval(connections.ConfiguredServer, connections.ConfiguredDatabase);
-            return Results.Ok(new { status = "Reset", databaseDeleted = true });
+            ScheduleBranchServiceRemoval();
+            return Results.Ok(new { status = "Reset", databaseDeleted = deleteDatabase });
         });
         app.MapGet("/api/sync/status", async (SyncStatusStore sync, SyncEndpointStore endpoints, SqlConnectionFactory connections, CancellationToken cancellationToken) =>
         {
