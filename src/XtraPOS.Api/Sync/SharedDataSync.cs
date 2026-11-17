@@ -855,10 +855,21 @@ public sealed class SharedDataSync(
             await remote.OpenAsync(cancellationToken);
             await using var read = new SqlCommand(
                 """
-                SELECT ItemID, MAX(UnitCost)
-                FROM dbo.ItemBranchInventory
-                WHERE UnitCost IS NOT NULL
-                GROUP BY ItemID;
+                SELECT item.ItemID, COALESCE(warehouse.UnitCost, uniform.UnitCost)
+                FROM (SELECT DISTINCT ItemID FROM dbo.ItemBranchInventory WHERE UnitCost IS NOT NULL) AS item
+                OUTER APPLY (
+                    SELECT TOP (1) inv.UnitCost
+                    FROM dbo.ItemBranchInventory AS inv
+                    INNER JOIN dbo.Branches AS branch ON branch.BranchID = inv.BranchID
+                    WHERE inv.ItemID = item.ItemID
+                      AND inv.UnitCost IS NOT NULL
+                      AND branch.BranchType = N'Warehouse') AS warehouse
+                OUTER APPLY (
+                    SELECT MIN(inv.UnitCost) AS UnitCost
+                    FROM dbo.ItemBranchInventory AS inv
+                    WHERE inv.ItemID = item.ItemID AND inv.UnitCost IS NOT NULL
+                    HAVING MIN(inv.UnitCost) = MAX(inv.UnitCost)) AS uniform
+                WHERE COALESCE(warehouse.UnitCost, uniform.UnitCost) IS NOT NULL;
                 """,
                 remote)
             {
