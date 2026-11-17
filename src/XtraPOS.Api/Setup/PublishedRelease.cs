@@ -65,23 +65,20 @@ public static class PublishedRelease
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("XtraPOS", "1"));
-        using (var probe = new HttpRequestMessage(HttpMethod.Get, StagingPackageUrl))
-        using (var staged = await http.SendAsync(probe, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        using var response = await http.GetAsync(LatestApi, cancellationToken);
+        if (response.IsSuccessStatusCode)
         {
-            if (staged.IsSuccessStatusCode)
+            var asset = FindAssetUrl(await response.Content.ReadAsStringAsync(cancellationToken));
+            if (!string.IsNullOrWhiteSpace(asset))
             {
-                return StagingPackageUrl;
+                return asset;
             }
         }
 
-        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        using var response = await http.GetAsync(LatestApi, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        return FindAssetUrl(await response.Content.ReadAsStringAsync(cancellationToken));
+        using var probe = new HttpRequestMessage(HttpMethod.Get, StagingPackageUrl);
+        using var staged = await http.SendAsync(probe, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        return staged.IsSuccessStatusCode ? StagingPackageUrl : null;
     }
 
     public static string BuildUpdaterScript(string installDirectory, string downloadUrl)
