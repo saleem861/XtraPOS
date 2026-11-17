@@ -133,12 +133,26 @@ public static class PublishedRelease
     {
         var path = Path.Combine(Path.GetTempPath(), "xtrapos-release-update.ps1");
         File.WriteAllText(path, script);
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // A child of the service is killed when the script stops the service, before the files are copied.
+        var command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\\"" + path + "\\\"";
         Process.Start(new ProcessStartInfo
         {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{path}\"",
-            UseShellExecute = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
+            FileName = "schtasks.exe",
+            Arguments = "/Create /F /TN XtraPOSBranchUpdate /SC ONCE /ST 00:00 /RL HIGHEST /TR \"" + command + "\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })?.WaitForExit(15000);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "schtasks.exe",
+            Arguments = "/Run /TN XtraPOSBranchUpdate",
+            UseShellExecute = false,
+            CreateNoWindow = true,
         });
     }
 }
