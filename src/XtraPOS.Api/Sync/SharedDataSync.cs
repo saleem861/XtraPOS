@@ -835,6 +835,45 @@ public sealed class SharedDataSync(
 
         await using var branch = new SqlConnection(branchConnections.CreateBranchConnectionString());
         await branch.OpenAsync(cancellationToken);
+        await using (var ensure = new SqlCommand(
+            """
+            DECLARE @branch uniqueidentifier =
+            (
+                SELECT TOP (1) TRY_CONVERT(uniqueidentifier, SettingValue)
+                FROM dbo.SystemSettings
+                WHERE SettingKey = N'BranchID'
+            );
+            IF @branch IS NULL
+                RETURN;
+
+            INSERT INTO dbo.ItemBranchInventory
+                (BranchID, ItemID, UnitCost, DailySalesRate, IsAvailable, IsActive, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, NULL, NULL, 1, 1, SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.ItemBranchInventory AS card
+                WHERE card.BranchID = @branch AND card.ItemID = item.ItemID
+            );
+
+            INSERT INTO dbo.BranchStockBalances
+                (BranchID, ItemID, OnHandQuantity, IsQuantityInitialized, UnitCost, CreatedAt, UpdatedAt)
+            SELECT @branch, item.ItemID, 0, 1, NULL, SYSUTCDATETIME(), SYSUTCDATETIME()
+            FROM dbo.Items AS item
+            WHERE NOT EXISTS
+            (
+                SELECT 1 FROM dbo.BranchStockBalances AS balance
+                WHERE balance.BranchID = @branch AND balance.ItemID = item.ItemID
+            );
+            """,
+            branch)
+        {
+            CommandTimeout = 300,
+        })
+        {
+            await ensure.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await using var missing = new SqlCommand(
             """
             SELECT CASE
