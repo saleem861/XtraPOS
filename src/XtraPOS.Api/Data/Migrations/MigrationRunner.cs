@@ -97,6 +97,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string ItemPriceUniquenessMigrationName = "Item price default and branch uniqueness";
     public const string SaleLineProfitMigrationId = "046_SaleLineProfit";
     public const string SaleLineProfitMigrationName = "Sale line unit and quantity profit";
+    public const string CashDrawerMigrationId = "047_CashDrawer";
+    public const string CashDrawerMigrationName = "Cash drawer counts and denominations";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -291,6 +293,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             SaleLineProfitMigrationId,
             SaleLineProfitMigrationName,
             "XtraPOS.Api.Data.Migrations.046_SaleLineProfit.sql"),
+        new(
+            CashDrawerMigrationId,
+            CashDrawerMigrationName,
+            "XtraPOS.Api.Data.Migrations.047_CashDrawer.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)
@@ -574,6 +580,11 @@ public sealed class SchemaInspection(
         "SalePayments",
         "Cashboxes",
         "SchemaUpdateHistory",
+        "CashDenominations",
+        "CashDrawerCounts",
+        "CashDrawerCountLines",
+        "EmployeeCashErrors",
+        "CashDrawerDecisions",
     ];
 
     public bool IsValid { get; } =

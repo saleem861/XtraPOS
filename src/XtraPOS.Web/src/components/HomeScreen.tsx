@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link2, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
+import { ClipboardList, Coins, Link2, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
@@ -12,6 +12,8 @@ import { ItemCatalogScreen } from "./ItemCatalogScreen";
 import { PosScreen } from "./PosScreen";
 import { OperationLogScreen } from "./OperationLogScreen";
 import { UserManagementScreen } from "./UserManagementScreen";
+import { CashDenominationScreen } from "./CashDenominationScreen";
+import { CashDrawerReviewScreen } from "./CashDrawerReviewScreen";
 
 interface HomeScreenProps {
   session: DeviceSession;
@@ -29,6 +31,8 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showCentral, setShowCentral] = useState(false);
   const [showCustomers, setShowCustomers] = useState(false);
   const [showOperationLog, setShowOperationLog] = useState(false);
+  const [showDenominations, setShowDenominations] = useState(false);
+  const [showDrawerReview, setShowDrawerReview] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -37,6 +41,8 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const isAdmin = user.permissions.includes("System.Administer");
   const canViewItems = isAdmin || user.permissions.includes("Items.View");
   const canViewUsers = isAdmin || user.permissions.includes("Users.View");
+  const canReviewDrawer = isAdmin || user.permissions.includes("CashDrawer.Review") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
+  const canConfigureDrawer = isAdmin || user.permissions.includes("CashDrawer.Configure") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
 
   useEffect(() => {
     const home = () => {
@@ -47,6 +53,8 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowCentral(false);
       setShowCustomers(false);
       setShowOperationLog(false);
+      setShowDenominations(false);
+      setShowDrawerReview(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -109,6 +117,14 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
     return <OperationLogScreen session={session} onBack={() => setShowOperationLog(false)} />;
   }
 
+  if (showDenominations && canConfigureDrawer) {
+    return <CashDenominationScreen session={session} onBack={() => setShowDenominations(false)} />;
+  }
+
+  if (showDrawerReview && canReviewDrawer) {
+    return <CashDrawerReviewScreen session={session} onBack={() => setShowDrawerReview(false)} />;
+  }
+
   if (showSettings) {
     return (
       <section className="card settings-screen">
@@ -141,6 +157,12 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
               <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowUsers(true)}>
                 <span className="home-nav-icon" aria-hidden="true"><Users /></span>
                 <span><strong>إدارة المستخدمين</strong></span>
+              </button>
+            ) : null}
+            {canConfigureDrawer ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowDenominations(true)}>
+                <span className="home-nav-icon" aria-hidden="true"><Coins /></span>
+                <span><strong>فئات النقد</strong></span>
               </button>
             ) : null}
             {isAdmin ? (
@@ -209,6 +231,15 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
             <span><strong>الأصناف</strong></span>
           </button>
         ) : null}
+        {canReviewDrawer ? (
+          <button className="home-nav-card" type="button" onClick={() => setShowDrawerReview(true)}>
+            <span className="home-nav-icon" aria-hidden="true"><ClipboardList /></span>
+            <span>
+              <strong>مراجعة الجرد</strong>
+              <small>عمليات جرار كل الفروع</small>
+            </span>
+          </button>
+        ) : null}
         <button className="home-nav-card" type="button" onClick={() => setShowCustomers(true)}>
           <span className="home-nav-icon" aria-hidden="true"><UsersRound /></span>
           <span>
@@ -216,7 +247,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
             <small>إدارة الزبائن والحسابات</small>
           </span>
         </button>
-        {isAdmin || canViewUsers ? (
+        {isAdmin || canViewUsers || canConfigureDrawer ? (
           <button className="home-nav-card" type="button" onClick={() => setShowSettings((open) => !open)}>
             <span className="home-nav-icon" aria-hidden="true"><Settings /></span>
             <span><strong>الإعدادات</strong></span>

@@ -6634,3 +6634,28 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .operation-log-actions { display: flex; gap: 8px; }
 .operation-log-stuck { background: #fff4d6; }
 .operation-log-warning { display: grid; gap: 10px; padding: 16px; border: 2px solid #a15c00; border-radius: 14px; background: #fff8ee; }
+
+.drawer-body { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(240px, 22%) minmax(0, 1fr); }
+.drawer-config { align-items: stretch; }
+.drawer-side { gap: 8px; }
+.drawer-side article, .drawer-grid article { display: grid; gap: 4px; padding: 10px; background: #fff; border: 1px solid #d5e1ee; border-radius: 16px; }
+.drawer-side article strong { font-size: 22px; }
+.drawer-side .is-match strong { color: #0f766e; }
+.drawer-side .is-short strong, .is-short { color: #b42318; }
+.drawer-side .is-over strong, .is-over { color: #1d4ed8; }
+.drawer-charge { margin: 0; color: #b42318; font-weight: 700; }
+.drawer-note, .drawer-side label, .drawer-filters label, .drawer-decision label { display: grid; gap: 4px; font-weight: 700; }
+.drawer-note textarea, .drawer-decision textarea, .drawer-side input { width: 100%; box-sizing: border-box; border: 1px solid #d5e1ee; border-radius: 12px; padding: 8px; font: inherit; }
+.drawer-clear { border-color: #b42318; color: #b42318; }
+.drawer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; min-height: 0; overflow: auto; }
+.drawer-grid article.is-focus { border-color: #0b3f6b; }
+.drawer-grid input { height: 56px; border: 0; border-radius: 12px; background: #f4f8fc; text-align: center; font-size: 28px; }
+.drawer-grid article.is-focus input { outline: 2px solid #0b3f6b; }
+.drawer-done { display: grid; place-items: center; gap: 12px; flex: 1; }
+.drawer-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.drawer-detail { padding: 16px; overflow: auto; }
+.drawer-detail > div { display: grid; gap: 12px; background: #fff; border-radius: 16px; padding: 16px; }
+.drawer-decision { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.is-active-denom td:nth-child(4) { color: #0f766e; font-weight: 700; }
+.is-stopped-denom { color: #94a3b8; }
+.sales-review-actions button.is-danger { border-color: #b42318; color: #b42318; }
