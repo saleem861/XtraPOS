@@ -49,6 +49,7 @@ import { ScreenHeader } from "./ScreenHeader";
 import { CreditSaleScreen } from "./CreditSaleScreen";
 import { PosCollectionScreen } from "./PosCollectionScreen";
 import { SalesInquiryScreen } from "./SalesInquiryScreen";
+import { CashDrawerScreen } from "./CashDrawerScreen";
 import { DebtAccountScreen } from "./DebtAccountScreen";
 import { DebtRepaymentScreen } from "./DebtRepaymentScreen";
 import { deviceHeaders } from "../api/client";
@@ -198,6 +199,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [creditOpen, setCreditOpen] = useState(false);
   const [collectOpen, setCollectOpen] = useState(false);
   const [salesOpen, setSalesOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [customerTarget, setCustomerTarget] = useState<"sale" | "collection">("sale");
   const [collectionPick, setCollectionPick] = useState<CustomerListItem | null>(null);
   const [invoicePrompt, setInvoicePrompt] = useState(false);
@@ -1242,7 +1244,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      {creditOpen || collectOpen || salesOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
+      {creditOpen || collectOpen || salesOpen || drawerOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
@@ -1390,11 +1392,13 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
             {QUICK_ACTIONS.map(({ label, icon: Icon, title }) => {
               const creditAction = label === "تأجيل الدفع";
               const salesAction = label === "المبيعات";
+              const drawerAction = label === "الجرار";
               const creditAllowed = creditEnabled && (user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer"));
               const collectionAllowed = collectionEnabled && (user.permissions.includes("Credit.Collect") || user.permissions.includes("System.Administer"));
               return (
                 <span key={label} style={{ display: "contents" }}>
-                  <button type="button" disabled={salesAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
+                  <button type="button" disabled={drawerAction ? false : salesAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
+                    if (drawerAction) { setDrawerOpen(true); return; }
                     if (salesAction) { setSalesOpen(true); return; }
                     if (!creditAction || !creditAllowed) return;
                     if (!creditOperationId) setCreditOperationId(crypto.randomUUID());
@@ -1483,6 +1487,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         />
       ) : null}
       {salesOpen ? <SalesInquiryScreen session={session} onBack={() => setSalesOpen(false)} /> : null}
+      {drawerOpen ? <CashDrawerScreen session={session} onBack={() => setDrawerOpen(false)} /> : null}
       {collectOpen ? (
         <PosCollectionScreen
           session={session}

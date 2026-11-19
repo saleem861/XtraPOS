@@ -58,6 +58,9 @@ public static class PermissionCodes
     public const string CreditSuspend = "Credit.Suspend";
     public const string CreditReverse = "Credit.Reverse";
     public const string CreditAudit = "Credit.Audit";
+    public const string CashDrawerCount = "CashDrawer.Count";
+    public const string CashDrawerReview = "CashDrawer.Review";
+    public const string CashDrawerConfigure = "CashDrawer.Configure";
 }
 
 public static class LoginFailureReasons

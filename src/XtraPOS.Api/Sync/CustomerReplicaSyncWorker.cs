@@ -70,6 +70,15 @@ public sealed class CustomerReplicaSyncWorker(IServiceProvider services, SyncSta
             logger.LogWarning(exception, "Price list sync from central did not finish.");
         }
 
+        try
+        {
+            await provider.GetRequiredService<XtraPOS.Api.Sales.CashDrawerService>().SynchronizeAsync(stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Cash drawer sync did not finish.");
+        }
+
         if (state is SharedDataSync.ReplicaNotInitialized or SharedDataSync.ReplicaBootstrapping
             || await sync.CatalogMissingAsync(settings, stoppingToken))
         {

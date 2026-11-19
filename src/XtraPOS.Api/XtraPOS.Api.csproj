@@ -212,6 +212,9 @@
     <EmbeddedResource Include="Data\Migrations\046_SaleLineProfit.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.046_SaleLineProfit.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\047_CashDrawer.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.047_CashDrawer.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>
@@ -265,6 +268,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\032_SaleLineProfit.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.032_SaleLineProfit.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\033_CashDrawer.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.033_CashDrawer.sql</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
