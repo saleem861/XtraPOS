@@ -73,6 +73,8 @@ public sealed class CentralMigrationRunner
     public const string SaleLineProfitMigrationName = "Sale line unit and quantity profit";
     public const string CashDrawerMigrationId = "033_CashDrawer";
     public const string CashDrawerMigrationName = "Cash drawer counts and denominations";
+    public const string CashDrawerOpenCountMigrationId = "034_CashDrawerOpenCount";
+    public const string CashDrawerOpenCountMigrationName = "Allow another cash drawer count after the first";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -109,6 +111,7 @@ public sealed class CentralMigrationRunner
         (ItemPriceUniquenessMigrationId, ItemPriceUniquenessMigrationName, "XtraPOS.Api.Data.Central.Migrations.031_ItemPriceUniqueness.sql"),
         (SaleLineProfitMigrationId, SaleLineProfitMigrationName, "XtraPOS.Api.Data.Central.Migrations.032_SaleLineProfit.sql"),
         (CashDrawerMigrationId, CashDrawerMigrationName, "XtraPOS.Api.Data.Central.Migrations.033_CashDrawer.sql"),
+        (CashDrawerOpenCountMigrationId, CashDrawerOpenCountMigrationName, "XtraPOS.Api.Data.Central.Migrations.034_CashDrawerOpenCount.sql"),
     ];
 
     private static readonly string ApplicationVersion =

@@ -26,7 +26,22 @@ Copy-Item (Join-Path $PWD "src\XtraPOS.Web\dist") $www -Recurse
 Get-ChildItem $publish -Filter "appsettings*.json" -File | Remove-Item -Force
 Get-ChildItem $publish -Include *.pdb,*.xml -Recurse -File | Remove-Item -Force
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $publish "*") -DestinationPath $zip
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::Open($zip, "Create")
+try {
+  Get-ChildItem $publish -Recurse -File | ForEach-Object {
+    $relative = $_.FullName.Substring($publish.Length).TrimStart("\")
+    $entry = $archive.CreateEntry($relative.Replace("\", "/"))
+    $output = $entry.Open()
+    try {
+      $source = [System.IO.File]::Open($_.FullName, "Open", "Read", "ReadWrite")
+      try { $source.CopyTo($output) } finally { $source.Close() }
+    } finally { $output.Close() }
+  }
+} finally { $archive.Dispose() }
+if (-not (Test-Path $zip)) { throw "Package zip was not created." }
 $tag = "branch-agent-" + $serial
 gh release create $tag $zip --repo saleem861/XtraPOS --title "XtraPOS Branch Agent $tag" --notes "Published branch agent package for the login update button."
+if ($LASTEXITCODE -ne 0) { throw "GitHub release was not created." }
 Write-Host "Published $tag"

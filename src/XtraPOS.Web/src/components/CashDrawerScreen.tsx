@@ -18,6 +18,7 @@ interface SubmitResult {
   attempt: number;
   status: "Matched" | "Shortage" | "Surplus";
   difference: number;
+  counted?: number;
   countId: string | null;
   charged: boolean;
   message: string;
@@ -28,11 +29,11 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [attempt, setAttempt] = useState(1);
   const [parentCountId, setParentCountId] = useState<string | null>(null);
-  const [previous, setPrevious] = useState<SubmitResult | null>(null);
+  const [firstCounted, setFirstCounted] = useState<number | null>(null);
   const [justification, setJustification] = useState("");
   const [askJustification, setAskJustification] = useState(false);
   const [message, setMessage] = useState("");
-  const [done, setDone] = useState("");
+  const [done, setDone] = useState<SubmitResult | null>(null);
   const [shiftOpen, setShiftOpen] = useState(true);
   const [pending, setPending] = useState(false);
   const [focus, setFocus] = useState(0);
@@ -47,31 +48,14 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
     void fetch("/api/cash-drawer/context", { headers: deviceHeaders(session) })
       .then(async (response) => {
         if (!response.ok) throw new Error("تعذر فتح جرد الجرار.");
-        return response.json() as Promise<{
-          shiftOpen: boolean;
-          attempt: number;
-          parentCountId: string | null;
-          previousStatus: SubmitResult["status"] | null;
-          previousDifference: number | null;
-          denominations: Denomination[];
-        }>;
+        return response.json() as Promise<{ shiftOpen: boolean; denominations: Denomination[] }>;
       })
       .then((payload) => {
         setShiftOpen(payload.shiftOpen);
         setDenominations(payload.denominations);
-        setAttempt(payload.attempt);
-        setParentCountId(payload.parentCountId);
-        if (payload.previousStatus && payload.previousDifference != null) {
-          setPrevious({
-            outcome: "Retry",
-            attempt: 1,
-            status: payload.previousStatus,
-            difference: payload.previousDifference,
-            countId: payload.parentCountId,
-            charged: false,
-            message: "العد الأول لم يطابق. أعد العد.",
-          });
-        }
+        setAttempt(1);
+        setParentCountId(null);
+        setFirstCounted(null);
       })
       .catch((error: Error) => setMessage(error.message));
   }, [session]);
@@ -119,7 +103,6 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
       }
       if (payload.outcome === "NeedJustification") {
         setAskJustification(true);
-        setPrevious(payload);
         setMessage(payload.message);
         window.setTimeout(() => document.querySelector<HTMLElement>("[data-drawer-field='justification']")?.focus(), 0);
         return;
@@ -127,35 +110,43 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
       if (payload.outcome === "Retry") {
         setAttempt(2);
         setParentCountId(payload.countId);
-        setPrevious(payload);
+        setFirstCounted(payload.counted ?? counted);
         setQuantities({});
         setJustification("");
         setAskJustification(false);
-        setMessage(payload.message);
+        setMessage("المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد.");
         return;
       }
-      setDone(payload.message);
+      setDone(payload);
     } finally {
       setPending(false);
     }
   }
 
-  const showStatus = previous && (attempt === 1 || askJustification);
   return (
     <section className={desktop && keyboardOpen ? "new-customer sales-review has-keyboard" : "new-customer sales-review"} dir="rtl" aria-label="جرد الجرار" onKeyDown={move}>
       <ScreenHeader title="جرد الجرار" onBack={onBack} />
       {done ? (
         <div className="drawer-done">
-          <strong>{done}</strong>
+          <strong>تم الجرد</strong>
+          <span>المجموع المعدود ₪ {money(done.counted ?? 0)}</span>
+          <span>النتيجة: {done.status === "Matched" ? "مطابق" : done.status === "Shortage" ? "نقص" : "زيادة"}</span>
+          <span>الفارق ₪ {money(Math.abs(done.difference))}</span>
+          {done.charged ? <p className="drawer-charge">النقص يُخصم على الموظف.</p> : null}
           <button className="primary-button" type="button" onClick={onBack}>رجوع</button>
         </div>
       ) : (
         <div className="sales-review-body drawer-body">
           <aside className="sales-review-actions drawer-side">
-            <article><span>المحاولة</span><strong>{attempt === 1 ? "العد الأول" : "العد الثاني"}</strong>{attempt === 2 ? <small>العد الأول لم يطابق. أعد العد.</small> : null}</article>
-            <article><span>المجموع المعدود</span><strong>₪ {money(counted)}</strong></article>
-            {showStatus && previous ? <StatusCard result={previous} /> : null}
-            {askJustification && previous?.status === "Shortage" ? <p className="drawer-charge">النقص سيُحسب على الموظف فور التأكيد.</p> : null}
+            {attempt === 2 ? (
+              <>
+                <article><span>العد الأول</span><strong>₪ {money(firstCounted ?? 0)}</strong></article>
+                <article><span>العد الثاني</span><strong>₪ {money(counted)}</strong></article>
+                <p>المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد.</p>
+              </>
+            ) : (
+              <article><span>العد الأول</span><strong>₪ {money(counted)}</strong></article>
+            )}
             {askJustification ? (
               <label className="drawer-note">تبرير الموظف
                 <textarea data-drawer-field="justification" value={justification} onChange={(event) => setJustification(event.target.value)} rows={4} />
@@ -192,17 +183,6 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
       ) : null}
       {desktop && keyboardOpen && !done ? <FullKeyboard onEnter={moveFromPad} /> : null}
     </section>
-  );
-}
-
-function StatusCard({ result }: { result: SubmitResult }) {
-  const kind = result.status === "Matched" ? "is-match" : result.status === "Shortage" ? "is-short" : "is-over";
-  const label = result.status === "Matched" ? "مطابق" : result.status === "Shortage" ? "نقص" : "زيادة";
-  return (
-    <article className={kind}>
-      <span>الحالة</span>
-      <strong>{label}{result.status === "Matched" ? "" : ` ₪ ${money(Math.abs(result.difference))}`}</strong>
-    </article>
   );
 }
 

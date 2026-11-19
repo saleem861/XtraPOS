@@ -67,6 +67,7 @@ public sealed class CreditOutboxWorker(
             "CustomerUpsert" => await scope.ServiceProvider.GetRequiredService<BranchCardOutboxSync>().RelayCustomerAsync(central, branch, cancellationToken),
             "MembershipEnrollment" or "MembershipUpsert" => await MembershipReplica.RelayAsync(central, branch, cancellationToken),
             "CompletedSale" => await XtraPOS.Api.Sales.SaleCentralRelay.RelayAsync(central, branch, cancellationToken),
+            "CashDrawerCount" or "CashDrawerDecision" => await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Sales.CashDrawerService>().RelayLoggedAsync(cancellationToken),
             null => await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? (object?)await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),

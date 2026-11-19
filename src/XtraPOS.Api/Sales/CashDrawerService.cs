@@ -1,5 +1,7 @@
+using System.Globalization;
 using Microsoft.Data.SqlClient;
 using XtraPOS.Api.Data;
+using XtraPOS.Api.Operations;
 using XtraPOS.Api.Security;
 using XtraPOS.Api.Sync;
 
@@ -24,37 +26,11 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
         await using var connection = await OpenLocalAsync(cancellationToken);
         var denominations = await ReadDenominationsAsync(connection, null, activeOnly: true, cancellationToken);
         var open = await sessions.GetCurrentAsync(actor, cancellationToken);
-        Guid? parentId = null;
-        string? previousStatus = null;
-        decimal? previousDifference = null;
-        if (open is not null)
-        {
-            await using var pending = new SqlCommand(
-                """
-                SELECT TOP (1) CountID, Status, DifferenceAmount
-                FROM dbo.CashDrawerCounts
-                WHERE CashSessionID = @session AND DeviceID = @device AND IsFinal = 0
-                ORDER BY CountedAt DESC;
-                """,
-                connection);
-            pending.Parameters.AddWithValue("@session", open.CashSessionId);
-            pending.Parameters.AddWithValue("@device", actor.DeviceId);
-            await using var reader = await pending.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                parentId = reader.GetGuid(0);
-                previousStatus = reader.GetString(1);
-                previousDifference = reader.GetDecimal(2);
-            }
-        }
-
         return new
         {
             shiftOpen = open is not null,
-            attempt = parentId is null ? 1 : 2,
-            parentCountId = parentId,
-            previousStatus,
-            previousDifference,
+            attempt = 1,
+            parentCountId = (Guid?)null,
             denominations,
         };
     }
@@ -108,17 +84,24 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
 
         var open = await sessions.GetCurrentAsync(actor, cancellationToken)
             ?? throw new CashDrawerException("افتح الوردية قبل جرد الجرار.", StatusCodes.Status409Conflict);
-        var pendingParent = await PendingParentAsync(connection, open.CashSessionId, actor.DeviceId, cancellationToken);
-        if (parentCountId is null)
+        if (parentCountId is not null)
         {
-            if (pendingParent is not null)
+            await using var parent = new SqlCommand(
+                """
+                SELECT CashSessionID, DeviceID, AttemptNumber
+                FROM dbo.CashDrawerCounts
+                WHERE CountID = @id;
+                """,
+                connection);
+            parent.Parameters.AddWithValue("@id", parentCountId.Value);
+            await using var parentReader = await parent.ExecuteReaderAsync(cancellationToken);
+            if (!await parentReader.ReadAsync(cancellationToken)
+                || parentReader.GetGuid(0) != open.CashSessionId
+                || parentReader.GetGuid(1) != actor.DeviceId
+                || parentReader.GetByte(2) != 1)
             {
-                throw new CashDrawerException("العد الأول محفوظ. أكمل العد الثاني.", StatusCodes.Status409Conflict);
+                throw new CashDrawerException("العد الثاني لا يطابق العد الأول المحفوظ.", StatusCodes.Status409Conflict);
             }
-        }
-        else if (pendingParent != parentCountId)
-        {
-            throw new CashDrawerException("العد الثاني لا يطابق العد الأول المحفوظ.", StatusCodes.Status409Conflict);
         }
 
         var finalAttempt = parentCountId is not null || status == CashDrawerRules.Matched;
@@ -132,9 +115,8 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
                 difference,
                 countId = parentCountId,
                 charged = false,
-                message = status == CashDrawerRules.Shortage
-                    ? "النقص سيُحسب على الموظف فور التأكيد."
-                    : "اكتب تبرير الفارق قبل التأكيد.",
+                counted,
+                message = "اكتب تبرير الفارق قبل التأكيد.",
             };
         }
 
@@ -174,7 +156,14 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
             insert.Parameters.AddWithValue("@status", status);
             insert.Parameters.AddWithValue("@justification", (object?)note ?? DBNull.Value);
             insert.Parameters.AddWithValue("@final", finalAttempt);
-            await insert.ExecuteNonQueryAsync(cancellationToken);
+            try
+            {
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (SqlException exception) when (exception.Number is 2601 or 2627)
+            {
+                throw new CashDrawerException("تعذر حفظ الجرد. أعد فتح شاشة الجرار وابدأ العد من الأول.", StatusCodes.Status409Conflict);
+            }
         }
 
         foreach (var denomination in denominations)
@@ -234,23 +223,31 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
             await error.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await BranchOperationLog.EnqueueAsync(connection, transaction, new BranchOperationDraft(
+            countId,
+            "CashDrawerCount",
+            countId.ToString("N"),
+            attempt == 1 ? "جرد الجرار — العد الأول" : "جرد الجرار — العد الثاني",
+            "CashDrawerCounts",
+            countId,
+            actor.BranchId,
+            actor.UserId,
+            actor.StationId), cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         await RelayCountAsync(connection, countId, cancellationToken);
+        await FinishDrawerLogAsync(connection, countId, countId, false, cancellationToken);
         return new
         {
             outcome = finalAttempt ? "Saved" : "Retry",
             attempt,
             status,
             difference,
+            counted,
             countId,
             charged,
             message = !finalAttempt
-                ? "العد الأول لم يطابق. أعد العد."
-                : status == CashDrawerRules.Matched
-                    ? "تم الجرد."
-                    : charged
-                        ? "تم الجرد. النقص محسوب على الموظف."
-                        : "تم الجرد. الزيادة مسجّلة.",
+                ? "المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد."
+                : "تم الجرد.",
         };
     }
 
@@ -494,10 +491,10 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
             throw new CashDrawerException("الجرد غير موجود.", StatusCodes.Status404NotFound);
         }
 
-        if (!header.Final || header.Status == CashDrawerRules.Matched)
+        if (header.Attempt != 2 || !header.Final || header.Status == CashDrawerRules.Matched)
         {
             if (central is not null) await central.DisposeAsync();
-            throw new CashDrawerException("هذا الجرد لا يقبل قراراً.", StatusCodes.Status409Conflict);
+            throw new CashDrawerException("القرار يُتخذ على العد الثاني فقط.", StatusCodes.Status409Conflict);
         }
 
         if (header.Decision is not null)
@@ -514,9 +511,22 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
 
         var decisionId = Guid.NewGuid();
         var wroteLocal = false;
+        var wroteCentral = false;
         if (await CountExistsAsync(local, countId, cancellationToken))
         {
             await InsertDecisionAsync(local, decisionId, header, actor.UserId, decisionCode, text, cancellationToken);
+            await using var logTransaction = (SqlTransaction)await local.BeginTransactionAsync(cancellationToken);
+            await BranchOperationLog.EnqueueAsync(local, logTransaction, new BranchOperationDraft(
+                decisionId,
+                "CashDrawerDecision",
+                countId.ToString("N"),
+                "قرار جرد الجرار",
+                "CashDrawerCounts",
+                countId,
+                header.BranchId,
+                actor.UserId,
+                header.StationId), cancellationToken);
+            await logTransaction.CommitAsync(cancellationToken);
             wroteLocal = true;
         }
 
@@ -527,6 +537,7 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
                 if (await CountExistsAsync(central, countId, cancellationToken))
                 {
                     await InsertDecisionAsync(central, decisionId, header, actor.UserId, decisionCode, text, cancellationToken);
+                    wroteCentral = true;
                     if (wroteLocal)
                     {
                         await using var mark = new SqlCommand(
@@ -545,7 +556,73 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
             await central.DisposeAsync();
         }
 
+        if (wroteLocal)
+        {
+            await FinishDrawerLogAsync(local, decisionId, countId, decision: true, cancellationToken);
+        }
+        else if (wroteCentral)
+        {
+            await using var logTransaction = (SqlTransaction)await local.BeginTransactionAsync(cancellationToken);
+            await BranchOperationLog.EnqueueAsync(local, logTransaction, new BranchOperationDraft(
+                decisionId,
+                "CashDrawerDecision",
+                countId.ToString("N"),
+                "قرار جرد الجرار",
+                "CashDrawerCounts",
+                countId,
+                header.BranchId,
+                actor.UserId,
+                header.StationId), cancellationToken);
+            await logTransaction.CommitAsync(cancellationToken);
+            await BranchOperationLog.MarkAsync(local, null, decisionId, "Completed", "القرار محفوظ على المركز.", cancellationToken);
+        }
+
         return new { decisionId, decision = decisionCode, note = text };
+    }
+
+    public async Task<string?> RelayLoggedAsync(CancellationToken cancellationToken)
+    {
+        await using var local = await OpenLocalAsync(cancellationToken);
+        await using var read = new SqlCommand(
+            """
+            SELECT TOP (1) OperationID, SourceEntityID, OperationType
+            FROM dbo.BranchOperationLog
+            WHERE Status NOT IN (N'Completed', N'Cancelled')
+              AND OperationType IN (N'CashDrawerCount', N'CashDrawerDecision')
+            ORDER BY Serial;
+            """,
+            local);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var operationId = reader.GetGuid(0);
+        var countId = reader.GetGuid(1);
+        var decision = reader.GetString(2) == "CashDrawerDecision";
+        await reader.CloseAsync();
+        await RelayCountAsync(local, countId, cancellationToken);
+        await FinishDrawerLogAsync(local, operationId, countId, decision, cancellationToken);
+        return decision ? "CashDrawerDecision" : "CashDrawerCount";
+    }
+
+    private async Task FinishDrawerLogAsync(SqlConnection local, Guid operationId, Guid countId, bool decision, CancellationToken cancellationToken)
+    {
+        await using var read = new SqlCommand(
+            decision
+                ? "SELECT RelayedAt FROM dbo.CashDrawerDecisions WHERE DecisionID = @id;"
+                : "SELECT RelayedAt FROM dbo.CashDrawerCounts WHERE CountID = @id;",
+            local);
+        read.Parameters.AddWithValue("@id", decision ? operationId : countId);
+        var relayed = await read.ExecuteScalarAsync(cancellationToken) is DateTime;
+        await BranchOperationLog.MarkAsync(
+            local,
+            null,
+            operationId,
+            relayed ? "Completed" : "Blocked",
+            relayed ? "تم ترحيل الجرد إلى المركز." : "المركز غير متاح. سيُعاد الترحيل.",
+            cancellationToken);
     }
 
     private static async Task<bool> CountExistsAsync(SqlConnection connection, Guid countId, CancellationToken cancellationToken)
@@ -919,21 +996,6 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
         {
             // The other side already has this value under another id.
         }
-    }
-
-    private static async Task<Guid?> PendingParentAsync(SqlConnection connection, Guid cashSessionId, Guid deviceId, CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand(
-            """
-            SELECT TOP (1) CountID
-            FROM dbo.CashDrawerCounts
-            WHERE CashSessionID = @session AND DeviceID = @device AND IsFinal = 0;
-            """,
-            connection);
-        command.Parameters.AddWithValue("@session", cashSessionId);
-        command.Parameters.AddWithValue("@device", deviceId);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is Guid id ? id : null;
     }
 
     private static async Task<IReadOnlyList<CashDenominationRow>> ReadDenominationsAsync(

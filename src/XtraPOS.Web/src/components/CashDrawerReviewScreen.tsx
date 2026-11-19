@@ -142,7 +142,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
   }
 
   const count = detail?.count;
-  const canDecide = count?.final && count.status !== "Matched" && !count.decision;
+  const canDecide = count?.attempt === 2 && count.final && count.status !== "Matched" && !count.decision;
   return (
     <section className={desktop && keyboardOpen ? "new-customer sales-review has-keyboard" : "new-customer sales-review"} dir="rtl" aria-label="مراجعة الجرد" onKeyDown={move}>
       <ScreenHeader title="مراجعة الجرد" onBack={detail ? () => setDetail(null) : onBack} />
@@ -183,7 +183,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
                     <td className={line.status === "Shortage" ? "is-short" : line.status === "Surplus" ? "is-over" : "is-match"}>{diffText(line.status, line.difference)}</td>
                     <td>{statusText(line.status)}</td>
                     <td>{line.justification || "—"}</td>
-                    <td>{decisionText(line.decision)}</td>
+                    <td>{line.attempt === 2 ? decisionText(line.decision) : "—"}</td>
                   </tr>
                 ))}
               </tbody>
