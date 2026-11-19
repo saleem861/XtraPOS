@@ -25,12 +25,14 @@ if (Test-Path $www) { Remove-Item $www -Recurse -Force }
 Copy-Item (Join-Path $PWD "src\XtraPOS.Web\dist") $www -Recurse
 Get-ChildItem $publish -Filter "appsettings*.json" -File | Remove-Item -Force
 Get-ChildItem $publish -Include *.pdb,*.xml -Recurse -File | Remove-Item -Force
+$localData = Join-Path $publish "App_Data"
+if (Test-Path $localData) { Remove-Item $localData -Recurse -Force -ErrorAction SilentlyContinue }
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::Open($zip, "Create")
 try {
-  Get-ChildItem $publish -Recurse -File | ForEach-Object {
+  Get-ChildItem $publish -Recurse -File | Where-Object { $_.FullName -notlike "*\App_Data\*" } | ForEach-Object {
     $relative = $_.FullName.Substring($publish.Length).TrimStart("\")
     $entry = $archive.CreateEntry($relative.Replace("\", "/"))
     $output = $entry.Open()
