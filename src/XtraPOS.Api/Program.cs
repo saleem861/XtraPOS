@@ -48,6 +48,12 @@ if (isBranchAgent)
         options.ServiceName = BranchAgentHostCommand.ServiceName;
     });
     builder.WebHost.UseUrls(BranchAgentHostCommand.LocalAppUrl);
+    // Branch devices offer deferred payment and debt collection unless their appsettings.json says otherwise.
+    // Inserted first so every other source (appsettings, environment, command line) still wins.
+    builder.Configuration.Sources.Insert(0, new Microsoft.Extensions.Configuration.Memory.MemoryConfigurationSource
+    {
+        InitialData = BranchAgentFeatureDefaults.Values,
+    });
 }
 
 builder.Logging.ClearProviders();

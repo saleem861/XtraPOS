@@ -117,6 +117,7 @@ XtraPOS نظام نقطة بيع يعمل بلا اتصال على جهاز ال
 - «المحفوظات»: `HeldDraftsScreen.tsx` بعنوان «استرجاع المسودات المحفوظة».
 - بيع آجل: `CreditSaleScreen.tsx` إذا كان الآجل مسموحاً.
 - «تسديد»: `PosCollectionScreen.tsx` إذا كان التحصيل مسموحاً.
+- مفتاحا `CreditSales:Enabled` و`CreditCollections:Enabled` مفعّلان افتراضياً على جهاز الفرع (`BranchAgentFeatureDefaults`، أدنى أولوية في الإعداد)، ويطفئهما `appsettings.json` على الجهاز إن وُضعا `false`. `CreditReversals:Enabled` يبقى مطفأً ما لم يُفعَّل صراحة.
 - «الجرد»: الزر موجود ومعطّل (`disabled`). جرد الجرار يُفتح من زر «الجرار» داخل نقطة البيع عبر `CashDrawerScreen.tsx`.
 - استعلام المبيعات: `SalesInquiryScreen.tsx` ثم تفاصيل `OrderDetailsScreen.tsx`.
 
