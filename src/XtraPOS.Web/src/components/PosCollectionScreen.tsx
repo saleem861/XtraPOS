@@ -173,6 +173,7 @@ export function PosCollectionScreen({ session, initialCustomerId, initialNumber,
         setAmount("");
         setOperationId(crypto.randomUUID());
         void customers.creditPolicy(customerId).then(setPolicy).catch(() => undefined);
+        void loadHistory(customerId);
         return;
       }
       setMessage(payload.message ?? "تم رفض التسديد.");
