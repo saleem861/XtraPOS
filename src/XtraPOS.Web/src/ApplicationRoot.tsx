@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect } from "react";
 import { traceUi } from "./diagnostics/trace";
 import App from "./App";
 import { MembershipDisplayPage } from "./components/MembershipDisplayPage";
+import { CustomerDisplayPage } from "./components/CustomerDisplayPage";
+import { customerDisplayPath } from "./customerDisplay/customerDisplay";
 import { MembershipEnrollPage } from "./components/MembershipEnrollPage";
 import { MyLogPage } from "./components/MyLogPage";
 import { MembershipReadyPage } from "./components/MembershipReadyPage";
@@ -43,6 +45,10 @@ export function ApplicationRoot({
 
   if (pathname.startsWith("/membership/verify/") || pathname.startsWith("/membership/counter/")) {
     return <MembershipPhonePage pathname={pathname} />;
+  }
+
+  if (pathname === customerDisplayPath) {
+    return <CustomerDisplayPage />;
   }
 
   if (pathname === "/membership/display" || pathname === "/membership/ready") {

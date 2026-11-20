@@ -118,6 +118,7 @@ XtraPOS نظام نقطة بيع يعمل بلا اتصال على جهاز ال
 - بيع آجل: `CreditSaleScreen.tsx` إذا كان الآجل مسموحاً.
 - «تسديد»: `PosCollectionScreen.tsx` إذا كان التحصيل مسموحاً.
 - مفتاحا `CreditSales:Enabled` و`CreditCollections:Enabled` مفعّلان افتراضياً على جهاز الفرع (`BranchAgentFeatureDefaults`، أدنى أولوية في الإعداد)، ويطفئهما `appsettings.json` على الجهاز إن وُضعا `false`. `CreditReversals:Enabled` يبقى مطفأً ما لم يُفعَّل صراحة.
+- «شاشة»: يفتح شاشة الزبون `/customer-display` (`CustomerDisplayPage.tsx`) في نافذة على الشاشة الثانية إن سمح Chrome بإدارة النوافذ. نقطة البيع تبث الحالة عبر `BroadcastChannel` باسم `xtrapos-customer-display` من `buildDisplayState` (`src/customerDisplay/customerDisplay.ts`): `idle` ترحيب ورمز عضوية العداد، `sale` الأصناف وآخر صنف والخصم والمطلوب، `payment` المطلوب والمدفوع والباقي، `deferred` المبلغ المؤجَّل فقط، `thanks` لمدة 20 ثانية مع رمز الفاتورة إن وُجد `VITE_PUBLIC_INVOICE_BASE` وإلا رمز العضوية. لا تُبث التكلفة ولا الربح ولا رصيد الدين ولا الحد الائتماني. رمز التحقق من العضوية يظهر فوقها من قناة `xtrapos-membership-display`.
 - «الجرد»: الزر موجود ومعطّل (`disabled`). جرد الجرار يُفتح من زر «الجرار» داخل نقطة البيع عبر `CashDrawerScreen.tsx`.
 - استعلام المبيعات: `SalesInquiryScreen.tsx` ثم تفاصيل `OrderDetailsScreen.tsx`.
 

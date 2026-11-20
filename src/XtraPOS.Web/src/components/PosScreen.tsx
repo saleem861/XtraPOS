@@ -57,6 +57,7 @@ import { membershipPricingCustomer } from "../membership/membershipPricing";
 import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
+import { buildDisplayState, customerDisplayChannel, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
 import { createIndexedDbDraftDatabase, loadDraft, publishCartRestoreView, recordCartStorageEvent, saveDraft } from "../cart/draftStore";
@@ -319,6 +320,9 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [cashPart, setCashPart] = useState("");
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [receipt, setReceipt] = useState<CompletedSale | null>(null);
+  const [receiptAt, setReceiptAt] = useState(0);
+  const [creditDeferred, setCreditDeferred] = useState("");
+  const [invoiceQr, setInvoiceQr] = useState("");
   const gesture = useRef({ x: 0, y: 0, moved: false, scrolled: false, cancelled: false });
   const cartRegionRef = useRef<HTMLDivElement>(null);
 
@@ -982,6 +986,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       holdSaleCustomer.current = false;
       setCompletedShare({ saleId: completed.saleId, phone });
       setReceipt(completed);
+      setReceiptAt(Date.now());
       setPaying(false);
       setTendered("");
       setCashPart("");
@@ -1132,6 +1137,53 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     setMembershipOpen(false);
     failMembershipScan();
   };
+
+  // Customer display on the second screen: same computer, BroadcastChannel, customer-facing fields only.
+  const displayState = useMemo(() => buildDisplayState({
+    business: session.businessName,
+    branch: session.branchName,
+    cart,
+    customerName: cart?.customerId ? saleCustomer?.name ?? null : null,
+    paying,
+    payMethod,
+    tendered,
+    cashPart,
+    creditOpen,
+    deferred: creditDeferred,
+    receipt,
+    receiptAt,
+    memberQr: counterQr,
+    invoiceQr,
+  }), [session.businessName, session.branchName, cart, saleCustomer, paying, payMethod, tendered, cashPart, creditOpen, creditDeferred, receipt, receiptAt, counterQr, invoiceQr]);
+  const displayStateRef = useRef<CustomerDisplayState>(displayState);
+  const displayChannelRef = useRef<BroadcastChannel | null>(null);
+  useEffect(() => {
+    if (typeof BroadcastChannel !== "function") return undefined;
+    const channel = new BroadcastChannel(customerDisplayChannel);
+    displayChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<{ type?: string }>) => {
+      if (event.data?.type === "hello") channel.postMessage({ type: "state", state: displayStateRef.current });
+    };
+    return () => {
+      channel.postMessage({ type: "state", state: { phase: "idle", business: session.businessName, branch: session.branchName, memberQr: "" } });
+      channel.close();
+      displayChannelRef.current = null;
+    };
+  }, [session.businessName, session.branchName]);
+  useEffect(() => {
+    displayStateRef.current = displayState;
+    displayChannelRef.current?.postMessage({ type: "state", state: displayState });
+  }, [displayState]);
+  useEffect(() => {
+    const base = publicHttpsBase(import.meta.env.VITE_PUBLIC_INVOICE_BASE as string | undefined);
+    if (!base || !completedShare) {
+      setInvoiceQr("");
+      return undefined;
+    }
+    let stop = false;
+    void QRCode.toDataURL(`${base}/invoices/${completedShare.saleId}`, { margin: 1, width: 360 }).then((image) => { if (!stop) setInvoiceQr(image); }).catch(() => undefined);
+    return () => { stop = true; };
+  }, [completedShare]);
 
   useEffect(() => {
     let stop = false;
@@ -1393,12 +1445,17 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
               const creditAction = label === "تأجيل الدفع";
               const salesAction = label === "المبيعات";
               const drawerAction = label === "الجرار";
+              const displayAction = label === "شاشة";
               const creditAllowed = creditEnabled && (user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer"));
               const collectionAllowed = collectionEnabled && (user.permissions.includes("Credit.Collect") || user.permissions.includes("System.Administer"));
               return (
                 <span key={label} style={{ display: "contents" }}>
-                  <button type="button" disabled={drawerAction ? false : salesAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
+                  <button type="button" disabled={drawerAction || salesAction || displayAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
                     if (drawerAction) { setDrawerOpen(true); return; }
+                    if (displayAction) {
+                      void openCustomerDisplay().then((opened) => { if (!opened) setMessage("اسمح للمتصفح بفتح النوافذ المنبثقة لهذا الموقع لعرض شاشة الزبون."); });
+                      return;
+                    }
                     if (salesAction) { setSalesOpen(true); return; }
                     if (!creditAction || !creditAllowed) return;
                     if (!creditOperationId) setCreditOperationId(crypto.randomUUID());
@@ -1483,7 +1540,8 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           userName={user.displayName}
           canCreate={user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer")}
           operationId={creditOperationId}
-          onBack={(posted) => { setCreditOpen(false); if (posted) setInvoicePrompt(true); }}
+          onDeferredChange={setCreditDeferred}
+          onBack={(posted) => { setCreditOpen(false); setCreditDeferred(""); if (posted) setInvoicePrompt(true); }}
         />
       ) : null}
       {salesOpen ? <SalesInquiryScreen session={session} onBack={() => setSalesOpen(false)} /> : null}

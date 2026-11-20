@@ -36,7 +36,7 @@ const typeLabel: Record<string, string> = {
   Adjustment: "تصحيح",
 };
 
-export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onBack }: {
+export function CreditSaleScreen({ session, cart, customerName, customerNumber = null, cashSessionId = null, canCreate, operationId, onDeferredChange, onBack }: {
   session: DeviceSession;
   cart: CartDraft;
   customerName: string;
@@ -46,6 +46,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   userName: string;
   canCreate: boolean;
   operationId: string;
+  onDeferredChange?: (deferred: string) => void;
   onBack: (posted: boolean) => void;
 }) {
   const customers = createCustomerClient(session);
@@ -68,6 +69,7 @@ export function CreditSaleScreen({ session, cart, customerName, customerNumber =
   const total = Number(cartTotals(cart).total);
   const shownDeferred = touched ? deferredInput : (deferredInput || String(total));
   const split = splitDeferred(total, Number(shownDeferred || "0"));
+  useEffect(() => { onDeferredChange?.(shownDeferred); }, [shownDeferred, onDeferredChange]);
   const deferred = "deferred" in split ? split.deferred : null;
   const immediate = "immediate" in split ? split.immediate : null;
   const block = creditEligible(policy, cart.customerId, canCreate);
