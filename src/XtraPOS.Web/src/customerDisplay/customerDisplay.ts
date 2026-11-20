@@ -49,8 +49,11 @@ function isAmount(value: string | null | undefined): value is string {
   }
 }
 
+// Always two decimals on the customer screen: 21 → 21.00.
 function money(value: string) {
-  return formatPosMoney(isAmount(value) ? value : "0");
+  const rounded = formatPosMoney(isAmount(value) ? value : "0");
+  const [whole, fraction = ""] = rounded.split(".");
+  return `${whole}.${(fraction + "00").slice(0, 2)}`;
 }
 
 function positive(value: string | null | undefined) {
