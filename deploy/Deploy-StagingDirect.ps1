@@ -79,6 +79,9 @@ $prepared | ConvertTo-Json -Depth 8 | Set-Content $agentSettings -Encoding utf8
 $agentWeb = Join-Path $agentPublish "wwwroot"
 New-Item -ItemType Directory -Force -Path $agentWeb | Out-Null
 Copy-Item (Join-Path $root "src\XtraPOS.Web\dist\*") $agentWeb -Recurse -Force
+$agentUpdater = Join-Path $agentPublish "Updater"
+New-Item -ItemType Directory -Force -Path $agentUpdater | Out-Null
+Copy-Item (Join-Path $root "deploy\updater\*.ps1") $agentUpdater -Force
 dotnet publish (Join-Path $root "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o $setupPublish
 if ($LASTEXITCODE -ne 0) { throw "Branch agent installer publish failed." }
 $zip = Join-Path $downloads "branch-agent.zip"

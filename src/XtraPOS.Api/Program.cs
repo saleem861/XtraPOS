@@ -1037,6 +1037,22 @@ app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment envir
         return Results.NotFound();
     }
 
+    // The separate updater task stops, replaces, and restarts this service. The service only asks.
+    var folder = UpdaterChannel.DefaultFolder;
+    if (UpdaterChannel.IsAlive(UpdaterChannel.ReadHeartbeat(folder), DateTime.UtcNow))
+    {
+        try
+        {
+            var requestId = UpdaterChannel.Request(folder, DateTime.UtcNow);
+            return Results.Ok(new { mode = "updater", requestId, message = "تم طلب التحديث." });
+        }
+        catch (Exception exception)
+        {
+            app.Logger.LogWarning(exception, "The update request could not be written for the updater task.");
+            return Results.Json(new { message = "تعذر إرسال طلب التحديث إلى برنامج التحديث." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
     try
     {
         var url = await PublishedRelease.LatestAssetUrlAsync(cancellationToken);
@@ -1046,13 +1062,29 @@ app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment envir
         }
 
         PublishedRelease.StartUpdater(PublishedRelease.BuildUpdaterScript(environment.ContentRootPath, url!));
-        return Results.Ok(new { message = "بدأ تنزيل آخر نشر. ستُعاد تشغيل الخدمة بعد اكتمال النسخ." });
+        return Results.Ok(new { mode = "legacy", message = "بدأ تنزيل آخر نشر. ستُعاد تشغيل الخدمة بعد اكتمال النسخ." });
     }
     catch (Exception exception)
     {
         app.Logger.LogWarning(exception, "Published release update did not start.");
-        return Results.Json(new { message = "تعذر الوصول إلى آخر نشر." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Json(new { message = "برنامج التحديث غير مثبّت على هذا الجهاز، وتعذر بدء التحديث القديم." }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
+});
+app.MapGet("/api/local-update/status", (HttpContext http, IHostEnvironment environment) =>
+{
+    var remote = http.Connection.RemoteIpAddress;
+    if (remote is null || !System.Net.IPAddress.IsLoopback(remote))
+    {
+        return Results.NotFound();
+    }
+
+    var folder = UpdaterChannel.DefaultFolder;
+    return Results.Ok(new
+    {
+        installed = UpdaterChannel.InstalledSerial(environment.ContentRootPath),
+        updaterAlive = UpdaterChannel.IsAlive(UpdaterChannel.ReadHeartbeat(folder), DateTime.UtcNow),
+        status = UpdaterChannel.ReadStatus(folder),
+    });
 });
 if (app.Environment.IsStaging())
 {

@@ -23,6 +23,14 @@ finally {
 $www = Join-Path $publish "wwwroot"
 if (Test-Path $www) { Remove-Item $www -Recurse -Force }
 Copy-Item (Join-Path $PWD "src\XtraPOS.Web\dist") $www -Recurse
+# The updater runs outside the service. New devices install it from this folder; installed updaters replace themselves from it.
+$updaterOut = Join-Path $publish "Updater"
+New-Item -ItemType Directory -Force -Path $updaterOut | Out-Null
+Copy-Item (Join-Path $PWD "deploy\updater\*.ps1") $updaterOut -Force
+Set-Content -Path (Join-Path $publish "release.json") -Value (@{ serial = $serial; tag = "branch-agent-$serial" } | ConvertTo-Json) -Encoding ascii
+$setupOut = Join-Path $PWD "artifacts\branch-agent-setup-$serial"
+dotnet publish (Join-Path $PWD "src\XtraPOS.BranchAgent.Setup\XtraPOS.BranchAgent.Setup.csproj") -c Release -r win-x64 --self-contained false /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o $setupOut
+if ($LASTEXITCODE -ne 0) { throw "Branch agent installer publish failed with $LASTEXITCODE." }
 Get-ChildItem $publish -Include *.pdb,*.xml -Recurse -File | Remove-Item -Force
 $localData = Join-Path $publish "App_Data"
 if (Test-Path $localData) { Remove-Item $localData -Recurse -Force -ErrorAction SilentlyContinue }
@@ -91,6 +99,7 @@ $deviceDir = Join-Path $PWD "artifacts\branch-agent-downloads"
 if (Test-Path $deviceDir) { Remove-Item $deviceDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $deviceDir | Out-Null
 Copy-Item $deviceZip (Join-Path $deviceDir "branch-agent.zip") -Force
+Copy-Item (Join-Path $setupOut "XtraPOS-BranchAgent-Setup.exe") (Join-Path $deviceDir "XtraPOS-BranchAgent-Setup.exe") -Force
 Set-Content -Path (Join-Path $deviceDir "branch-agent.sha256") -Value $hash -Encoding ascii
 Set-Content -Path (Join-Path $deviceDir "branch-agent.json") -Value (@{ version = "0.3.0"; sha256 = $hash } | ConvertTo-Json) -Encoding ascii
 $bash = "C:\Program Files\Git\bin\bash.exe"
@@ -108,10 +117,10 @@ $writable = & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=ye
 if ($writable -ne "WRITABLE") { throw "The setup site cannot be updated. The update button release $tag is already published." }
 & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'mkdir -p /opt/xtrapos-staging/current/web/downloads'"
 if ($LASTEXITCODE -ne 0) { throw "The new-device folder was not created. The update button release $tag is already published." }
-& $bash -lc "scp -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes '$dirBash/branch-agent.zip' '$dirBash/branch-agent.sha256' '$dirBash/branch-agent.json' '${target}:/opt/xtrapos-staging/current/web/downloads/'"
+& $bash -lc "scp -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes '$dirBash/branch-agent.zip' '$dirBash/branch-agent.sha256' '$dirBash/branch-agent.json' '$dirBash/XtraPOS-BranchAgent-Setup.exe' '${target}:/opt/xtrapos-staging/current/web/downloads/'"
 if ($LASTEXITCODE -ne 0) { throw "The new-device package was not copied. The update button release $tag is already published." }
-& $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'chmod 644 /opt/xtrapos-staging/current/web/downloads/branch-agent.zip /opt/xtrapos-staging/current/web/downloads/branch-agent.sha256 /opt/xtrapos-staging/current/web/downloads/branch-agent.json'"
+& $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'chmod 644 /opt/xtrapos-staging/current/web/downloads/branch-agent.zip /opt/xtrapos-staging/current/web/downloads/branch-agent.sha256 /opt/xtrapos-staging/current/web/downloads/branch-agent.json /opt/xtrapos-staging/current/web/downloads/XtraPOS-BranchAgent-Setup.exe'"
 Write-Host "New device package updated"
-Get-ChildItem (Join-Path $PWD "artifacts") -Directory -Filter "branch-agent-release*" | Where-Object { $_.FullName -ne $publish } | ForEach-Object {
+Get-ChildItem (Join-Path $PWD "artifacts") -Directory | Where-Object { ($_.Name -like "branch-agent-release*" -or $_.Name -like "branch-agent-setup-*") -and $_.FullName -ne $publish -and $_.FullName -ne $setupOut } | ForEach-Object {
   Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }

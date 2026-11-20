@@ -59,7 +59,13 @@ internal static class Program
                 throw new InvalidOperationException("تم نسخ الخدمة، لكن لم يبدأ الاستماع المحلي. أعد تشغيل المثبّت.");
             }
 
-            MessageBox.Show("تم تثبيت خدمة XtraPOS وتشغيلها. ارجع إلى صفحة الإعداد.", "XtraPOS", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            var updater = InstallUpdater();
+            MessageBox.Show(
+                updater ? "تم تثبيت خدمة XtraPOS وبرنامج التحديث وتشغيلهما. ارجع إلى صفحة الإعداد."
+                        : "تم تثبيت خدمة XtraPOS وتشغيلها، لكن تعذر تثبيت برنامج التحديث. زر «تحديث التطبيق» لن يعمل حتى يُثبَّت. ارجع إلى صفحة الإعداد.",
+                "XtraPOS",
+                MessageBoxButtons.OK,
+                updater ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             return 0;
         }
         catch (Exception exception)
@@ -106,6 +112,18 @@ internal static class Program
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             entry.ExtractToFile(target, overwrite: true);
         }
+    }
+
+    // The updater task replaces this service on "تحديث التطبيق" from outside the service process.
+    private static bool InstallUpdater()
+    {
+        var script = Path.Combine(InstallDirectory, "Updater", "install-updater.ps1");
+        if (!File.Exists(script))
+        {
+            return false;
+        }
+
+        return Run("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"") == 0;
     }
 
     private static void GrantLocalSqlCreate()

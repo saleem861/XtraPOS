@@ -322,15 +322,19 @@ XtraPOS نظام نقطة بيع يعمل بلا اتصال على جهاز ال
 
 الأصناف والزبائن والدين والعضوية ومفتاح المرور موثّقة في ملفات `src/XtraPOS.Api/Endpoints`. وكيل الفرع في `BranchAgentEndpoints.cs`: رموز الاقتران، النبض، المهام، ونشر العضوية.
 
-التحديث: `POST /api/local-update` من الجهاز نفسه فقط. `PublishedRelease` يجد أصل `XtraPOS-BranchAgent.zip` في آخر إصدار للمستودع `saleem861/XtraPOS`. يكتب سكربت PowerShell في `C:\ProgramData\XtraPOS\xtrapos-release-update.ps1` ويشغّله بالمهمة المجدولة `XtraPOSBranchUpdate` بصلاحية عالية. السكربت:
+التحديث: برنامج تحديث مستقل عن الخدمة، حتى لا يبقى خلل في كود التحديث عالقاً داخل النسخة المركّبة.
 
-1. ينزّل الحزمة إلى `C:\Windows\Temp\XtraPOS-BranchAgent.zip`.
-2. يوقف الخدمة `XtraPOSBranchAgent` ويوقف أي عملية `XtraPOS.Api`.
-3. ينسخ الملفات بـ `Copy-Item` ويتجاوز `App_Data` و`appsettings*.json`.
-4. يشغّل الخدمة. إذا لم تصل إلى `RUNNING` يشغّل `XtraPOS.Api.exe`.
-5. يكتب النتيجة في `C:\Windows\Temp\xtrapos-release-update.log`.
+- السكربت `deploy/updater/xtrapos-updater.ps1` يعمل كمهمة مجدولة `XtraPOSUpdater` بحساب SYSTEM، عند الإقلاع وكل دقيقة (`IgnoreNew`)، من `C:\ProgramData\XtraPOS\Updater`. يكتب `heartbeat.txt` كل ثانيتين.
+- يُثبَّت بـ `deploy/updater/install-updater.ps1` كمدير. يستخدم `schtasks /XML` لا `Register-ScheduledTask`، لأن WMI معطوب على بعض الأجهزة. برنامج الإعداد `XtraPOS.BranchAgent.Setup` يشغّله تلقائياً من مجلد `Updater` داخل الحزمة.
+- `POST /api/local-update` (loopback فقط): إذا كان النبض أحدث من 3 دقائق يكتب `request.json` ويعيد `mode = updater` و`requestId`. غير ذلك يرجع إلى المسار القديم (`PublishedRelease.StartUpdater`، `mode = legacy`).
+- `GET /api/local-update/status` يعيد `installed` من `release.json` في مجلد البرنامج، و`updaterAlive`، و`status` من `status.json`.
+- المراحل: `Checking`، `Downloading`، `Backup`، `Stopping`، `Copying`، `Starting`، ثم `Succeeded` أو `UpToDate` أو `Failed`. عند الفشل بعد الإيقاف: `RollingBack` يعيد الملفات من النسخة الاحتياطية ويشغّل الخدمة.
+- لا يُنسخ `App_Data` ولا `appsettings*.json` ولا مجلد `Updater`. السكربت يستبدل نفسه إذا تغيّر في الحزمة.
+- شاشة الدخول تتابع `status.json` حتى 300 ثانية وتعرض المرحلة أو سبب الفشل.
+- سجل البرنامج: `C:\ProgramData\XtraPOS\Updater\updater.log`. السجل القديم `C:\Windows\Temp\xtrapos-release-update.log` للمسار القديم فقط.
+- ملفا السكربت ASCII فقط، لأن Windows PowerShell 5.1 يقرأ UTF-8 بلا BOM خطأ.
 
-النسخ القديم كان يستخدم `robocopy` ويتوقف عند الرمز 16 وتبقى الملفات القديمة. هذا المسار أُزيل في `f8e3194`. البرنامج الذي يعمل الآن ينفّذ السكربت المخبوز داخله، لا السكربت الذي في المصدر، إلا بعد تركيب حزمة تحتوي الإصلاح.
+سبب التغيير (21 نوفمبر 2026): الخدمة كانت تكتب السكربت ثم يفشل `schtasks /Create` من داخلها، فلا تُنشأ المهمة ولا يحدث شيء منذ 18 نوفمبر.
 
 ---
 
@@ -339,6 +343,8 @@ XtraPOS نظام نقطة بيع يعمل بلا اتصال على جهاز ال
 السكربت: `scripts/publish-branch-release.ps1`. يُشغَّل على جهاز ويندوز الذي يملك `gh` ومفتاح SSH لموقع الإعداد.
 
 يبني الواجهة برقم `VITE_RELEASE_SERIAL` من الساعة المحلية `yyyyMMdd-HHmmss`، وينشر الخادم إلى `artifacts\branch-agent-release-<serial>` (مجلد جديد في كل مرة منذ `22ed48a`، حتى لا يقف النشر على `appsettings.json` مقفل).
+
+يضيف إلى مجلد النشر `release.json` (الرقم) ومجلد `Updater` (سكربتا برنامج التحديث)، ويبني `XtraPOS-BranchAgent-Setup.exe` ويرفعه مع حزمة الجهاز الجديد.
 
 ينتج حزمتين:
 
@@ -375,6 +381,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-branch-release.ps1
 
 - الشروح للمستخدم بالعربية ومن اليمين إلى اليسار. أسماء التقنية بالإنجليزية بين قوسين.
 - أوامر PowerShell في كتلة من اليسار إلى اليمين وتبدأ بـ `Set-Location D:\Google\XtraPOS`.
+- لا يُعطى المستخدم أمرا PowerShell معاً إذا كان الثاني يعتمد على نتيجة الأول. أمر واحد، ثم انتظار نتيجته.
 - قواعد العمل `XtraPOS_Branch` و`XtraPOS_Central` فقط عند الحديث عن الإنتاج.
 - التحديث يوقف الخدمة، يجلب الحزمة، ينسخها دون الإعدادات و`App_Data`، ثم يشغّل الخدمة.
 - الجهاز الجديد يثبّت حزمة موقع الإعداد، وفيها الإعدادات.
