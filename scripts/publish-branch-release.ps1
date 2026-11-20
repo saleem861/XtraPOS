@@ -23,27 +23,77 @@ finally {
 $www = Join-Path $publish "wwwroot"
 if (Test-Path $www) { Remove-Item $www -Recurse -Force }
 Copy-Item (Join-Path $PWD "src\XtraPOS.Web\dist") $www -Recurse
-Get-ChildItem $publish -Filter "appsettings*.json" -File | Remove-Item -Force
 Get-ChildItem $publish -Include *.pdb,*.xml -Recurse -File | Remove-Item -Force
 $localData = Join-Path $publish "App_Data"
 if (Test-Path $localData) { Remove-Item $localData -Recurse -Force -ErrorAction SilentlyContinue }
+$settings = Join-Path $publish "appsettings.json"
+if (Test-Path $settings) {
+  $prepared = Get-Content $settings -Raw | ConvertFrom-Json
+  if (-not $prepared.Membership) { $prepared | Add-Member -MemberType NoteProperty -Name Membership -Value ([pscustomobject]@{}) }
+  $prepared.Membership.Enabled = $true
+  $prepared.Membership.GoogleLoginEnabled = $true
+  $prepared.Membership.AppleLoginEnabled = $false
+  $prepared.Membership.RequireVerificationForSpecialPrices = $false
+  if ([string]::IsNullOrWhiteSpace([string]$prepared.Membership.GoogleClientId)) {
+    $prepared.Membership | Add-Member -MemberType NoteProperty -Name GoogleClientId -Value "998725042091-t1p0fv71s7ajkbs104s62if1c1oviqmd.apps.googleusercontent.com" -Force
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$prepared.Membership.PublicOrigin)) {
+    $prepared.Membership | Add-Member -MemberType NoteProperty -Name PublicOrigin -Value "https://test-pos.sharbelfashion.com" -Force
+  }
+  $prepared | ConvertTo-Json -Depth 8 | Set-Content $settings -Encoding utf8
+}
+$deviceZip = Join-Path $PWD "artifacts\branch-agent.zip"
+if (Test-Path $deviceZip) { Remove-Item $deviceZip -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive = [System.IO.Compression.ZipFile]::Open($zip, "Create")
-try {
-  Get-ChildItem $publish -Recurse -File | Where-Object { $_.FullName -notlike "*\App_Data\*" } | ForEach-Object {
-    $relative = $_.FullName.Substring($publish.Length).TrimStart("\")
-    $entry = $archive.CreateEntry($relative.Replace("\", "/"))
-    $output = $entry.Open()
-    try {
-      $source = [System.IO.File]::Open($_.FullName, "Open", "Read", "ReadWrite")
-      try { $source.CopyTo($output) } finally { $source.Close() }
-    } finally { $output.Close() }
-  }
-} finally { $archive.Dispose() }
-if (-not (Test-Path $zip)) { throw "Package zip was not created." }
+function Write-PackageZip([string]$destination, [bool]$includeSettings) {
+  $archive = [System.IO.Compression.ZipFile]::Open($destination, "Create")
+  try {
+    Get-ChildItem $publish -Recurse -File | Where-Object {
+      $_.FullName -notlike "*\App_Data\*" -and (
+        ($includeSettings -and $_.Name -eq "appsettings.json") -or ($_.Name -notlike "appsettings*.json")
+      )
+    } | ForEach-Object {
+      $relative = $_.FullName.Substring($publish.Length).TrimStart("\")
+      $entry = $archive.CreateEntry($relative.Replace("\", "/"))
+      $output = $entry.Open()
+      try {
+        $source = [System.IO.File]::Open($_.FullName, "Open", "Read", "ReadWrite")
+        try { $source.CopyTo($output) } finally { $source.Close() }
+      } finally { $output.Close() }
+    }
+  } finally { $archive.Dispose() }
+}
+Write-PackageZip $zip $false
+Write-PackageZip $deviceZip $true
 $tag = "branch-agent-" + $serial
-gh release create $tag $zip --repo saleem861/XtraPOS --title "XtraPOS Branch Agent $tag" --notes "Published branch agent package for the login update button."
+gh release create $tag $zip --repo saleem861/XtraPOS --title "XtraPOS Branch Agent $tag" --notes "Published branch agent package for the login update button and new device setup."
 if ($LASTEXITCODE -ne 0) { throw "GitHub release was not created." }
 Write-Host "Published $tag"
+$hash = (Get-FileHash $deviceZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$deviceDir = Join-Path $PWD "artifacts\branch-agent-downloads"
+if (Test-Path $deviceDir) { Remove-Item $deviceDir -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $deviceDir | Out-Null
+Copy-Item $deviceZip (Join-Path $deviceDir "branch-agent.zip") -Force
+Set-Content -Path (Join-Path $deviceDir "branch-agent.sha256") -Value $hash -Encoding ascii
+Set-Content -Path (Join-Path $deviceDir "branch-agent.json") -Value (@{ version = "0.3.0"; sha256 = $hash } | ConvertTo-Json) -Encoding ascii
+$bash = "C:\Program Files\Git\bin\bash.exe"
+$key = Join-Path $PWD ".ssh\xtrapos_staging_deploy"
+if (-not (Test-Path $bash)) { throw "Git Bash is required to update the new-device package. The update button release $tag is already published." }
+if (-not (Test-Path $key)) { throw "Staging SSH key was not found. The update button release $tag is already published." }
+function To-GitBashPath([string]$path) {
+  $full = [IO.Path]::GetFullPath($path)
+  return "/" + $full.Substring(0, 1).ToLower() + ($full.Substring(2) -replace '\\', '/')
+}
+$keyBash = To-GitBashPath $key
+$dirBash = To-GitBashPath $deviceDir
+$target = "xtrapos-deploy@69.197.178.239"
+$writable = & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=20 $target 'test -w /opt/xtrapos-staging/current/web && echo WRITABLE || echo DENIED'"
+if ($writable -ne "WRITABLE") { throw "The setup site cannot be updated. The update button release $tag is already published." }
+& $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'mkdir -p /opt/xtrapos-staging/current/web/downloads'"
+if ($LASTEXITCODE -ne 0) { throw "The new-device folder was not created. The update button release $tag is already published." }
+& $bash -lc "scp -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes '$dirBash/branch-agent.zip' '$dirBash/branch-agent.sha256' '$dirBash/branch-agent.json' '${target}:/opt/xtrapos-staging/current/web/downloads/'"
+if ($LASTEXITCODE -ne 0) { throw "The new-device package was not copied. The update button release $tag is already published." }
+& $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'chmod 644 /opt/xtrapos-staging/current/web/downloads/branch-agent.zip /opt/xtrapos-staging/current/web/downloads/branch-agent.sha256 /opt/xtrapos-staging/current/web/downloads/branch-agent.json'"
+Write-Host "New device package updated"
