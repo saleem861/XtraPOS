@@ -28,9 +28,11 @@ public sealed class PublishedReleaseTests
         var script = PublishedRelease.BuildUpdaterScript(
             @"C:\Program Files\XtraPOS\BranchAgent",
             "https://github.com/saleem861/XtraPOS/releases/download/branch-agent-1/XtraPOS-BranchAgent.zip");
-        Assert.Contains("XtraPOSBranchAgent", script, StringComparison.Ordinal);
+        Assert.Contains("sc.exe stop XtraPOSBranchAgent", script, StringComparison.Ordinal);
+        Assert.Contains("sc.exe start XtraPOSBranchAgent", script, StringComparison.Ordinal);
+        Assert.Contains("Copy-Item", script, StringComparison.Ordinal);
         Assert.Contains("App_Data", script, StringComparison.Ordinal);
-        Assert.Contains("appsettings.json", script, StringComparison.Ordinal);
+        Assert.Contains("appsettings*.json", script, StringComparison.Ordinal);
         Assert.Contains(@"C:\Program Files\XtraPOS\BranchAgent", script, StringComparison.Ordinal);
         Assert.DoesNotContain("dotnet build", script, StringComparison.Ordinal);
         Assert.DoesNotContain("git pull", script, StringComparison.OrdinalIgnoreCase);

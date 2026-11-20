@@ -94,44 +94,58 @@ public static class PublishedRelease
             $ErrorActionPreference = 'Stop'
             $dest = '{{destination}}'
             $url = '{{address}}'
-            $log = Join-Path $env:TEMP 'xtrapos-release-update.log'
-            $zip = Join-Path $env:TEMP 'XtraPOS-BranchAgent.zip'
-            $stage = Join-Path $env:TEMP 'XtraPOS-BranchAgent-stage'
+            $log = 'C:\Windows\Temp\xtrapos-release-update.log'
+            $zip = 'C:\Windows\Temp\XtraPOS-BranchAgent.zip'
+            $stage = 'C:\Windows\Temp\XtraPOS-BranchAgent-stage'
             function Write-Log($message) {
               Add-Content -Path $log -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $message)
             }
             Write-Log 'release update started'
             try {
-              Start-Sleep -Seconds 2
               Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
               Write-Log 'package downloaded'
               & sc.exe stop XtraPOSBranchAgent | Out-Null
-              $deadline = (Get-Date).AddSeconds(40)
+              $deadline = (Get-Date).AddSeconds(30)
               do {
+                Get-Process -Name 'XtraPOS.Api' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 1
-                $query = & sc.exe query XtraPOSBranchAgent 2>$null | Out-String
-                if ($query -match 'STOPPED') { break }
-              } while ((Get-Date) -lt $deadline)
-              Get-Process -Name 'XtraPOS.Api' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-              Start-Sleep -Seconds 1
+              } while ((Get-Process -Name 'XtraPOS.Api' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline))
               if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
               Expand-Archive -Path $zip -DestinationPath $stage -Force
-              & robocopy $stage $dest /E /R:2 /W:2 /NFL /NDL /NJH /NJS /XD App_Data /XF appsettings.json appsettings.Development.json appsettings.Staging.json appsettings.Production.json 'appsettings*.json'
-              if ($LASTEXITCODE -ge 8) { throw "robocopy $LASTEXITCODE" }
-              Write-Log 'files copied'
+              $copied = 0
+              Get-ChildItem $stage -Recurse -File | Where-Object { $_.FullName -notlike '*\App_Data\*' -and $_.Name -notlike 'appsettings*.json' } | ForEach-Object {
+                $relative = $_.FullName.Substring($stage.Length).TrimStart('\')
+                $target = Join-Path $dest $relative
+                $parent = Split-Path $target
+                if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+                Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+                $copied++
+              }
+              if ($copied -lt 1) { throw 'no files copied' }
+              Write-Log ("files copied " + $copied)
             } catch {
               Write-Log $_.Exception.Message
               throw
             } finally {
               & sc.exe start XtraPOSBranchAgent | Out-Null
-              Write-Log 'service start requested'
+              Start-Sleep -Seconds 3
+              $query = & sc.exe query XtraPOSBranchAgent 2>$null | Out-String
+              if ($query -match 'RUNNING') {
+                Write-Log 'service started'
+              } else {
+                $exe = Join-Path $dest 'XtraPOS.Api.exe'
+                if (Test-Path $exe) { Start-Process -FilePath $exe -WorkingDirectory $dest }
+                Write-Log 'program started'
+              }
             }
             """;
     }
 
     public static void StartUpdater(string script)
     {
-        var path = Path.Combine(Path.GetTempPath(), "xtrapos-release-update.ps1");
+        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "XtraPOS");
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, "xtrapos-release-update.ps1");
         File.WriteAllText(path, script);
         if (!OperatingSystem.IsWindows())
         {
@@ -139,20 +153,31 @@ public static class PublishedRelease
         }
 
         // A child of the service is killed when the script stops the service, before the files are copied.
-        var command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \\\"" + path + "\\\"";
-        Process.Start(new ProcessStartInfo
+        var command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " + path;
+        var created = Process.Start(new ProcessStartInfo
         {
             FileName = "schtasks.exe",
             Arguments = "/Create /F /TN XtraPOSBranchUpdate /SC ONCE /ST 00:00 /RL HIGHEST /TR \"" + command + "\"",
             UseShellExecute = false,
             CreateNoWindow = true,
-        })?.WaitForExit(15000);
-        Process.Start(new ProcessStartInfo
+        });
+        created?.WaitForExit(15000);
+        if (created is null || created.ExitCode != 0)
+        {
+            throw new InvalidOperationException("تعذر جدولة إيقاف الخدمة وتحديثها.");
+        }
+
+        var started = Process.Start(new ProcessStartInfo
         {
             FileName = "schtasks.exe",
             Arguments = "/Run /TN XtraPOSBranchUpdate",
             UseShellExecute = false,
             CreateNoWindow = true,
         });
+        started?.WaitForExit(15000);
+        if (started is null || started.ExitCode != 0)
+        {
+            throw new InvalidOperationException("تعذر تشغيل تحديث الخدمة.");
+        }
     }
 }
