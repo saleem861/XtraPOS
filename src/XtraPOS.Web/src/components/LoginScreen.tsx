@@ -12,7 +12,8 @@ interface LoginScreenProps {
 export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [updateMessage, setUpdateMessage] = useState("");
+  const [updateMessage, setUpdateMessageState] = useState<{ text: string; ok: boolean } | null>(null);
+  const setUpdateMessage = (text: string, ok = false) => setUpdateMessageState(text ? { text, ok } : null);
   const [updating, setUpdating] = useState(false);
   const [updateLeft, setUpdateLeft] = useState(UPDATE_SECONDS);
   const [updateRequest, setUpdateRequest] = useState<string | null>(null);
@@ -24,11 +25,11 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
     if (!updating || !updateRequest) return;
     const started = Date.now();
     let done = false;
-    const finish = (message: string) => {
+    const finish = (message: string, ok = false) => {
       done = true;
       setUpdating(false);
       setUpdateRequest(null);
-      setUpdateMessage(message);
+      setUpdateMessage(message, ok);
     };
     const timer = window.setInterval(() => {
       if (done) return;
@@ -53,7 +54,7 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
             return;
           }
           if (status.state === "UpToDate") {
-            finish(`التطبيق محدّث إلى آخر نسخة (${status.to || body.installed}).`);
+            finish(`التطبيق محدّث إلى آخر نسخة (${status.to || body.installed}).`, true);
             return;
           }
           if (status.state === "Failed") {
@@ -158,6 +159,9 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
           </dd>
         </div>
       </dl>
+      {updateMessage ? (
+        <p className={updateMessage.ok ? "update-result is-ok" : "update-result is-error"} role="status" aria-live="polite">{updateMessage.text}</p>
+      ) : null}
       <form className="form" onSubmit={handleSubmit}>
         <label className="field">
           <span>اسم المستخدم</span>
@@ -185,7 +189,6 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
         <button className="ghost-button" type="button" disabled={updating} onClick={() => void updateApp()}>
           تحديث التطبيق
         </button>
-        {updateMessage ? <p className="form-error">{updateMessage}</p> : null}
       </form>
       {updating ? (
         <div className="update-timer" role="status" aria-live="polite">

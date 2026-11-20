@@ -68,6 +68,8 @@ describe("login update button", () => {
 
     render(<LoginScreen session={session} pending={false} error="" onSubmit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "تحديث التطبيق" }));
-    expect(await screen.findByText("التطبيق محدّث إلى آخر نسخة (20261121-000042).", undefined, { timeout: 5000 })).toBeTruthy();
+    const result = await screen.findByText("التطبيق محدّث إلى آخر نسخة (20261121-000042).", undefined, { timeout: 5000 });
+    expect(result.className).toContain("is-ok");
+    expect(result.compareDocumentPosition(screen.getByRole("button", { name: "تسجيل الدخول" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }, 10000);
 });

@@ -588,6 +588,26 @@ html.pos-pro-shell .topbar {
   50% { transform: translateY(-10px); }
 }
 
+.update-result {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.update-result.is-ok {
+  border: 1px solid #0e7c73;
+  background: #e6f4f2;
+  color: #0b645d;
+}
+
+.update-result.is-error {
+  border: 1px solid #b42318;
+  background: #fdecea;
+  color: #b42318;
+}
+
 .update-timer {
   position: absolute;
   inset: 0;
