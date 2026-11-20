@@ -6667,6 +6667,17 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .drawer-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .drawer-detail { padding: 16px; overflow: auto; }
 .drawer-detail > div { display: grid; gap: 12px; background: #fff; border-radius: 16px; padding: 16px; }
+.drawer-view { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(280px, 30%) minmax(0, 1fr); gap: 8px; padding: 8px; }
+.drawer-view-side { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 16px; }
+.drawer-view-side p { margin: 0; }
+.drawer-view-side article { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid #d5e1ee; border-radius: 12px; }
+.drawer-view-side article strong { font-size: 20px; }
+.drawer-view-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.drawer-view-main .ghost-button { align-self: start; min-height: 32px; padding: 4px 10px; }
+.drawer-view-grid { flex: 1 1 0; min-height: 0; display: grid; gap: 6px; align-content: center; }
+.drawer-view-grid article { min-height: 0; align-self: center; display: grid; gap: 2px; padding: 8px 10px; background: #fff; border: 1px solid #d5e1ee; border-radius: 12px; text-align: center; }
+.drawer-view-grid strong { font-size: clamp(18px, 2.6vh, 24px); }
+.drawer-view-grid b { font-size: clamp(28px, 4vh, 40px); line-height: 1; }
 .drawer-decision { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 .is-active-denom td:nth-child(4) { color: #0f766e; font-weight: 700; }
 .is-stopped-denom { color: #94a3b8; }

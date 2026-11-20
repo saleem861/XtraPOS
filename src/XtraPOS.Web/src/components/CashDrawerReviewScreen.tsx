@@ -72,7 +72,8 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
   const [note, setNote] = useState("");
   const [message, setMessage] = useState("");
   const desktop = usesDesktopCustomerKeyboard() || (typeof window.matchMedia === "function" && window.matchMedia("(orientation: landscape) and (min-width: 900px)").matches);
-  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(desktop);
+  const [showFirst, setShowFirst] = useState(false);
   const { branches, stations } = reviewChoices(options, branchId);
 
   async function load(nextPage = page) {
@@ -118,6 +119,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
     const response = await fetch(`/api/cash-drawer/reviews/${countId}`, { headers: deviceHeaders(session) });
     if (!response.ok) return;
     setNote("");
+    setShowFirst(false);
     setDetail(await response.json());
   }
 
@@ -143,9 +145,67 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
 
   const count = detail?.count;
   const canDecide = count?.attempt === 2 && count.final && count.status !== "Matched" && !count.decision;
+  const shown = showFirst && detail?.firstAttempt ? detail.firstAttempt : count;
+  function moveDecision() {
+    const fields = [...document.querySelectorAll<HTMLElement>("[data-decision-field]")];
+    if (fields.length === 0) return;
+    const index = fields.indexOf(document.activeElement as HTMLElement);
+    fields[index < 0 ? 0 : (index + 1) % fields.length]?.focus();
+  }
   return (
     <section className={desktop && keyboardOpen ? "new-customer sales-review has-keyboard" : "new-customer sales-review"} dir="rtl" aria-label="مراجعة الجرد" onKeyDown={move}>
-      <ScreenHeader title="مراجعة الجرد" onBack={detail ? () => setDetail(null) : onBack} />
+      <ScreenHeader title={detail ? "عرض جرد الموظف" : "مراجعة الجرد"} onBack={detail ? () => setDetail(null) : onBack} />
+      {detail && count && shown ? (
+        <div className="drawer-view">
+          <aside className="drawer-view-side">
+            <p>الموظف: {count.cashier}</p>
+            <p>الفرع: {count.branchName}</p>
+            <p>النقطة: {count.stationNumber} {count.stationName}</p>
+            <p>الوقت: {stamp(count.countedAt)}</p>
+            {detail.firstAttempt ? (
+              <article><span>العد الأول</span><strong>₪ {money(detail.firstAttempt.countedAmount)}</strong></article>
+            ) : null}
+            <article>
+              <span>{count.attempt === 2 ? "العد الثاني" : "العد الأول"}</span>
+              <strong>₪ {money(count.countedAmount)}</strong>
+              <span className={count.status === "Shortage" ? "is-short" : count.status === "Surplus" ? "is-over" : "is-match"}>{diffText(count.status, count.difference)}</span>
+            </article>
+            <p>{count.justification ? `التبرير: ${count.justification}` : "لا يوجد تبرير"}</p>
+            {canDecide ? (
+              <div className="drawer-decision" onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                event.stopPropagation();
+                moveDecision();
+              }}>
+                <label>ملاحظة<textarea data-decision-field value={note} onChange={(event) => setNote(event.target.value)} rows={2} /></label>
+                <button data-decision-field type="button" onClick={() => void decide(count.status === "Shortage" ? "KeepShortage" : "KeepSurplus")}>{count.status === "Shortage" ? "إبقاء النقص" : "إبقاء الزيادة"}</button>
+                {count.status === "Shortage" ? <button data-decision-field type="button" onClick={() => void decide("Waive")}>إعفاء الموظف</button> : null}
+              </div>
+            ) : count.decision ? (
+              <p>القرار: {decisionText(count.decision)} — {count.supervisorName} — {count.decidedAt ? stamp(count.decidedAt) : ""} — {count.decisionNote}</p>
+            ) : null}
+            {message ? <p className="form-error">{message}</p> : null}
+          </aside>
+          <div className="drawer-view-main">
+            {detail.firstAttempt ? (
+              <button type="button" className="ghost-button" onClick={() => setShowFirst((value) => !value)}>{showFirst ? "فئات العد الثاني" : "فئات العد الأول"}</button>
+            ) : null}
+            <div
+              className="drawer-view-grid"
+              style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gridTemplateRows: `repeat(${Math.max(1, Math.ceil(shown.lines.length / 3))}, minmax(0, 1fr))` }}
+            >
+              {shown.lines.map((line) => (
+                <article key={line.displayName + line.unitValue}>
+                  <strong>{line.displayName}</strong>
+                  <b>{line.quantity}</b>
+                  <span>₪ {money(line.lineAmount)}</span>
+                </article>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="sales-review-body">
         <aside className="sales-review-actions">
           <h3>إجراءات سريعة</h3>
@@ -196,56 +256,15 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
           </div>
         </div>
       </div>
+      )}
       {desktop ? (
         <button type="button" className="sales-review-keyboard-toggle" onClick={() => setKeyboardOpen((value) => !value)}>
           <ChevronDown aria-hidden="true" style={{ transform: keyboardOpen ? "none" : "rotate(180deg)" }} />
           {keyboardOpen ? "إخفاء لوحة المفاتيح والأرقام" : "إظهار لوحة المفاتيح والأرقام"}
         </button>
       ) : null}
-      {desktop && keyboardOpen ? <FullKeyboard onEnter={apply} /> : null}
-      {detail && count ? (
-        <div className="sales-review-details drawer-detail">
-          <div>
-            <h3>الجرد المعتمد</h3>
-            <CountFacts count={count} />
-            {detail.firstAttempt ? <><h3>العد الأول</h3><CountFacts count={detail.firstAttempt} /></> : null}
-            {canDecide ? (
-              <div className="drawer-decision" onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                const fields = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-decision-field]")];
-                const index = fields.indexOf(event.target as HTMLElement);
-                if (index < 0 || index === fields.length - 1) return;
-                event.preventDefault();
-                event.stopPropagation();
-                fields[index + 1]?.focus();
-              }}>
-                <label>ملاحظة<textarea data-decision-field value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></label>
-                <button data-decision-field type="button" onClick={() => void decide(count.status === "Shortage" ? "KeepShortage" : "KeepSurplus")}>{count.status === "Shortage" ? "إبقاء النقص" : "إبقاء الزيادة"}</button>
-                {count.status === "Shortage" ? <button data-decision-field type="button" onClick={() => void decide("Waive")}>إعفاء الموظف</button> : null}
-              </div>
-            ) : count.decision ? (
-              <p>القرار: {decisionText(count.decision)} — {count.supervisorName} — {count.decidedAt ? stamp(count.decidedAt) : ""} — {count.decisionNote}</p>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+      {desktop && keyboardOpen ? <FullKeyboard onEnter={canDecide ? moveDecision : apply} /> : null}
     </section>
-  );
-}
-
-function CountFacts({ count }: { count: CountDetail }) {
-  return (
-    <div>
-      <p>{stamp(count.countedAt)} — {count.cashier} — {count.branchName} — نقطة {count.stationNumber} {count.stationName} — المحاولة {count.attempt === 1 ? "الأولى" : "الثانية"}</p>
-      <div className="drawer-grid">
-        {count.lines.map((line) => (
-          <article key={line.displayName + line.unitValue}><strong>{line.displayName}</strong><span>الكمية {line.quantity}</span><span>₪ {money(line.lineAmount)}</span></article>
-        ))}
-      </div>
-      <p>المجموع المعدود ₪ {money(count.countedAmount)} — {diffText(count.status, count.difference)}</p>
-      <p>{count.justification ? `التبرير: ${count.justification}` : "لا يوجد تبرير"}</p>
-      <p>{count.status === "Shortage" ? "نقص محسوب على الموظف" : count.status === "Surplus" ? "زيادة مسجّلة" : "مطابق"}</p>
-    </div>
   );
 }
 
