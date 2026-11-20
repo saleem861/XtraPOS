@@ -72,10 +72,34 @@ describe("cash drawer review display", () => {
 
     render(<CashDrawerReviewScreen session={session} onBack={() => undefined} />);
     fireEvent.click(await screen.findByRole("button", { name: "عرض" }));
-    expect(await screen.findByText("فئات العد الأول")).toBeTruthy();
+    const first = await screen.findByRole("tab", { name: "فئات العد الأول" });
+    const second = screen.getByRole("tab", { name: "فئات العد الثاني" });
     expect(screen.getByLabelText("لوحة المفاتيح")).toBeTruthy();
     expect(screen.getByText("عرض جرد الموظف")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "فئات العد الأول" }));
-    expect(screen.getByRole("button", { name: "فئات العد الثاني" })).toBeTruthy();
+    expect(second.getAttribute("aria-selected")).toBe("true");
+    expect(first.getAttribute("aria-selected")).toBe("false");
+    expect(screen.getByText("4")).toBeTruthy();
+    fireEvent.click(first);
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    expect(second.getAttribute("aria-selected")).toBe("false");
+    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.queryByText("4")).toBeNull();
+  });
+
+  it("shows only the first count tab when there is one count", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+    const only = { countId: "count-1", countedAt: "2026-11-20T09:00:00Z", cashier: "أحمد", branchName: "شمس", stationNumber: 1, stationName: "كاونتر", attempt: 1, countedAmount: 8, difference: 0, status: "Matched", justification: null, final: true, decision: null, decisionNote: null, supervisorName: null, decidedAt: null, lines: [{ displayName: "شيكل", unitValue: 1, quantity: 8, lineAmount: 8 }] };
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: async () => String(url).includes("/reviews/count-1")
+        ? { count: only, firstAttempt: null }
+        : { total: 1, shortageTotal: 0, lines: [{ ...only }], options: { branches: [], stations: [], users: [] } },
+    })));
+
+    render(<CashDrawerReviewScreen session={session} onBack={() => undefined} />);
+    fireEvent.click(await screen.findByRole("button", { name: "عرض" }));
+    const tab = await screen.findByRole("tab", { name: "فئات العد الأول" });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("tab", { name: "فئات العد الثاني" })).toBeNull();
   });
 });

@@ -6667,13 +6667,31 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .drawer-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .drawer-detail { padding: 16px; overflow: auto; }
 .drawer-detail > div { display: grid; gap: 12px; background: #fff; border-radius: 16px; padding: 16px; }
-.drawer-view { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(280px, 30%) minmax(0, 1fr); gap: 8px; padding: 8px; }
-.drawer-view-side { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 16px; }
+.drawer-view { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: minmax(280px, 30%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; padding: 8px; overflow: hidden; }
+.drawer-view-side { min-height: 0; height: 100%; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: #fff; border: 1px solid #d5e1ee; border-radius: 16px; }
 .drawer-view-side p { margin: 0; }
-.drawer-view-side article { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid #d5e1ee; border-radius: 12px; }
-.drawer-view-side article strong { font-size: 20px; }
+.drawer-view-info { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 10px; margin: 0; flex: 0 0 auto; }
+.drawer-view-info div { min-width: 0; display: flex; gap: 4px; align-items: baseline; }
+.drawer-view-info dt { flex: 0 0 auto; color: #5b6b80; font-size: 13px; }
+.drawer-view-info dt::after { content: ":"; }
+.drawer-view-info dd { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 14px; }
+.drawer-view-totals { flex: 0 0 auto; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+.drawer-view-totals button { display: grid; gap: 1px; justify-items: start; padding: 6px 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 12px; font: inherit; color: inherit; text-align: start; cursor: pointer; }
+.drawer-view-totals button.is-selected { border-color: var(--teal); background: #e6f4f2; box-shadow: inset 0 0 0 1px var(--teal); }
+.drawer-view-totals span { font-size: 13px; color: #5b6b80; }
+.drawer-view-totals strong { font-size: 18px; line-height: 1.15; }
+.drawer-view-totals em { font-style: normal; font-size: 13px; font-weight: 700; }
+.drawer-view-reason { flex: 0 1 auto; min-height: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 14px; }
+.drawer-view-side .drawer-decision { margin-top: auto; flex: 0 0 auto; display: grid; gap: 6px; }
+.drawer-view-side .drawer-decision label { font-size: 13px; }
+.drawer-view-side .drawer-decision textarea { height: 44px; min-height: 0; resize: none; padding: 4px 8px; }
+.drawer-decision-actions { display: flex; gap: 6px; }
+.drawer-decision-actions button { flex: 1 1 0; min-height: 34px; border: 1px solid #0b3f6b; border-radius: 10px; background: #0b3f6b; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.drawer-decision-actions button + button { background: #fff; color: #0b3f6b; }
 .drawer-view-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-.drawer-view-main .ghost-button { align-self: start; min-height: 32px; padding: 4px 10px; }
+.drawer-view-tabs { flex: 0 0 auto; display: flex; gap: 6px; }
+.drawer-view-tabs button { min-height: 34px; padding: 4px 14px; border: 1px solid #d5e1ee; border-radius: 12px; background: #fff; color: #14365c; font: inherit; font-weight: 700; cursor: pointer; }
+.drawer-view-tabs button.is-selected { border-color: var(--teal); background: var(--teal); color: #fff; }
 .drawer-view-grid { flex: 1 1 0; min-height: 0; display: grid; gap: 6px; align-content: center; }
 .drawer-view-grid article { min-height: 0; align-self: center; display: grid; gap: 2px; padding: 8px 10px; background: #fff; border: 1px solid #d5e1ee; border-radius: 12px; text-align: center; }
 .drawer-view-grid strong { font-size: clamp(18px, 2.6vh, 24px); }

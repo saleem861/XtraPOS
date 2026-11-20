@@ -158,19 +158,25 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
       {detail && count && shown ? (
         <div className="drawer-view">
           <aside className="drawer-view-side">
-            <p>الموظف: {count.cashier}</p>
-            <p>الفرع: {count.branchName}</p>
-            <p>النقطة: {count.stationNumber} {count.stationName}</p>
-            <p>الوقت: {stamp(count.countedAt)}</p>
-            {detail.firstAttempt ? (
-              <article><span>العد الأول</span><strong>₪ {money(detail.firstAttempt.countedAmount)}</strong></article>
-            ) : null}
-            <article>
-              <span>{count.attempt === 2 ? "العد الثاني" : "العد الأول"}</span>
-              <strong>₪ {money(count.countedAmount)}</strong>
-              <span className={count.status === "Shortage" ? "is-short" : count.status === "Surplus" ? "is-over" : "is-match"}>{diffText(count.status, count.difference)}</span>
-            </article>
-            <p>{count.justification ? `التبرير: ${count.justification}` : "لا يوجد تبرير"}</p>
+            <dl className="drawer-view-info">
+              <div><dt>الموظف</dt><dd>{count.cashier}</dd></div>
+              <div><dt>الفرع</dt><dd>{count.branchName}</dd></div>
+              <div><dt>النقطة</dt><dd>{count.stationNumber} {count.stationName}</dd></div>
+              <div><dt>الوقت</dt><dd>{stamp(count.countedAt)}</dd></div>
+            </dl>
+            <div className="drawer-view-totals">
+              {detail.firstAttempt ? (
+                <button type="button" className={showFirst ? "is-selected" : undefined} aria-pressed={showFirst} onClick={() => setShowFirst(true)}>
+                  <span>العد الأول</span><strong>₪ {money(detail.firstAttempt.countedAmount)}</strong>
+                </button>
+              ) : null}
+              <button type="button" className={!showFirst ? "is-selected" : undefined} aria-pressed={!showFirst} onClick={() => setShowFirst(false)}>
+                <span>{count.attempt === 2 ? "العد الثاني" : "العد الأول"}</span>
+                <strong>₪ {money(count.countedAmount)}</strong>
+                <em className={count.status === "Shortage" ? "is-short" : count.status === "Surplus" ? "is-over" : "is-match"}>{diffText(count.status, count.difference)}</em>
+              </button>
+            </div>
+            <p className="drawer-view-reason">{count.justification ? `التبرير: ${count.justification}` : "لا يوجد تبرير"}</p>
             {canDecide ? (
               <div className="drawer-decision" onKeyDown={(event) => {
                 if (event.key !== "Enter") return;
@@ -179,18 +185,23 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
                 moveDecision();
               }}>
                 <label>ملاحظة<textarea data-decision-field value={note} onChange={(event) => setNote(event.target.value)} rows={2} /></label>
-                <button data-decision-field type="button" onClick={() => void decide(count.status === "Shortage" ? "KeepShortage" : "KeepSurplus")}>{count.status === "Shortage" ? "إبقاء النقص" : "إبقاء الزيادة"}</button>
-                {count.status === "Shortage" ? <button data-decision-field type="button" onClick={() => void decide("Waive")}>إعفاء الموظف</button> : null}
+                <div className="drawer-decision-actions">
+                  <button data-decision-field type="button" onClick={() => void decide(count.status === "Shortage" ? "KeepShortage" : "KeepSurplus")}>{count.status === "Shortage" ? "إبقاء النقص" : "إبقاء الزيادة"}</button>
+                  {count.status === "Shortage" ? <button data-decision-field type="button" onClick={() => void decide("Waive")}>إعفاء الموظف</button> : null}
+                </div>
               </div>
             ) : count.decision ? (
-              <p>القرار: {decisionText(count.decision)} — {count.supervisorName} — {count.decidedAt ? stamp(count.decidedAt) : ""} — {count.decisionNote}</p>
+              <p className="drawer-view-reason">القرار: {decisionText(count.decision)} — {count.supervisorName} — {count.decidedAt ? stamp(count.decidedAt) : ""} — {count.decisionNote}</p>
             ) : null}
             {message ? <p className="form-error">{message}</p> : null}
           </aside>
           <div className="drawer-view-main">
-            {detail.firstAttempt ? (
-              <button type="button" className="ghost-button" onClick={() => setShowFirst((value) => !value)}>{showFirst ? "فئات العد الثاني" : "فئات العد الأول"}</button>
-            ) : null}
+            <div className="drawer-view-tabs" role="tablist" aria-label="فئات العد">
+              {detail.firstAttempt ? (
+                <button type="button" role="tab" aria-selected={showFirst} className={showFirst ? "is-selected" : undefined} onClick={() => setShowFirst(true)}>فئات العد الأول</button>
+              ) : null}
+              <button type="button" role="tab" aria-selected={!showFirst} className={!showFirst ? "is-selected" : undefined} onClick={() => setShowFirst(false)}>{count.attempt === 2 ? "فئات العد الثاني" : "فئات العد الأول"}</button>
+            </div>
             <div
               className="drawer-view-grid"
               style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gridTemplateRows: `repeat(${Math.max(1, Math.ceil(shown.lines.length / 3))}, minmax(0, 1fr))` }}
