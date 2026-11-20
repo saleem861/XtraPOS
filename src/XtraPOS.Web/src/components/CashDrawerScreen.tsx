@@ -39,6 +39,8 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
   const [focus, setFocus] = useState(0);
   const desktop = useDrawerKeyboard();
   const [keyboardOpen, setKeyboardOpen] = useState(desktop);
+  const columns = 3;
+  const rows = Math.max(1, Math.ceil(denominations.length / columns));
   const counted = useMemo(
     () => denominations.reduce((sum, item) => sum + (Number(quantities[item.denominationId] || "0") * item.unitValue), 0),
     [denominations, quantities],
@@ -157,7 +159,7 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
             <button className="primary-button" type="button" disabled={pending || !shiftOpen || (askJustification && justification.trim().length === 0)} onClick={() => void confirm()}>تأكيد العد</button>
             <button className="ghost-button drawer-clear" type="button" onClick={() => setQuantities({})}>مسح الكميات</button>
           </aside>
-          <div className="drawer-grid">
+          <div className="drawer-grid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
             {denominations.map((item, index) => (
               <article key={item.denominationId} className={focus === index ? "is-focus" : undefined}>
                 <strong>{item.displayName}</strong>

@@ -57,4 +57,24 @@ describe("cash drawer recount", () => {
     const labels = [...stack!.querySelectorAll("span, p")].map((node) => node.textContent);
     expect(labels).toEqual(["العد الأول", sentence, "العد الثاني"]);
   });
+
+  it("splits every denomination into equal rows inside the space above the keypad", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    const items = ["نصف شيكل", "شيكل", "شيكلان", "خمسمائة شيكل"].map((name, index) => ({
+      denominationId: `coin-${index}`,
+      unitValue: index + 1,
+      displayName: name,
+      sortOrder: index,
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
+      ok: true,
+      json: async () => ({ shiftOpen: true, denominations: items }),
+    })));
+
+    const view = render(<CashDrawerScreen session={session} onBack={() => undefined} />);
+    await screen.findByLabelText("كمية خمسمائة شيكل");
+    const grid = view.container.querySelector(".drawer-grid") as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
+    expect(grid.style.gridTemplateRows).toBe("repeat(2, minmax(0, 1fr))");
+  });
 });

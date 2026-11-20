@@ -6655,10 +6655,13 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .drawer-note, .drawer-side label, .drawer-filters label, .drawer-decision label { display: grid; gap: 4px; font-weight: 700; }
 .drawer-note textarea, .drawer-decision textarea, .drawer-side input { width: 100%; box-sizing: border-box; border: 1px solid #d5e1ee; border-radius: 12px; padding: 8px; font: inherit; }
 .drawer-clear { border-color: #b42318; color: #b42318; }
-.drawer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); gap: 6px; min-height: 0; height: 100%; overflow: hidden; }
-.drawer-grid article { min-height: 0; }
+.drawer-body > .drawer-grid { min-width: 0; min-height: 0; height: auto; align-self: stretch; }
+.drawer-grid { display: grid; gap: 6px; min-height: 0; overflow: hidden; }
+.drawer-grid article { min-width: 0; min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
+.drawer-grid article strong,
+.drawer-grid article span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.15; font-size: clamp(12px, 1.6vh, 16px); }
 .drawer-grid article.is-focus { border-color: #0b3f6b; }
-.drawer-grid input { height: 100%; min-height: 28px; max-height: 44px; border: 0; border-radius: 12px; background: #f4f8fc; text-align: center; font-size: 22px; }
+.drawer-grid input { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 12px; background: #f4f8fc; text-align: center; font-size: clamp(16px, 3vh, 28px); padding: 0; }
 .drawer-grid article.is-focus input { outline: 2px solid #0b3f6b; }
 .drawer-done { display: grid; place-items: center; gap: 12px; flex: 1; }
 .drawer-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
