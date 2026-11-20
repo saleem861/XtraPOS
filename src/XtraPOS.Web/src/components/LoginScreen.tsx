@@ -18,7 +18,8 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
   const [updateLeft, setUpdateLeft] = useState(UPDATE_SECONDS);
   const [updateRequest, setUpdateRequest] = useState<string | null>(null);
   const [updateStage, setUpdateStage] = useState("");
-  const total = updateRequest ? UPDATER_SECONDS : UPDATE_SECONDS;
+  const [updateStep, setUpdateStep] = useState(0);
+  const ringShare = updateRequest ? updateStep / UPDATE_STAGES.length : (UPDATE_SECONDS - updateLeft) / UPDATE_SECONDS;
 
   // The separate updater task reports each stage in its status file; the screen follows it.
   useEffect(() => {
@@ -50,6 +51,8 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
           }
           if (status.state === "Succeeded") {
             done = true;
+            setUpdateStep(UPDATE_STAGES.length);
+            setUpdateStage("تم التحديث، جاري فتح النسخة الجديدة");
             window.location.reload();
             return;
           }
@@ -61,6 +64,8 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
             finish(`فشل التحديث وبقيت النسخة السابقة تعمل. السبب: ${status.detail || "غير معروف"}`);
             return;
           }
+          const step = UPDATE_STAGES.indexOf(status.stage) + 1;
+          if (step > 0) setUpdateStep(step);
           setUpdateStage(updateStageText(status.stage, status.to));
         })
         .catch(() => {
@@ -106,6 +111,7 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
     if (updating) return;
     setUpdateMessage("");
     setUpdateStage("");
+    setUpdateStep(0);
     setUpdateRequest(null);
     setUpdating(true);
     setUpdateLeft(UPDATE_SECONDS);
@@ -194,9 +200,9 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
         <div className="update-timer" role="status" aria-live="polite">
           <div
             className="update-ring"
-            style={{ background: `conic-gradient(var(--teal) ${((total - updateLeft) / total) * 360}deg, #e6eef0 0deg)` }}
+            style={{ background: `conic-gradient(var(--teal) ${ringShare * 360}deg, #e6eef0 0deg)` }}
           >
-            <span>{updateLeft}</span>
+            {updateRequest ? <span className="is-steps">{updateStep} من {UPDATE_STAGES.length}</span> : <span>{updateLeft}</span>}
           </div>
           <p>{updateRequest ? updateStage : updateLeft > 0 ? "جاري تحديث التطبيق" : "جاري تشغيل الخادم"}</p>
         </div>
@@ -206,7 +212,9 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
 }
 
 const UPDATE_SECONDS = 90;
+// The updater may take up to 5 minutes on a slow line; the screen shows stages, not this limit.
 const UPDATER_SECONDS = 300;
+const UPDATE_STAGES = ["Checking", "Downloading", "Backup", "Stopping", "Copying", "Starting"];
 
 interface UpdateStatusResponse {
   installed: string;

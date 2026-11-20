@@ -72,4 +72,26 @@ describe("login update button", () => {
     expect(result.className).toContain("is-ok");
     expect(result.compareDocumentPosition(screen.getByRole("button", { name: "تسجيل الدخول" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }, 10000);
+
+  it("fills the ring by updater stage instead of counting down from 300", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/local-update") {
+        return Promise.resolve({ ok: true, json: async () => ({ mode: "updater", requestId: "r3" }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          installed: "20261121-001534",
+          updaterAlive: true,
+          status: { requestId: "r3", state: "Running", stage: "Backup", detail: "", from: "20261121-001534", to: "20261121-003412", at: "" },
+        }),
+      });
+    }));
+
+    render(<LoginScreen session={session} pending={false} error="" onSubmit={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "تحديث التطبيق" }));
+    expect(await screen.findByText("3 من 6", undefined, { timeout: 5000 })).toBeTruthy();
+    expect(screen.getByText("جاري حفظ نسخة احتياطية")).toBeTruthy();
+    expect(screen.queryByText("300")).toBeNull();
+  }, 10000);
 });

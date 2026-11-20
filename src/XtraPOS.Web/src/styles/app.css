@@ -638,6 +638,10 @@ html.pos-pro-shell .topbar {
   font-weight: 800;
 }
 
+.update-ring span.is-steps {
+  font-size: 20px;
+}
+
 .update-timer p {
   margin: 0;
   font-weight: 700;
