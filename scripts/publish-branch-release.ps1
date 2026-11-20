@@ -2,9 +2,9 @@ $ErrorActionPreference = "Stop"
 Set-Location D:\Google\XtraPOS
 $serial = Get-Date -Format "yyyyMMdd-HHmmss"
 $env:VITE_RELEASE_SERIAL = $serial
-$publish = Join-Path $PWD "artifacts\branch-agent-release"
+$publish = Join-Path $PWD "artifacts\branch-agent-release-$serial"
 $zip = Join-Path $PWD "artifacts\XtraPOS-BranchAgent.zip"
-if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $publish | Out-Null
 dotnet publish (Join-Path $PWD "src\XtraPOS.Api\XtraPOS.Api.csproj") -c Release -r win-x64 --self-contained false -o $publish
 if ($LASTEXITCODE -ne 0) { throw "API publish failed with $LASTEXITCODE." }
 Push-Location (Join-Path $PWD "src\XtraPOS.Web")
@@ -40,7 +40,22 @@ if (Test-Path $settings) {
   if ([string]::IsNullOrWhiteSpace([string]$prepared.Membership.PublicOrigin)) {
     $prepared.Membership | Add-Member -MemberType NoteProperty -Name PublicOrigin -Value "https://test-pos.sharbelfashion.com" -Force
   }
-  $prepared | ConvertTo-Json -Depth 8 | Set-Content $settings -Encoding utf8
+  $json = $prepared | ConvertTo-Json -Depth 8
+  $written = $false
+  foreach ($attempt in 1..8) {
+    try {
+      $temp = "$settings.tmp"
+      [System.IO.File]::WriteAllText($temp, $json)
+      [System.IO.File]::Copy($temp, $settings, $true)
+      Remove-Item $temp -Force -ErrorAction SilentlyContinue
+      $written = $true
+      break
+    } catch {
+      if ($attempt -eq 8) { throw }
+      Start-Sleep -Seconds 1
+    }
+  }
+  if (-not $written) { throw "Could not write appsettings.json." }
 }
 $deviceZip = Join-Path $PWD "artifacts\branch-agent.zip"
 if (Test-Path $deviceZip) { Remove-Item $deviceZip -Force }
@@ -97,3 +112,6 @@ if ($LASTEXITCODE -ne 0) { throw "The new-device folder was not created. The upd
 if ($LASTEXITCODE -ne 0) { throw "The new-device package was not copied. The update button release $tag is already published." }
 & $bash -lc "ssh -i '$keyBash' -o BatchMode=yes -o IdentitiesOnly=yes $target 'chmod 644 /opt/xtrapos-staging/current/web/downloads/branch-agent.zip /opt/xtrapos-staging/current/web/downloads/branch-agent.sha256 /opt/xtrapos-staging/current/web/downloads/branch-agent.json'"
 Write-Host "New device package updated"
+Get-ChildItem (Join-Path $PWD "artifacts") -Directory -Filter "branch-agent-release*" | Where-Object { $_.FullName -ne $publish } | ForEach-Object {
+  Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
