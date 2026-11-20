@@ -6635,21 +6635,30 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .operation-log-stuck { background: #fff4d6; }
 .operation-log-warning { display: grid; gap: 10px; padding: 16px; border: 2px solid #a15c00; border-radius: 14px; background: #fff8ee; }
 
-.drawer-body { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(240px, 22%) minmax(0, 1fr); }
+.drawer-body { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(280px, 30%) minmax(0, 1fr); align-items: stretch; }
 .drawer-config { align-items: stretch; }
-.drawer-side { gap: 8px; }
-.drawer-side article, .drawer-grid article { display: grid; gap: 4px; padding: 10px; background: #fff; border: 1px solid #d5e1ee; border-radius: 16px; }
-.drawer-side article strong { font-size: 22px; }
+.drawer-side { gap: 6px; min-height: 0; overflow: hidden; justify-content: flex-start; }
+.drawer-side p { margin: 0; }
+.drawer-counts { display: grid; gap: 4px; }
+.drawer-recount { margin: 0; line-height: 1.25; font-size: 13px; font-weight: 700; color: #14365c; }
+.drawer-side article, .drawer-grid article { display: grid; gap: 2px; padding: 6px 8px; background: #fff; border: 1px solid #d5e1ee; border-radius: 12px; }
+.drawer-side article strong { font-size: 18px; line-height: 1.1; }
+.sales-review.has-keyboard .drawer-side .primary-button,
+.sales-review.has-keyboard .drawer-side .ghost-button { min-height: 32px; padding: 2px 8px; }
+.sales-review.has-keyboard .drawer-note textarea { height: 36px; min-height: 36px; max-height: 36px; padding: 4px 8px; resize: none; }
 .drawer-side .is-match strong { color: #0f766e; }
 .drawer-side .is-short strong, .is-short { color: #b42318; }
 .drawer-side .is-over strong, .is-over { color: #1d4ed8; }
 .drawer-charge { margin: 0; color: #b42318; font-weight: 700; }
+.drawer-wait { position: absolute; inset: 0; z-index: 60; display: grid; align-content: center; justify-items: center; gap: 12px; background: rgb(16 32 51 / 42%); }
+.drawer-wait strong { margin: 0; padding: 8px 14px; border-radius: 12px; background: #fff; color: #14365c; }
 .drawer-note, .drawer-side label, .drawer-filters label, .drawer-decision label { display: grid; gap: 4px; font-weight: 700; }
 .drawer-note textarea, .drawer-decision textarea, .drawer-side input { width: 100%; box-sizing: border-box; border: 1px solid #d5e1ee; border-radius: 12px; padding: 8px; font: inherit; }
 .drawer-clear { border-color: #b42318; color: #b42318; }
-.drawer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; min-height: 0; overflow: auto; }
+.drawer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); gap: 6px; min-height: 0; height: 100%; overflow: hidden; }
+.drawer-grid article { min-height: 0; }
 .drawer-grid article.is-focus { border-color: #0b3f6b; }
-.drawer-grid input { height: 56px; border: 0; border-radius: 12px; background: #f4f8fc; text-align: center; font-size: 28px; }
+.drawer-grid input { height: 100%; min-height: 28px; max-height: 44px; border: 0; border-radius: 12px; background: #f4f8fc; text-align: center; font-size: 22px; }
 .drawer-grid article.is-focus input { outline: 2px solid #0b3f6b; }
 .drawer-done { display: grid; place-items: center; gap: 12px; flex: 1; }
 .drawer-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }

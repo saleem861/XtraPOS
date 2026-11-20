@@ -114,7 +114,7 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
         setQuantities({});
         setJustification("");
         setAskJustification(false);
-        setMessage("المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد.");
+        setMessage("");
         return;
       }
       setDone(payload);
@@ -139,17 +139,17 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
         <div className="sales-review-body drawer-body">
           <aside className="sales-review-actions drawer-side">
             {attempt === 2 ? (
-              <>
+              <div className="drawer-counts">
                 <article><span>العد الأول</span><strong>₪ {money(firstCounted ?? 0)}</strong></article>
+                <p className="drawer-recount">المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد.</p>
                 <article><span>العد الثاني</span><strong>₪ {money(counted)}</strong></article>
-                <p>المجموع المعدود لا يطابق الرصيد المتوقع. أعد العد.</p>
-              </>
+              </div>
             ) : (
               <article><span>العد الأول</span><strong>₪ {money(counted)}</strong></article>
             )}
             {askJustification ? (
               <label className="drawer-note">تبرير الموظف
-                <textarea data-drawer-field="justification" value={justification} onChange={(event) => setJustification(event.target.value)} rows={4} />
+                <textarea data-drawer-field="justification" value={justification} onChange={(event) => setJustification(event.target.value)} rows={2} />
               </label>
             ) : null}
             {message ? <p className="form-error">{message}</p> : null}
@@ -182,6 +182,12 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
         </button>
       ) : null}
       {desktop && keyboardOpen && !done ? <FullKeyboard onEnter={moveFromPad} /> : null}
+      {pending ? (
+        <div className="drawer-wait" role="status" aria-live="polite">
+          <span className="customer-save-spinner" />
+          <strong>جاري حفظ العد</strong>
+        </div>
+      ) : null}
     </section>
   );
 }
