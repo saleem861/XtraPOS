@@ -347,13 +347,28 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
         await using var command = new SqlCommand { Connection = connection };
         if (branchId is not null)
         {
-            where.Add("count.BranchID = @branch");
+            where.Add(
+                """
+                count.BranchID IN (
+                    SELECT same.BranchID
+                    FROM dbo.Branches AS chosen
+                    INNER JOIN dbo.Branches AS same ON same.BranchName = chosen.BranchName
+                    WHERE chosen.BranchID = @branch)
+                """);
             command.Parameters.AddWithValue("@branch", branchId.Value);
         }
 
         if (stationId is not null)
         {
-            where.Add("count.POSStationID = @station");
+            where.Add(
+                """
+                count.POSStationID IN (
+                    SELECT same.StationID
+                    FROM dbo.POSStations AS chosen
+                    INNER JOIN dbo.POSStations AS same
+                        ON same.StationNumber = chosen.StationNumber AND same.StationName = chosen.StationName
+                    WHERE chosen.StationID = @station)
+                """);
             command.Parameters.AddWithValue("@station", stationId.Value);
         }
 
@@ -1025,7 +1040,18 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
 
     private static async Task<object> ReviewOptionsAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
-        var branches = await ReadPairsAsync(connection, "SELECT BranchID, BranchName FROM dbo.Branches ORDER BY BranchName;", cancellationToken);
+        var branches = await ReadPairsAsync(
+            connection,
+            """
+            SELECT BranchID, BranchName
+            FROM (
+                SELECT BranchID, BranchName, ROW_NUMBER() OVER (PARTITION BY BranchName ORDER BY BranchID) AS RowNumber
+                FROM dbo.Branches
+            ) AS ranked
+            WHERE RowNumber = 1
+            ORDER BY BranchName;
+            """,
+            cancellationToken);
         var stations = await ReadStationsAsync(connection, cancellationToken);
         var users = await ReadPairsAsync(connection, "SELECT UserID, DisplayName FROM dbo.Users WHERE IsActive = 1 ORDER BY DisplayName;", cancellationToken);
         return new { branches, stations, users };
@@ -1048,7 +1074,25 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
     {
         var rows = new List<object>();
         await using var command = new SqlCommand(
-            "SELECT StationID, BranchID, StationNumber, StationName FROM dbo.POSStations ORDER BY StationNumber;",
+            """
+            SELECT StationID, BranchID, StationNumber, StationName
+            FROM (
+                SELECT station.StationID, kept.BranchID, station.StationNumber, station.StationName,
+                       ROW_NUMBER() OVER (PARTITION BY station.StationNumber, station.StationName ORDER BY station.StationID) AS RowNumber
+                FROM dbo.POSStations AS station
+                INNER JOIN dbo.Branches AS branch ON branch.BranchID = station.BranchID
+                INNER JOIN (
+                    SELECT BranchID, BranchName
+                    FROM (
+                        SELECT BranchID, BranchName, ROW_NUMBER() OVER (PARTITION BY BranchName ORDER BY BranchID) AS RowNumber
+                        FROM dbo.Branches
+                    ) AS rankedBranches
+                    WHERE RowNumber = 1
+                ) AS kept ON kept.BranchName = branch.BranchName
+            ) AS ranked
+            WHERE RowNumber = 1
+            ORDER BY StationNumber, StationName;
+            """,
             connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
