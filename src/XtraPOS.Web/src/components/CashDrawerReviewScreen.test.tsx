@@ -70,7 +70,8 @@ describe("cash drawer review display", () => {
       });
     }));
 
-    render(<CashDrawerReviewScreen session={session} onBack={() => undefined} />);
+    const { container } = render(<CashDrawerReviewScreen session={session} onBack={() => undefined} />);
+    const quantities = () => [...container.querySelectorAll(".drawer-view-grid b")].map((cell) => cell.textContent);
     fireEvent.click(await screen.findByRole("button", { name: "عرض" }));
     const first = await screen.findByRole("tab", { name: "فئات العد الأول" });
     const second = screen.getByRole("tab", { name: "فئات العد الثاني" });
@@ -78,12 +79,11 @@ describe("cash drawer review display", () => {
     expect(screen.getByText("عرض جرد الموظف")).toBeTruthy();
     expect(second.getAttribute("aria-selected")).toBe("true");
     expect(first.getAttribute("aria-selected")).toBe("false");
-    expect(screen.getByText("4")).toBeTruthy();
+    expect(quantities()).toEqual(["4"]);
     fireEvent.click(first);
     expect(first.getAttribute("aria-selected")).toBe("true");
     expect(second.getAttribute("aria-selected")).toBe("false");
-    expect(screen.getByText("2")).toBeTruthy();
-    expect(screen.queryByText("4")).toBeNull();
+    expect(quantities()).toEqual(["2"]);
   });
 
   it("shows only the first count tab when there is one count", async () => {
