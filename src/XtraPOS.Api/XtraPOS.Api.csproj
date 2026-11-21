@@ -170,6 +170,12 @@
     <EmbeddedResource Include="Data\Central\Migrations\015_CentralPosAndBranchSql.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\033_PosDeviceSettingsSync.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.033_PosDeviceSettingsSync.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\016_CentralPosDeviceSettings.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.016_CentralPosDeviceSettings.sql</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

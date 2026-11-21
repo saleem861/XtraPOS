@@ -58,6 +58,8 @@ public static class PermissionCodes
     public const string CreditSuspend = "Credit.Suspend";
     public const string CreditReverse = "Credit.Reverse";
     public const string CreditAudit = "Credit.Audit";
+    public const string DevicesConfigureCurrent = "Devices.ConfigureCurrent";
+    public const string DevicesManageAll = "Devices.ManageAll";
 }
 
 public static class LoginFailureReasons

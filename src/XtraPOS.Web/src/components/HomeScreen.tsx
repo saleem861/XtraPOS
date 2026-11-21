@@ -7,6 +7,7 @@ import { clearPersistedDevice } from "../storage/deviceConfig";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { CustomersMenuScreen } from "./CustomersMenuScreen";
 import { CentralSetupScreen } from "./CentralSetupScreen";
+import { CentralDeviceSettingsScreen, DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
 import { ItemCatalogScreen } from "./ItemCatalogScreen";
 import { PosScreen } from "./PosScreen";
 import { UserManagementScreen } from "./UserManagementScreen";
@@ -26,6 +27,8 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showUsers, setShowUsers] = useState(false);
   const [showCentral, setShowCentral] = useState(false);
   const [showCustomers, setShowCustomers] = useState(false);
+  const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const [showCentralDevices, setShowCentralDevices] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetError, setResetError] = useState("");
   const [deregisterCentral, setDeregisterCentral] = useState(false);
@@ -35,6 +38,9 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const isAdmin = user.permissions.includes("System.Administer");
   const canViewItems = isAdmin || user.permissions.includes("Items.View");
   const canViewUsers = isAdmin || user.permissions.includes("Users.View");
+  const canConfigureDevice = isAdmin || user.permissions.includes("Devices.ConfigureCurrent");
+  const canManageAllDevices = isAdmin || user.permissions.includes("Devices.ManageAll");
+  const canOpenSettings = canViewUsers || canConfigureDevice || canManageAllDevices;
 
   async function resetDevice() {
     setResetError("");
@@ -81,6 +87,14 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
 
   if (showCentral && isAdmin) {
     return <CentralSetupScreen session={session} onHome={() => setShowCentral(false)} />;
+  }
+
+  if (showDeviceSettings && canConfigureDevice) {
+    return <DeviceInitialValuesScreen session={session} user={user} onBack={() => setShowDeviceSettings(false)} />;
+  }
+
+  if (showCentralDevices && canManageAllDevices) {
+    return <CentralDeviceSettingsScreen session={session} onBack={() => setShowCentralDevices(false)} />;
   }
 
   if (showCustomers) {
@@ -136,7 +150,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
             <small>إدارة الزبائن والحسابات</small>
           </span>
         </button>
-        {isAdmin || canViewUsers ? (
+        {canOpenSettings ? (
           <button className="home-nav-card" type="button" onClick={() => setShowSettings((open) => !open)}>
             <span className="home-nav-icon" aria-hidden="true"><Settings /></span>
             <span><strong>الإعدادات</strong></span>
@@ -148,6 +162,16 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
           {canViewUsers ? (
             <button className="nav-button" type="button" onClick={() => setShowUsers(true)}>
               إدارة المستخدمين
+            </button>
+          ) : null}
+          {canConfigureDevice ? (
+            <button className="nav-button" type="button" onClick={() => setShowDeviceSettings(true)}>
+              القيم الأولية للنقطة الحالية
+            </button>
+          ) : null}
+          {canManageAllDevices ? (
+            <button className="nav-button" type="button" onClick={() => setShowCentralDevices(true)}>
+              إعدادات نقاط الفروع
             </button>
           ) : null}
           {isAdmin ? (

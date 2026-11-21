@@ -37,6 +37,8 @@ public sealed class CentralMigrationRunner
     public const string ReceivableSaleNumberMigrationName = "Receivable sale number";
     public const string CentralPosMigrationId = "015_CentralPosAndBranchSql";
     public const string CentralPosMigrationName = "Central POS registry and branch SQL endpoints";
+    public const string PosDeviceSettingsMigrationId = "016_CentralPosDeviceSettings";
+    public const string PosDeviceSettingsMigrationName = "Central POS device settings";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -55,6 +57,7 @@ public sealed class CentralMigrationRunner
         (ReceivableSaleNumberMigrationId, ReceivableSaleNumberMigrationName, "XtraPOS.Api.Data.Central.Migrations.013_ReceivableSaleNumber.sql"),
         (CreditReversalMigrationId, CreditReversalMigrationName, "XtraPOS.Api.Data.Central.Migrations.014_CreditReversals.sql"),
         (CentralPosMigrationId, CentralPosMigrationName, "XtraPOS.Api.Data.Central.Migrations.015_CentralPosAndBranchSql.sql"),
+        (PosDeviceSettingsMigrationId, PosDeviceSettingsMigrationName, "XtraPOS.Api.Data.Central.Migrations.016_CentralPosDeviceSettings.sql"),
     ];
 
     private static readonly string ApplicationVersion =

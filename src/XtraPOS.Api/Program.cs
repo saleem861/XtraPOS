@@ -104,6 +104,8 @@ builder.Services.AddSingleton<CentralPosRegistryService>();
 builder.Services.AddSingleton<CentralPosReplicaSync>();
 builder.Services.AddSingleton<BranchSqlSecretStore>();
 builder.Services.AddHostedService<PosReplicaHostedService>();
+builder.Services.AddScoped<PosDeviceSettingsService>();
+builder.Services.AddHostedService<PosDeviceSettingsSyncWorker>();
 builder.Services.AddScoped<SharedDataSync>();
 builder.Services.AddScoped<SyncEndpointStore>();
 builder.Services.AddScoped<StockPostingService>();
@@ -736,6 +738,7 @@ app.MapCreditEndpoints();
 app.MapCreditCollectionEndpoints();
 app.MapCreditReversalEndpoints();
 app.MapCentralEndpoints();
+app.MapDeviceSettingsEndpoints();
 
 if (args.Any(arg => string.Equals(arg, "--ensure-customer-replica", StringComparison.Ordinal)))
 {
