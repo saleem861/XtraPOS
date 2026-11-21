@@ -138,6 +138,7 @@
 - مزامنة `CentralPosReplica`.
 - ترحيلات المخطط `DatabaseSchemaHistory` و`SchemaUpdateHistory`.
 - أي عملية وُجهت إلى `BranchRemote`.
+- القيم الأولية لنقاط البيع («القيم الأولية للنقطة الحالية»). لها صندوقها `BranchDeviceSettingsOutbox` وعاملها `PosDeviceSettingsSyncWorker` كل دقيقة، ويُسحب الاتجاه المعاكس من `SyncChangeLog` بنوع `PosDeviceSettings`. فُصلت عن السجل حتى لا يوقف إعدادٌ معلّق ترحيلَ البيعات والديون خلفه، خصوصاً قبل تطبيق ترحيل المركز `035`. التفاصيل في `docs/pos-device-settings.md`.
 
 ---
 

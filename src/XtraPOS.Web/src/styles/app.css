@@ -6724,3 +6724,93 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .is-active-denom td:nth-child(4) { color: #0f766e; font-weight: 700; }
 .is-stopped-denom { color: #94a3b8; }
 .sales-review-actions button.is-danger { border-color: #b42318; color: #b42318; }
+
+/* القيم الأولية للنقطة الحالية */
+.device-settings .device-settings-hint {
+  margin: 0.5rem 0;
+  color: #475569;
+}
+
+.device-settings .device-setting-row {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.device-settings .device-setting-row small {
+  color: #64748b;
+}
+
+.device-settings .device-sync-state {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.device-settings .device-sync-Synced {
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.device-settings .device-sync-PendingCentral {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.device-settings .device-sync-LocalOnly {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.device-settings .device-sync-ReconciliationRequired {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.device-settings .device-transfer-log {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.device-settings .device-transfer-log h2 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+
+.device-settings .device-transfer-log h3 {
+  font-size: 0.95rem;
+  margin: 0.5rem 0 0;
+}
+
+.device-settings .device-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.device-settings .device-log-table th,
+.device-settings .device-log-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: start;
+  vertical-align: top;
+}
+
+.device-settings .device-transfer-Pending td {
+  background: #fffbeb;
+}
+
+.device-settings .device-transfer-ReconciliationRequired td {
+  background: #fef2f2;
+}
+
+.device-settings .device-received-list {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  font-size: 0.85rem;
+  color: #475569;
+}

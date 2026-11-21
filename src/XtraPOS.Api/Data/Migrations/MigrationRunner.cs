@@ -101,6 +101,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string CashDrawerMigrationName = "Cash drawer counts and denominations";
     public const string CashDrawerOpenCountMigrationId = "048_CashDrawerOpenCount";
     public const string CashDrawerOpenCountMigrationName = "Allow another cash drawer count after the first";
+    public const string DeviceSettingsSyncMigrationId = "049_PosDeviceSettingsSync";
+    public const string DeviceSettingsSyncMigrationName = "POS device settings sync";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -303,6 +305,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             CashDrawerOpenCountMigrationId,
             CashDrawerOpenCountMigrationName,
             "XtraPOS.Api.Data.Migrations.048_CashDrawerOpenCount.sql"),
+        new(
+            DeviceSettingsSyncMigrationId,
+            DeviceSettingsSyncMigrationName,
+            "XtraPOS.Api.Data.Migrations.049_PosDeviceSettingsSync.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

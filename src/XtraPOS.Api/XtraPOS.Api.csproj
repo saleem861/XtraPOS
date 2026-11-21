@@ -278,6 +278,12 @@
     <EmbeddedResource Include="Data\Central\Migrations\034_CashDrawerOpenCount.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.034_CashDrawerOpenCount.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\049_PosDeviceSettingsSync.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.049_PosDeviceSettingsSync.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\035_CentralPosDeviceSettings.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.035_CentralPosDeviceSettings.sql</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

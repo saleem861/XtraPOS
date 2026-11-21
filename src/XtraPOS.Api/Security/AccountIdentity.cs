@@ -61,6 +61,8 @@ public static class PermissionCodes
     public const string CashDrawerCount = "CashDrawer.Count";
     public const string CashDrawerReview = "CashDrawer.Review";
     public const string CashDrawerConfigure = "CashDrawer.Configure";
+    public const string DevicesConfigureCurrent = "Devices.ConfigureCurrent";
+    public const string DevicesManageAll = "Devices.ManageAll";
 }
 
 public static class LoginFailureReasons

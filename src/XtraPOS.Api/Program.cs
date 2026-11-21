@@ -261,6 +261,8 @@ builder.Services.AddScoped<CreditReversalService>();
 builder.Services.AddScoped<CreditDebtReversalService>();
 builder.Services.AddScoped<CreditHistoryService>();
 builder.Services.AddHostedService<CreditOutboxWorker>();
+builder.Services.AddScoped<PosDeviceSettingsService>();
+builder.Services.AddHostedService<PosDeviceSettingsSyncWorker>();
 builder.Services.AddHostedService<FinancialInboxWorker>();
 builder.Services.AddHostedService<CustomerReplicaSyncWorker>();
 builder.Services.AddHostedService<BranchDatabaseHostedService>();
@@ -1142,6 +1144,7 @@ app.MapCreditReversalEndpoints();
 app.MapCreditHistoryEndpoints();
 app.MapOperationLogEndpoints();
 app.MapCentralEndpoints();
+app.MapDeviceSettingsEndpoints();
 
 if (isBranchAgent)
 {

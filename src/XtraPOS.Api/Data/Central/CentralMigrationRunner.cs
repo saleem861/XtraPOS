@@ -75,6 +75,12 @@ public sealed class CentralMigrationRunner
     public const string CashDrawerMigrationName = "Cash drawer counts and denominations";
     public const string CashDrawerOpenCountMigrationId = "034_CashDrawerOpenCount";
     public const string CashDrawerOpenCountMigrationName = "Allow another cash drawer count after the first";
+    // 035_CentralPosDeviceSettings is embedded but NOT in the list below on purpose: every branch agent applies
+    // this list to XtraPOS_Central automatically (CreditOutboxWorker). Add it only after the owner approves and
+    // XtraPOS_Central is backed up. Until then branch saves stay "بانتظار الترحيل" and nothing is written centrally.
+    public const string PosDeviceSettingsMigrationId = "035_CentralPosDeviceSettings";
+    public const string PosDeviceSettingsMigrationName = "Central POS device settings";
+    public const string PosDeviceSettingsMigrationResource = "XtraPOS.Api.Data.Central.Migrations.035_CentralPosDeviceSettings.sql";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [

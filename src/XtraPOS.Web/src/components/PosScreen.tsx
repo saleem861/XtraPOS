@@ -58,6 +58,7 @@ import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
 import { buildDisplayState, customerDisplayChannel, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
+import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
 import { createIndexedDbDraftDatabase, loadDraft, publishCartRestoreView, recordCartStorageEvent, saveDraft } from "../cart/draftStore";
@@ -323,6 +324,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [receiptAt, setReceiptAt] = useState(0);
   const [creditDeferred, setCreditDeferred] = useState("");
   const [invoiceQr, setInvoiceQr] = useState("");
+  const [displayEnabled, setDisplayEnabled] = useState(false);
   const gesture = useRef({ x: 0, y: 0, moved: false, scrolled: false, cancelled: false });
   const cartRegionRef = useRef<HTMLDivElement>(null);
 
@@ -1138,6 +1140,15 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     failMembershipScan();
   };
 
+  // «القيم الأولية للنقطة الحالية»: شاشة الزبون تعمل فقط إذا فُعّلت لهذه النقطة. القراءة من قاعدة الفرع المحلية.
+  useEffect(() => {
+    let stop = false;
+    void createDeviceSettingsClient(session).current()
+      .then((current) => { if (!stop) setDisplayEnabled(settingValue(current.settings, CUSTOMER_DISPLAY_ENABLED)); })
+      .catch(() => { if (!stop) setDisplayEnabled(false); });
+    return () => { stop = true; };
+  }, [session]);
+
   // Customer display on the second screen: same computer, BroadcastChannel, customer-facing fields only.
   const displayState = useMemo(() => buildDisplayState({
     business: session.businessName,
@@ -1450,7 +1461,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
               const collectionAllowed = collectionEnabled && (user.permissions.includes("Credit.Collect") || user.permissions.includes("System.Administer"));
               return (
                 <span key={label} style={{ display: "contents" }}>
-                  <button type="button" disabled={drawerAction || salesAction || displayAction ? false : !creditAction || !creditAllowed} title={title} onClick={() => {
+                  <button type="button" disabled={displayAction ? !displayEnabled : drawerAction || salesAction ? false : !creditAction || !creditAllowed} title={displayAction && !displayEnabled ? "شاشة الزبون غير مفعّلة لهذه النقطة. فعّلها من الإعدادات، القيم الأولية للنقطة الحالية." : title} onClick={() => {
                     if (drawerAction) { setDrawerOpen(true); return; }
                     if (displayAction) {
                       void openCustomerDisplay().then((opened) => { if (!opened) setMessage("اسمح للمتصفح بفتح النوافذ المنبثقة لهذا الموقع لعرض شاشة الزبون."); });
