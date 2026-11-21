@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, Coins, Link2, Monitor, Network, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
+import { ClipboardList, Coins, Link2, Monitor, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
@@ -14,7 +14,7 @@ import { OperationLogScreen } from "./OperationLogScreen";
 import { UserManagementScreen } from "./UserManagementScreen";
 import { CashDenominationScreen } from "./CashDenominationScreen";
 import { CashDrawerReviewScreen } from "./CashDrawerReviewScreen";
-import { CentralDeviceSettingsScreen, DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
+import { DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
 
 interface HomeScreenProps {
   session: DeviceSession;
@@ -35,7 +35,6 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showDenominations, setShowDenominations] = useState(false);
   const [showDrawerReview, setShowDrawerReview] = useState(false);
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
-  const [showCentralDevices, setShowCentralDevices] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -47,7 +46,6 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const canReviewDrawer = isAdmin || user.permissions.includes("CashDrawer.Review") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
   const canConfigureDrawer = isAdmin || user.permissions.includes("CashDrawer.Configure") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
   const canConfigureDevice = isAdmin || user.permissions.includes("Devices.ConfigureCurrent") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
-  const canManageAllDevices = isAdmin || user.permissions.includes("Devices.ManageAll");
 
   useEffect(() => {
     const home = () => {
@@ -134,10 +132,6 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
     return <DeviceInitialValuesScreen session={session} user={user} onBack={() => setShowDeviceSettings(false)} />;
   }
 
-  if (showCentralDevices && canManageAllDevices) {
-    return <CentralDeviceSettingsScreen session={session} onBack={() => setShowCentralDevices(false)} />;
-  }
-
   if (showSettings) {
     return (
       <section className="card settings-screen">
@@ -181,13 +175,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
             {canConfigureDevice ? (
               <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowDeviceSettings(true)}>
                 <span className="home-nav-icon" aria-hidden="true"><Monitor /></span>
-                <span><strong>القيم الأولية للنقطة الحالية</strong></span>
-              </button>
-            ) : null}
-            {canManageAllDevices ? (
-              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowCentralDevices(true)}>
-                <span className="home-nav-icon" aria-hidden="true"><Network /></span>
-                <span><strong>إعدادات نقاط الفروع</strong></span>
+                <span><strong>القيم الأولية</strong></span>
               </button>
             ) : null}
             {isAdmin ? (

@@ -6,7 +6,7 @@
 
 هذا ليس ترحيل المخطط (`MigrationRunner`). ترحيل المخطط يغيّر الجداول. هذا الملف يصف نقل صفوف العمليات من `XtraPOS_Branch` إلى `XtraPOS_Central`، وكيف يُكتب ذلك في سجل الترحيلات.
 
-الاتجاه المعاكس، من المركز إلى الفرع، لا يمر بهذا السجل. نسخ الأصناف والزبائن الأولى هي `SharedDataSync.BootstrapAsync` والتيار `CentralMaster`. أحداث المركز إلى الفرع تمر بـ `BranchFinancialInbox` و`FinancialInboxWorker`.
+الاتجاه المعاكس، من المركز إلى الفرع، لا يمر بهذا السجل. القيم الأولية لنقاط البيع تُسحب من `SyncChangeLog` بنوع `PosDeviceSettings` عبر `PosDeviceSettingsSyncWorker`. نسخ الأصناف والزبائن الأولى هي `SharedDataSync.BootstrapAsync` والتيار `CentralMaster`. أحداث المركز إلى الفرع تمر بـ `BranchFinancialInbox` و`FinancialInboxWorker`.
 
 ---
 
@@ -93,6 +93,7 @@
 | `MembershipUpsert` | عند تغيير هوية العضوية. المصدر `CustomerMembershipIdentities` | `MembershipReplica.CopyIdentityToCentralAsync` | نفس جملة العضوية. إذا غاب الجدول على المركز (خطأ 208): «جدول العضوية غير موجود على المركز بعد.» |
 | `CashDrawerCount` | عند تأكيد عد الجرار. الحمولة معرّف العد. المصدر `CashDrawerCounts` | `CashDrawerService.RelayLoggedAsync` ينسخ العد وسطور الفئات. إذا وُجد العد على المركز يُعلَّم `RelayedAt` محلياً | «تم ترحيل الجرد إلى المركز.» أو «المركز غير متاح. سيُعاد الترحيل.» |
 | `CashDrawerDecision` | عند حفظ قرار المشرف. الحمولة معرّف العد لا معرّف القرار. المصدر ما زال `CashDrawerCounts` | ينسخ القرار إذا كان العد نفسه موجوداً على المركز | نفس جمل الجرد. الإكمال يعتمد `RelayedAt` |
+| `DeviceSettings` | عند حفظ «القيم الأولية» لنقطة أو لجميع النقاط. الحمولة JSON النطاق والنقاط والقيم. المصدر `PosDeviceSettings` | `PosDeviceSettingsService.RelayLoggedAsync` يدمج القيم في `CentralPosDeviceSettings` ويكتب `SyncChangeLog` لتسحبه كل الفروع. خطأ 208 يوقف الصف | «تم ترحيل القيم الأولية إلى المركز (n نقطة).» |
 
 بيع نقدي مكتمل محلياً حتى لو تأخر المركز. تأجيل الدفع والتسديد والعكس تُحفظ محلياً أيضاً، لكن اعتمادها المالي على المركز يبقى معلقاً حتى يكتمل صفها. قرار الجرد لا يغيّر أرقام العد، والترحيل ينسخ القرار صفاً جديداً.
 
@@ -138,7 +139,6 @@
 - مزامنة `CentralPosReplica`.
 - ترحيلات المخطط `DatabaseSchemaHistory` و`SchemaUpdateHistory`.
 - أي عملية وُجهت إلى `BranchRemote`.
-- القيم الأولية لنقاط البيع («القيم الأولية للنقطة الحالية»). لها صندوقها `BranchDeviceSettingsOutbox` وعاملها `PosDeviceSettingsSyncWorker` كل دقيقة، ويُسحب الاتجاه المعاكس من `SyncChangeLog` بنوع `PosDeviceSettings`. فُصلت عن السجل حتى لا يوقف إعدادٌ معلّق ترحيلَ البيعات والديون خلفه، خصوصاً قبل تطبيق ترحيل المركز `035`. التفاصيل في `docs/pos-device-settings.md`.
 
 ---
 

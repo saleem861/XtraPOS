@@ -1,443 +1,206 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ALL_POINTS,
   createDeviceSettingsClient,
   CUSTOMER_DISPLAY_ENABLED,
+  pointLabel,
   settingValue,
-  type CentralDeviceSettings,
-  type CurrentDeviceSettings,
-  type DeviceSettingsAuditEntry,
-  type DeviceSettingsClient,
-  type DeviceSettingsHistory,
-  type DeviceSettingsSyncState,
+  type DeviceSettingsLogRow,
   type DeviceSettingValue,
-  type TransferStatus,
+  type PointSettings,
 } from "../api/deviceSettings";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { ScreenHeader } from "./ScreenHeader";
 
-const syncText: Record<DeviceSettingsSyncState, string> = {
-  LocalOnly: "محفوظ على هذا الفرع فقط (لا توجد إدارة مركزية مرتبطة).",
-  PendingCentral: "محفوظ على الفرع، وبانتظار الترحيل إلى الإدارة المركزية. سيُعاد الترحيل تلقائياً.",
-  ReconciliationRequired: "محفوظ على الفرع، لكن أحد الترحيلات يحتاج مراجعة. راجع سجل الترحيلات أدناه.",
-  Synced: "محفوظ على الفرع ومرحَّل إلى الإدارة المركزية.",
-};
-
-const transferStatusText: Record<TransferStatus, string> = {
-  Pending: "بانتظار الترحيل",
-  Completed: "مُرحَّل",
-  ReconciliationRequired: "يحتاج مراجعة",
+const statusText: Record<DeviceSettingsLogRow["status"], string> = {
+  Pending: "بانتظار التنفيذ",
+  Executing: "قيد التنفيذ",
+  Completed: "تم التنفيذ",
+  Blocked: "متوقف",
+  Cancelled: "ملغى",
 };
 
 function formatTime(value: string | null) {
-  if (!value) {
-    return "";
-  }
+  if (!value) return "";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
+  if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function settingLabel(key: string) {
-  return key === CUSTOMER_DISPLAY_ENABLED ? "شاشة الزبون" : key;
-}
-
-function valueText(value: string | null) {
-  if (value === "true") return "مفعّل";
-  if (value === "false") return "غير مفعّل";
-  return value ?? "—";
-}
-
 function describeChange(setting: DeviceSettingValue | undefined) {
-  if (!setting || setting.isDefault) {
-    return "القيمة الافتراضية، لم تُعدَّل بعد.";
-  }
-  const where = setting.source === "Central" ? "من الإدارة المركزية" : "من الفرع";
+  if (!setting || setting.isDefault) return "القيمة الافتراضية، لم تُعدَّل بعد.";
+  const where = setting.source === "Central" ? "وصل من الإدارة المركزية" : "عُدّل على فرع";
   const who = setting.updatedByName ? ` بواسطة ${setting.updatedByName}` : "";
   const when = formatTime(setting.updatedAtUtc);
-  return `آخر تعديل ${where}${who}${when ? ` · ${when}` : ""}`;
+  return `آخر تعديل: ${where}${who}${when ? ` · ${when}` : ""}`;
 }
 
-function CustomerDisplayToggle({
-  settings,
-  checked,
-  disabled,
-  onChange,
-}: {
-  settings: DeviceSettingValue[];
-  checked: boolean;
-  disabled: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  const setting = settings.find((item) => item.key === CUSTOMER_DISPLAY_ENABLED);
-  return (
-    <div className="device-setting-row">
-      <label className="check-line">
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        <span>{setting?.label ?? "تفعيل شاشة الزبون"}</span>
-      </label>
-      <small>{describeChange(setting)}</small>
-    </div>
-  );
-}
-
-/** سجل الترحيلات من هذه النقطة إلى المركز، وما وصل من المركز إليها. */
-function TransferLog({ history }: { history: DeviceSettingsHistory | null }) {
-  if (!history) {
-    return null;
+function syncLine(point: PointSettings) {
+  if (point.centralVersion > 0 && point.syncedAtUtc) {
+    return `مطابق لجدول الإدارة المركزية (الإصدار ${point.centralVersion}) · ${formatTime(point.syncedAtUtc)}`;
   }
-
-  return (
-    <section className="device-transfer-log" aria-label="سجل الترحيلات">
-      <h2>سجل الترحيلات</h2>
-      {history.transfers.length === 0 ? (
-        <p className="device-settings-hint">لا توجد ترحيلات من هذه النقطة بعد.</p>
-      ) : (
-        <table className="device-log-table">
-          <thead>
-            <tr>
-              <th>وقت الحفظ</th>
-              <th>الإعداد</th>
-              <th>بواسطة</th>
-              <th>الحالة</th>
-              <th>المحاولات</th>
-              <th>التفاصيل</th>
-            </tr>
-          </thead>
-          <tbody>
-            {history.transfers.map((transfer) => (
-              <tr key={transfer.outboxEventId} className={`device-transfer-${transfer.status}`}>
-                <td>{formatTime(transfer.createdAt)}</td>
-                <td>{transfer.changedKeys.map(settingLabel).join("، ")}</td>
-                <td>{transfer.createdByName ?? "—"}</td>
-                <td>{transferStatusText[transfer.status]}</td>
-                <td>{transfer.attemptCount}</td>
-                <td>
-                  {transfer.status === "Completed"
-                    ? `رُحِّل ${formatTime(transfer.completedAt)}${transfer.centralVersion ? ` · إصدار ${transfer.centralVersion}` : ""}`
-                    : [
-                        transfer.lastError,
-                        transfer.diagnosticId ? `رمز التشخيص: ${transfer.diagnosticId}` : null,
-                        transfer.nextRetryAt ? `المحاولة التالية: ${formatTime(transfer.nextRetryAt)}` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || "لم تتم محاولة بعد"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {history.received.length > 0 ? (
-        <>
-          <h3>وصل من الإدارة المركزية</h3>
-          <ul className="device-received-list">
-            {history.received.map((item) => (
-              <li key={item.changeSequence}>
-                {formatTime(item.appliedAt)} · إصدار {item.centralVersion} · {item.outcome === "Applied" ? "طُبِّق على هذه النقطة" : "لا تغيير"}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-    </section>
-  );
+  return "لم تصل نسخة هذه النقطة من الإدارة المركزية بعد. التعديلات تُرحَّل عبر سجل الترحيل.";
 }
 
-interface DeviceInitialValuesScreenProps {
+/** القيم الأولية: تفتح على النقطة الحالية، ويختار المدير أي نقطة في أي فرع أو جميع النقاط. */
+export function DeviceInitialValuesScreen({ session, user, onBack }: {
   session: DeviceSession;
   user: CurrentUser;
   onBack: () => void;
-  client?: DeviceSettingsClient;
-}
-
-/** القيم الأولية للنقطة الحالية: للمدير والمشرف، وتخص هذه النقطة فقط. */
-export function DeviceInitialValuesScreen({ session, user, onBack, client }: DeviceInitialValuesScreenProps) {
-  const api = useMemo(() => client ?? createDeviceSettingsClient(session), [client, session]);
-  const [data, setData] = useState<CurrentDeviceSettings | null>(null);
-  const [history, setHistory] = useState<DeviceSettingsHistory | null>(null);
-  const [customerDisplay, setCustomerDisplay] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+}) {
+  const client = useMemo(() => createDeviceSettingsClient(session), [session]);
+  const [points, setPoints] = useState<PointSettings[]>([]);
+  const [canManageAll, setCanManageAll] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string>("");
+  const [enabled, setEnabled] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [history, setHistory] = useState<DeviceSettingsLogRow[]>([]);
   const [pending, setPending] = useState(true);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
-  const loadHistory = useCallback(async () => {
-    try {
-      setHistory(await api.history());
-    } catch {
-      setHistory(null);
-    }
-  }, [api]);
+  const current = points.find((point) => point.isCurrent) ?? null;
+  const point = selected === ALL_POINTS ? null : points.find((item) => item.deviceId === selected) ?? null;
+  const historyDevice = point?.deviceId ?? current?.deviceId ?? "";
 
-  useEffect(() => {
-    let active = true;
-    api
-      .current()
-      .then((result) => {
-        if (!active) return;
-        setData(result);
-        setCustomerDisplay(settingValue(result.settings, CUSTOMER_DISPLAY_ENABLED));
-        void loadHistory();
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : "تعذر قراءة القيم الأولية.");
-      })
-      .finally(() => {
-        if (active) setPending(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, loadHistory]);
-
-  const dirty = data !== null && settingValue(data.settings, CUSTOMER_DISPLAY_ENABLED) !== customerDisplay;
-
-  async function save() {
+  const load = useCallback(async (keep?: string) => {
     setPending(true);
     setError("");
-    setNotice("");
     try {
-      const result = await api.saveCurrent({ [CUSTOMER_DISPLAY_ENABLED]: customerDisplay });
-      setData(result);
-      setCustomerDisplay(settingValue(result.settings, CUSTOMER_DISPLAY_ENABLED));
-      setNotice("تم حفظ القيم الأولية لهذه النقطة.");
-      await loadHistory();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "تعذر حفظ القيم الأولية.");
+      const list = await client.points();
+      setPoints(list.points);
+      setCanManageAll(list.canManageAll);
+      setNotice(list.notice);
+      const next = keep && (keep === ALL_POINTS || list.points.some((item) => item.deviceId === keep))
+        ? keep
+        : list.points.find((item) => item.isCurrent)?.deviceId ?? list.points[0]?.deviceId ?? "";
+      setSelected(next);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "تعذر تحميل نقاط البيع.");
     } finally {
       setPending(false);
     }
-  }
+  }, [client]);
 
-  return (
-    <section className="card device-settings">
-      <ScreenHeader title="القيم الأولية للنقطة الحالية" context={`${user.branchName} · ${user.deviceName}`} onBack={onBack} />
-      <dl className="home-facts">
-        <div>
-          <dt>الفرع</dt>
-          <dd>{data?.branchName ?? user.branchName}</dd>
-        </div>
-        <div>
-          <dt>النقطة</dt>
-          <dd>{data?.deviceName ?? user.deviceName}{data?.posNumber ? ` (رقم ${data.posNumber})` : ""}</dd>
-        </div>
-      </dl>
-      <p className="device-settings-hint">هذه الإعدادات تخص هذه النقطة فقط، ولا تؤثر على باقي نقاط الفرع.</p>
-      <form
-        className="form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save();
-        }}
-      >
-        <CustomerDisplayToggle
-          settings={data?.settings ?? []}
-          checked={customerDisplay}
-          disabled={pending || data === null}
-          onChange={(value) => {
-            setNotice("");
-            setCustomerDisplay(value);
-          }}
-        />
-        {data ? (
-          <p className={`device-sync-state device-sync-${data.syncState}`} role="status">
-            {syncText[data.syncState]}
-            {data.pendingTransfers > 0 ? ` (${data.pendingTransfers} غير مكتمل)` : ""}
-            {data.lastError ? ` · آخر خطأ: ${data.lastError}` : ""}
-            {data.diagnosticId ? ` · رمز التشخيص: ${data.diagnosticId}` : ""}
-          </p>
-        ) : null}
-        {error ? <p className="form-error">{error}</p> : null}
-        {notice ? <p className="new-customer-success">{notice}</p> : null}
-        <button className="primary-button" type="submit" disabled={pending || !dirty}>
-          حفظ
-        </button>
-      </form>
-      <TransferLog history={history} />
-    </section>
-  );
-}
-
-interface CentralDeviceSettingsScreenProps {
-  session: DeviceSession;
-  onBack: () => void;
-  client?: DeviceSettingsClient;
-}
-
-/** سجل التدقيق المركزي لنقطة: كل قيمة تغيّرت، قبل وبعد، ومن، ومن أين. */
-function AuditLog({ entries }: { entries: DeviceSettingsAuditEntry[] | null }) {
-  if (!entries) {
-    return null;
-  }
-
-  return (
-    <section className="device-transfer-log" aria-label="سجل تعديلات النقطة">
-      <h2>سجل تعديلات النقطة</h2>
-      {entries.length === 0 ? (
-        <p className="device-settings-hint">لا توجد تعديلات مسجّلة لهذه النقطة بعد.</p>
-      ) : (
-        <table className="device-log-table">
-          <thead>
-            <tr>
-              <th>الوقت</th>
-              <th>الإعداد</th>
-              <th>قبل</th>
-              <th>بعد</th>
-              <th>المصدر</th>
-              <th>بواسطة</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry, index) => (
-              <tr key={`${entry.occurredAt}-${entry.settingKey}-${index}`}>
-                <td>{formatTime(entry.occurredAt)}</td>
-                <td>{entry.label ?? entry.settingKey}</td>
-                <td>{valueText(entry.beforeValue)}</td>
-                <td>{valueText(entry.afterValue)}</td>
-                <td>{entry.source === "Central" ? "الإدارة المركزية" : "الفرع (ترحيل)"}</td>
-                <td>{entry.actorName ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
-
-/** لموظف الإدارة المركزية: اختيار أي نقطة في أي فرع وتعديل قيمها الأولية. */
-export function CentralDeviceSettingsScreen({ session, onBack, client }: CentralDeviceSettingsScreenProps) {
-  const api = useMemo(() => client ?? createDeviceSettingsClient(session), [client, session]);
-  const [devices, setDevices] = useState<CentralDeviceSettings[]>([]);
-  const [selectedId, setSelectedId] = useState("");
-  const [customerDisplay, setCustomerDisplay] = useState(false);
-  const [audit, setAudit] = useState<DeviceSettingsAuditEntry[] | null>(null);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [pending, setPending] = useState(true);
-
-  const loadAudit = useCallback(
-    async (deviceId: string) => {
-      try {
-        setAudit(await api.centralHistory(deviceId));
-      } catch {
-        setAudit(null);
-      }
-    },
-    [api],
-  );
+  useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    let active = true;
-    api
-      .listCentral()
-      .then((result) => {
-        if (!active) return;
-        setDevices(result);
-        const first = result.at(0);
-        if (first) {
-          setSelectedId(first.deviceId);
-          setCustomerDisplay(settingValue(first.settings, CUSTOMER_DISPLAY_ENABLED));
-          void loadAudit(first.deviceId);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : "تعذر تحميل نقاط البيع.");
-      })
-      .finally(() => {
-        if (active) setPending(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, loadAudit]);
+    setDirty(false);
+    if (selected === ALL_POINTS) {
+      setEnabled(points.length > 0 && points.every((item) => settingValue(item.settings, CUSTOMER_DISPLAY_ENABLED)));
+    } else {
+      setEnabled(settingValue(point?.settings, CUSTOMER_DISPLAY_ENABLED));
+    }
+  }, [selected, points, point]);
 
-  const selected = devices.find((device) => device.deviceId === selectedId) ?? null;
-  const dirty = selected !== null && settingValue(selected.settings, CUSTOMER_DISPLAY_ENABLED) !== customerDisplay;
-
-  function label(device: CentralDeviceSettings) {
-    const branch = device.branchName ?? "فرع غير معروف";
-    const name = device.deviceName ?? "نقطة بلا اسم";
-    return `${branch} · ${name}${device.posNumber ? ` (رقم ${device.posNumber})` : ""}`;
-  }
-
-  function select(deviceId: string) {
-    setSelectedId(deviceId);
-    setNotice("");
-    setError("");
-    setAudit(null);
-    const device = devices.find((item) => item.deviceId === deviceId);
-    setCustomerDisplay(device ? settingValue(device.settings, CUSTOMER_DISPLAY_ENABLED) : false);
-    void loadAudit(deviceId);
-  }
+  useEffect(() => {
+    if (!historyDevice) return;
+    let stop = false;
+    void client.history(historyDevice)
+      .then((rows) => { if (!stop) setHistory(rows); })
+      .catch(() => { if (!stop) setHistory([]); });
+    return () => { stop = true; };
+  }, [client, historyDevice, message]);
 
   async function save() {
     if (!selected) return;
     setPending(true);
     setError("");
-    setNotice("");
+    setMessage("");
     try {
-      const result = await api.saveCentral(selected.deviceId, { [CUSTOMER_DISPLAY_ENABLED]: customerDisplay });
-      setDevices((current) => current.map((device) => (device.deviceId === result.deviceId ? result : device)));
-      setCustomerDisplay(settingValue(result.settings, CUSTOMER_DISPLAY_ENABLED));
-      setNotice("تم الحفظ في الإدارة المركزية. يصل التعديل إلى الفرع خلال دقيقة تقريباً.");
-      await loadAudit(result.deviceId);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "تعذر حفظ إعدادات النقطة.");
+      const target = selected === ALL_POINTS ? ALL_POINTS : point;
+      if (!target) throw new Error("اختر نقطة.");
+      const result = await client.save(target, { [CUSTOMER_DISPLAY_ENABLED]: enabled });
+      setMessage(result.message);
+      await load(selected);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "تعذر حفظ القيم الأولية.");
     } finally {
       setPending(false);
     }
   }
 
+  const setting = point?.settings.find((item) => item.key === CUSTOMER_DISPLAY_ENABLED);
   return (
     <section className="card device-settings">
-      <ScreenHeader title="إعدادات نقاط البيع في الفروع" context="الإدارة المركزية" onBack={onBack} />
-      {!pending && devices.length === 0 && !error ? (
-        <p className="device-settings-hint">لا توجد نقاط بيع مسجّلة في الإدارة المركزية بعد.</p>
-      ) : null}
-      {devices.length > 0 ? (
-        <form
-          className="form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save();
-          }}
+      <ScreenHeader title="القيم الأولية" context={`${user.branchName} · ${user.deviceName}`} onBack={onBack} />
+
+      <label className="device-point-picker">
+        <span>النقطة</span>
+        <select
+          value={selected}
+          disabled={pending || !canManageAll}
+          onChange={(event) => { setMessage(""); setSelected(event.target.value); }}
         >
-          <label>
-            نقطة البيع
-            <select aria-label="نقطة البيع" value={selectedId} disabled={pending} onChange={(event) => select(event.target.value)}>
-              {devices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {label(device)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <CustomerDisplayToggle
-            settings={selected?.settings ?? []}
-            checked={customerDisplay}
-            disabled={pending || selected === null}
-            onChange={(value) => {
-              setNotice("");
-              setCustomerDisplay(value);
-            }}
+          {points.map((item) => (
+            <option key={item.deviceId} value={item.deviceId}>
+              {pointLabel(item)}{item.isCurrent ? " — النقطة الحالية" : ""}
+            </option>
+          ))}
+          {canManageAll ? <option value={ALL_POINTS}>جميع النقاط في كل الفروع</option> : null}
+        </select>
+      </label>
+      {notice ? <p className="device-settings-hint">{notice}</p> : null}
+      <p className="device-settings-hint">
+        {selected === ALL_POINTS
+          ? "سيُطبَّق الإعداد على كل نقاط البيع في كل الفروع."
+          : point?.isCurrent
+            ? "هذه النقطة التي تعمل عليها الآن. التعديل يخصها وحدها."
+            : "التعديل يخص النقطة المختارة وحدها، ويصل إلى فرعها بعد ترحيله إلى الإدارة المركزية."}
+      </p>
+
+      <div className="device-setting-row">
+        <label className="check-line">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={pending || !selected}
+            onChange={(event) => { setEnabled(event.target.checked); setDirty(true); setMessage(""); }}
           />
-          {error ? <p className="form-error">{error}</p> : null}
-          {notice ? <p className="new-customer-success">{notice}</p> : null}
-          <button className="primary-button" type="submit" disabled={pending || !dirty}>
-            حفظ للنقطة المختارة
-          </button>
-        </form>
-      ) : error ? (
-        <p className="form-error">{error}</p>
-      ) : null}
-      <AuditLog entries={selected ? audit : null} />
+          <span>تفعيل شاشة الزبون</span>
+        </label>
+        {point ? <small>{describeChange(setting)}</small> : null}
+        {point ? <small>{syncLine(point)}</small> : null}
+      </div>
+
+      {error ? <p className="form-error">{error}</p> : null}
+      {message ? <p className="update-result is-ok" role="status">{message}</p> : null}
+      <button className="primary-button" type="button" disabled={pending || !dirty} onClick={() => void save()}>
+        {selected === ALL_POINTS ? "حفظ لجميع النقاط" : "حفظ"}
+      </button>
+
+      <section className="device-transfer-log" aria-label="عمليات القيم الأولية في سجل الترحيل">
+        <h2>في سجل الترحيل</h2>
+        {history.length === 0 ? (
+          <p className="device-settings-hint">لا توجد عمليات قيم أولية لهذه النقطة في سجل الترحيل بعد.</p>
+        ) : (
+          <table className="device-log-table">
+            <thead>
+              <tr>
+                <th>الوقت</th>
+                <th>العملية</th>
+                <th>بواسطة</th>
+                <th>الحالة</th>
+                <th>المحاولات</th>
+                <th>النتيجة</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((row) => (
+                <tr key={row.operationId}>
+                  <td>{formatTime(row.createdAt)}</td>
+                  <td>{row.description}{row.referenceNumber ? <small> · {row.referenceNumber}</small> : null}</td>
+                  <td>{row.actorName ?? "—"}</td>
+                  <td>{statusText[row.status] ?? row.status}</td>
+                  <td>{row.attemptCount}</td>
+                  <td>{row.resultMessage ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
     </section>
   );
 }

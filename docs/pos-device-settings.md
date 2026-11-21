@@ -1,62 +1,45 @@
-# القيم الأولية للنقطة الحالية — التصميم والمزامنة
+# القيم الأولية لنقاط البيع
 
-## الهدف
-- المدير (Admin) والمشرف (Supervisor) يضبطان إعدادات **النقطة التي يعملان عليها فقط** من: الرئيسية ← الإعدادات ← «القيم الأولية للنقطة الحالية».
-- موظف المركز (Admin) يضبط إعدادات **أي نقطة في أي فرع** من: الرئيسية ← الإعدادات ← «إعدادات نقاط الفروع».
-- أول إعداد: `customerDisplay.enabled` (تفعيل شاشة الزبون)، والقيمة الافتراضية: غير مفعّل.
+آخر تحديث: 21 نوفمبر 2026.
 
-## التخزين
-| المكان | الجدول | ملاحظات |
-|---|---|---|
-| الفرع | `POSDeviceConfigurations.ConfigurationJson["settings"]` | جدول 032 حسب وثيقة المواصفات §8. Migration 049 أضافت `SettingsCentralVersion` و`SettingsSyncedAtUtc`. |
-| الفرع | `BranchDeviceSettingsOutbox` | **سجل الترحيلات** من الفرع إلى المركز. نفس نمط `BranchFinancialOutbox`. |
-| الفرع | `DeviceSettingsInbox` | ما وصل من المركز وطُبِّق على نقاط هذا الفرع. |
-| المركز | `CentralPosDeviceSettings` | سطر لكل DeviceID، مع `SettingsVersion` يزيد مع كل تعديل فعلي. |
-| المركز | `PosDeviceSettingsAudit` | قيمة قبل وبعد لكل إعداد تغيّر فعلاً، ومن عدّله، والمصدر، ورقم الترحيل. |
-| المركز | `PosDeviceSettingsReceipts` | استلام كل ترحيل من الفرع مرة واحدة فقط، حتى مع إعادة المحاولة. |
-| المركز | `SyncChangeLog` | `EntityType = 'PosDeviceSettings'`، والـ Payload يحمل المستند كاملاً. |
+## الشاشة
 
-شكل كل مفتاح داخل المستند:
-```json
-"customerDisplay.enabled": { "value": true, "updatedAtUtc": "2026-11-21T15:00:00.000Z",
-  "updatedBy": "<UserID>", "updatedByName": "اسم المستخدم", "source": "Branch" }
-```
+الرئيسية ← الإعدادات ← «القيم الأولية». تظهر لمن يملك `Devices.ConfigureCurrent` (المدير والمشرف) أو `System.Administer`.
 
-## سجل الترحيلات (`BranchDeviceSettingsOutbox`)
-- كل حفظ من الفرع يكتب الإعداد محلياً **وسطراً في الـ Outbox** داخل Transaction واحدة. السطر لا يُحذف بعد الترحيل.
-- الأعمدة: `Status` (`Pending` أو `Completed` أو `ReconciliationRequired`)، و`AttemptCount`، و`LastAttemptAt`، و`NextRetryAt`، و`CompletedAt`، و`CentralVersion`، و`LastError`، و`DiagnosticID`، و`LeaseOwner`/`LeaseUntil`.
-- الحجز (Lease) لمدة 45 ثانية بـ `UPDLOCK, READPAST`، فلا يرحّل عاملان السطر نفسه.
-- عند الفشل: يُسجَّل الخطأ ورمز التشخيص (في `App_Data\logs\setup.log`)، والمحاولة التالية بعد 15ث، ثم 30ث، ثم 1د، وهكذا بحد أقصى 10 دقائق.
-- محتوى غير صالح: `ReconciliationRequired` ولا يُعاد تلقائياً.
-- المركز يسجّل `OutboxEventID` في `PosDeviceSettingsReceipts`، فإعادة المحاولة بعد انقطاع لا تُكرّر التدقيق ولا رفع الإصدار.
-- الحالة تظهر أيضاً في مؤشر المزامنة بالهيدر (`SyncStatusStore`، العملية `pos-settings`).
+- تفتح على النقطة الحالية.
+- المدير (`Devices.ManageAll` أو `System.Administer`) يختار من القائمة أي نقطة في أي فرع، أو «جميع النقاط في كل الفروع».
+- المشرف يرى نقطته فقط والقائمة مقفلة.
+- أول إعداد: `customerDisplay.enabled` «تفعيل شاشة الزبون». الافتراضي غير مفعّل. زر «شاشة» في نقطة البيع يتبعه.
+- أسفل الشاشة عمليات القيم الأولية لهذه النقطة كما هي في سجل الترحيل الموجود.
 
-## المسارات
-1. **تعديل من الفرع:** حفظ محلي مع سطر Outbox، ثم محاولة ترحيل فورية لهذا السطر.
-2. **العامل** `PosDeviceSettingsSyncWorker` يعمل كل دقيقة: يرحّل السطور الجاهزة (حتى 50 في الدورة، ويتوقف عند أول خطأ اتصال)، ثم يسحب من المركز.
-3. **تعديل من المركز:** يُكتب في `CentralPosDeviceSettings` و`PosDeviceSettingsAudit` و`SyncChangeLog`. النقطة غير المعروفة مركزياً تُرفض (404).
-4. **السحب:** يقرأ أسطر `PosDeviceSettings` بعد آخر نقطة تفتيش (`SyncCheckpoints`، Stream = `PosDeviceSettings`)، ويطبّق فقط ما يخص أجهزة موجودة في `dbo.Devices`، ويسجّلها في `DeviceSettingsInbox`.
+## الجداول
+
+- الفرع: `dbo.PosDeviceSettings` (الترحيل `050`). سطر لكل نقطة في كل الفروع: `SettingsJson`، `CentralVersion`، `SyncedAtUtc`، `UpdatedSource`.
+- المركز: `CentralPosDeviceSettings`، `PosDeviceSettingsAudit` (قبل وبعد)، `PosDeviceSettingsReceipts` (عملية واحدة مرة واحدة) في الترحيل `035`.
+- جدولا `049` (`BranchDeviceSettingsOutbox` و `DeviceSettingsInbox`) لم يعودا مستخدمين.
+
+## من الفرع إلى المركز: سجل الترحيل الموجود
+
+الحفظ (`PUT /api/device-settings`) في معاملة واحدة على الفرع:
+
+1. يدمج القيم في `PosDeviceSettings` للنقطة أو لكل النقاط المعروفة.
+2. يُدرج صفاً في `BranchOperationLog` بنوع `DeviceSettings`. المصدر `PosDeviceSettings`، و`SourceEntityID` معرّف النقطة أو `00000000-…` لجميع النقاط.
+
+`CreditOutboxWorker` ينفذه بالترتيب مع باقي العمليات عبر `PosDeviceSettingsService.RelayLoggedAsync`. على المركز: إن وُجد `OperationID` في `PosDeviceSettingsReceipts` يكتمل دون تكرار. غير ذلك يدمج كل نقطة (ولجميع النقاط: كل نقاط `CentralPosRegistry` و`CentralPosDeviceSettings`)، ويكتب التدقيق وسطراً في `SyncChangeLog` بنوع `PosDeviceSettings` لكل نقطة تغيّرت. خطأ 208 يعني أن `035` غير مطبّق، فيتوقف الصف `Blocked` ويُعاد في الدورة التالية.
+
+## من المركز إلى كل الفروع
+
+`PosDeviceSettingsSyncWorker` كل دقيقة يسحب `PosDeviceSettings` من `SyncChangeLog` بعد آخر نقطة في `SyncCheckpoints` (`StreamName = PosDeviceSettings`) ويطبّق **كل النقاط** على جدول الفرع، فيتطابق الجدول في كل الفروع.
+
+## التعارض
+
+الأحدث لكل إعداد على حدة. عند تساوي الوقت يفوز تعديل المركز. تعديل محلي أحدث لم يُرحَّل بعد لا تمحوه نسخة أقدم من المركز.
 
 ## الواجهات
-- `GET /api/device-settings/current/history`: سجل الترحيلات لهذه النقطة. يظهر أسفل شاشة «القيم الأولية للنقطة الحالية».
-- `GET /api/device-settings/central/{deviceId}/history`: سجل التدقيق المركزي (قبل/بعد). يظهر في شاشة «إعدادات نقاط الفروع».
 
-## حل التعارض
-دمج **لكل مفتاح على حدة**: يفوز الأحدث `updatedAtUtc`، وعند التساوي يفوز المركز. الدمج تبادلي ومتكرر بأمان، لذلك:
-- تعديل الفرع دون اتصال لا يضيع، ويُرفع عند عودة الاتصال.
-- تعديلان مختلفان على مفتاحين مختلفين (واحد من الفرع وآخر من المركز) يبقيان معاً.
-- تعديلان على المفتاح نفسه: الأحدث يفوز في الطرفين.
-
-الوقت يُؤخذ من ساعة خادم الفرع أو المركز. انحراف الساعة بين الخادمين يؤثر فقط على تعديلين متقاربين جداً على المفتاح نفسه.
-
-## الصلاحيات
-- `Devices.ConfigureCurrent`: Admin وSupervisor (Migration 049 للفرع، و016 للمركز).
-- `Devices.ManageAll`: Admin فقط.
-- القراءة `GET /api/device-settings/current` متاحة لأي مستخدم مسجّل على النقطة، حتى تطبّق شاشة البيع الإعداد.
-
-## إضافة إعداد جديد
-أضف تعريفاً واحداً إلى `PosDeviceSettingsCatalog.All` في `Devices/PosDeviceSettingsDocument.cs`، ثم أضف عنصر التحكم في `DeviceInitialValuesScreen.tsx`. لا حاجة إلى Migration جديدة.
-
-## قبل التشغيل
-- Migration الفرع 033 تُطبَّق مع باقي Migrations الفرع.
-- Migration المركز 016 **لا تُطبَّق على `XtraPOS_Central` الإنتاجية إلا بموافقة صريحة ونسخة احتياطية** (نفس قاعدة 015). قبل تطبيقها يعمل الحفظ محلياً، وتبقى التعديلات معلّقة بانتظار الرفع.
+| الطلب | الصلاحية |
+|---|---|
+| `GET /api/device-settings/current` | أي مستخدم على النقطة |
+| `GET /api/device-settings/points` | `Devices.ConfigureCurrent`؛ كل النقاط مع `Devices.ManageAll` |
+| `GET /api/device-settings/history?deviceId=` | `Devices.ConfigureCurrent`؛ نقطة أخرى مع `Devices.ManageAll` |
+| `PUT /api/device-settings` | `{ scope: "Device" \| "All", deviceId?, point?, values }` |

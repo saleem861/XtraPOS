@@ -6814,3 +6814,19 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   font-size: 0.85rem;
   color: #475569;
 }
+
+.device-settings .device-point-picker {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0.25rem;
+  font-weight: 700;
+}
+
+.device-settings .device-point-picker select {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  border: 1px solid #c9d7e8;
+  border-radius: 10px;
+  font: inherit;
+  background: #fff;
+}

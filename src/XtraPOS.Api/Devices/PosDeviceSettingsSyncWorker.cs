@@ -3,8 +3,8 @@ using XtraPOS.Api.Data;
 namespace XtraPOS.Api.Devices;
 
 /// <summary>
-/// كل دقيقة: يرفع تعديلات الفرع المعلّقة إلى المركز، ثم يسحب تعديلات المركز على نقاط هذا الفرع.
-/// مستقل عن نسخة الزبائن، فلا يتوقف إذا لم تكن نسخة الزبائن المحلية جاهزة.
+/// كل دقيقة: يسحب من المركز القيم الأولية لكل النقاط في كل الفروع ويطبّقها على جدول هذا الفرع (dbo.PosDeviceSettings).
+/// الاتجاه من الفرع إلى المركز لا يمر من هنا: يمر بسجل الترحيل الموجود (BranchOperationLog) و CreditOutboxWorker.
 /// </summary>
 public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogger<PosDeviceSettingsSyncWorker> logger) : BackgroundService
 {
@@ -26,21 +26,15 @@ public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogg
                     BranchDatabaseOverride.Set(database);
                     try
                     {
-                        var result = await scope.ServiceProvider
-                            .GetRequiredService<PosDeviceSettingsService>()
-                            .SyncAsync(stoppingToken);
-                        if (result.Pushed > 0 || result.Pulled > 0)
+                        var pulled = await scope.ServiceProvider.GetRequiredService<PosDeviceSettingsService>().PullAsync(stoppingToken);
+                        if (pulled > 0)
                         {
-                            logger.LogInformation(
-                                "POS device settings sync: pushed {Pushed}, pulled {Pulled}.",
-                                result.Pushed,
-                                result.Pulled);
+                            logger.LogInformation("POS initial values: applied {Pulled} central change(s).", pulled);
                         }
-
-                        if (result.Error is not null)
-                        {
-                            logger.LogWarning("POS device settings sync left local values unchanged: {Error}", result.Error);
-                        }
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning(exception, "POS initial values were not pulled from central.");
                     }
                     finally
                     {
@@ -54,7 +48,7 @@ public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogg
             }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "POS device settings sync did not run.");
+                logger.LogWarning(exception, "POS initial values sync did not run.");
             }
 
             await Task.Delay(Interval, stoppingToken);

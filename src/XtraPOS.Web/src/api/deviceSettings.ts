@@ -2,9 +2,9 @@ import type { DeviceSession } from "../types/setup";
 import { deviceHeaders, SetupClientError } from "./client";
 
 export const CUSTOMER_DISPLAY_ENABLED = "customerDisplay.enabled";
+export const ALL_POINTS = "all";
 
 export type DeviceSettingSource = "Branch" | "Central";
-export type DeviceSettingsSyncState = "LocalOnly" | "PendingCentral" | "ReconciliationRequired" | "Synced";
 
 export interface DeviceSettingValue {
   key: string;
@@ -17,73 +17,44 @@ export interface DeviceSettingValue {
   source: DeviceSettingSource | null;
 }
 
-export interface CurrentDeviceSettings {
+/** نقطة بيع في أي فرع مع قيمها الأولية كما هي في جدول هذا الفرع (نسخة من جدول المركز). */
+export interface PointSettings {
   deviceId: string;
   branchId: string;
   branchName: string | null;
   posNumber: number | null;
   deviceName: string | null;
+  isCurrent: boolean;
   settings: DeviceSettingValue[];
-  syncState: DeviceSettingsSyncState;
-  pendingTransfers: number;
-  lastError: string | null;
-  diagnosticId: string | null;
-  centralVersion: number | null;
+  centralVersion: number;
   syncedAtUtc: string | null;
+  updatedSource: DeviceSettingSource | null;
 }
 
-export type TransferStatus = "Pending" | "Completed" | "ReconciliationRequired";
+export interface PointsList {
+  points: PointSettings[];
+  canManageAll: boolean;
+  notice: string | null;
+}
 
-/** سطر من سجل الترحيلات: حفظ واحد من الفرع ومصير ترحيله إلى المركز. */
-export interface DeviceSettingsTransfer {
-  outboxEventId: string;
-  changedKeys: string[];
-  createdByName: string | null;
-  status: TransferStatus;
+/** عملية من سجل الترحيل الموجود (BranchOperationLog) نوعها DeviceSettings. */
+export interface DeviceSettingsLogRow {
+  operationId: string;
+  referenceNumber: string | null;
+  description: string;
+  status: "Pending" | "Executing" | "Completed" | "Blocked" | "Cancelled";
+  resultMessage: string | null;
   attemptCount: number;
   createdAt: string;
-  lastAttemptAt: string | null;
-  nextRetryAt: string | null;
   completedAt: string | null;
-  centralVersion: number | null;
-  lastError: string | null;
-  diagnosticId: string | null;
-}
-
-export interface DeviceSettingsReceived {
-  changeSequence: number;
-  centralVersion: number;
-  outcome: "Applied" | "NoChange";
-  appliedAt: string;
-}
-
-export interface DeviceSettingsHistory {
-  transfers: DeviceSettingsTransfer[];
-  received: DeviceSettingsReceived[];
-}
-
-export interface DeviceSettingsAuditEntry {
-  settingKey: string;
-  label: string | null;
-  beforeValue: string | null;
-  afterValue: string | null;
-  source: DeviceSettingSource;
   actorName: string | null;
-  outboxEventId: string | null;
-  settingsVersion: number;
-  occurredAt: string;
+  allPoints: boolean;
 }
 
-export interface CentralDeviceSettings {
-  deviceId: string;
-  branchId: string;
-  branchName: string | null;
-  posNumber: number | null;
-  deviceName: string | null;
-  settings: DeviceSettingValue[];
-  settingsVersion: number;
-  updatedAtUtc: string | null;
-  updatedSource: DeviceSettingSource | null;
+export interface SaveResult {
+  operationId: string;
+  points: number;
+  message: string;
 }
 
 export type DeviceSettingChanges = Record<string, boolean>;
@@ -109,8 +80,14 @@ async function readJson<T>(response: Response, fallback: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function settingValue(settings: DeviceSettingValue[], key: string): boolean {
-  return settings.find((setting) => setting.key === key)?.value ?? false;
+export function settingValue(settings: DeviceSettingValue[] | undefined, key: string): boolean {
+  return settings?.find((setting) => setting.key === key)?.value ?? false;
+}
+
+export function pointLabel(point: Pick<PointSettings, "branchName" | "deviceName" | "posNumber">) {
+  const name = point.deviceName?.trim() || "نقطة";
+  const number = point.posNumber != null ? ` (${point.posNumber})` : "";
+  return point.branchName?.trim() ? `${point.branchName.trim()} · ${name}${number}` : `${name}${number}`;
 }
 
 export function createDeviceSettingsClient(session: DeviceSession) {
@@ -120,35 +97,33 @@ export function createDeviceSettingsClient(session: DeviceSession) {
   return {
     async current() {
       const response = await fetch("/api/device-settings/current", { headers });
-      return readJson<CurrentDeviceSettings>(response, "تعذر قراءة القيم الأولية لهذه النقطة.");
+      return readJson<PointSettings>(response, "تعذر قراءة القيم الأولية لهذه النقطة.");
     },
-    async saveCurrent(values: DeviceSettingChanges) {
-      const response = await fetch("/api/device-settings/current", {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ values }),
-      });
-      return readJson<CurrentDeviceSettings>(response, "تعذر حفظ القيم الأولية.");
+    async points() {
+      const response = await fetch("/api/device-settings/points", { headers });
+      return readJson<PointsList>(response, "تعذر تحميل نقاط البيع.");
     },
-    async history() {
-      const response = await fetch("/api/device-settings/current/history", { headers });
-      return readJson<DeviceSettingsHistory>(response, "تعذر قراءة سجل الترحيلات.");
+    async history(deviceId: string) {
+      const response = await fetch(`/api/device-settings/history?deviceId=${encodeURIComponent(deviceId)}`, { headers });
+      return readJson<DeviceSettingsLogRow[]>(response, "تعذر قراءة سجل الترحيل.");
     },
-    async centralHistory(deviceId: string) {
-      const response = await fetch(`/api/device-settings/central/${encodeURIComponent(deviceId)}/history`, { headers });
-      return readJson<DeviceSettingsAuditEntry[]>(response, "تعذر قراءة سجل تعديلات النقطة.");
-    },
-    async listCentral() {
-      const response = await fetch("/api/device-settings/central", { headers });
-      return readJson<CentralDeviceSettings[]>(response, "تعذر تحميل نقاط البيع من الإدارة المركزية.");
-    },
-    async saveCentral(deviceId: string, values: DeviceSettingChanges) {
-      const response = await fetch(`/api/device-settings/central/${encodeURIComponent(deviceId)}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ values }),
-      });
-      return readJson<CentralDeviceSettings>(response, "تعذر حفظ إعدادات النقطة في الإدارة المركزية.");
+    async save(target: PointSettings | typeof ALL_POINTS, values: DeviceSettingChanges) {
+      const body = target === ALL_POINTS
+        ? { scope: "All", values }
+        : {
+            scope: "Device",
+            deviceId: target.deviceId,
+            point: {
+              deviceId: target.deviceId,
+              branchId: target.branchId,
+              branchName: target.branchName,
+              posNumber: target.posNumber,
+              deviceName: target.deviceName,
+            },
+            values,
+          };
+      const response = await fetch("/api/device-settings", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(body) });
+      return readJson<SaveResult>(response, "تعذر حفظ القيم الأولية.");
     },
   };
 }

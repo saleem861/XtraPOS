@@ -125,12 +125,39 @@ public sealed class PosDeviceSettingsDocumentTests
     }
 
     [Fact]
-    public void OutboxRetry_BacksOffUpToTenMinutes()
+    public void LoggedOperation_RoundTripsThroughTheExistingRelayLog()
     {
-        Assert.Equal(TimeSpan.FromSeconds(15), PosDeviceSettingsService.Backoff(1));
-        Assert.Equal(TimeSpan.FromSeconds(30), PosDeviceSettingsService.Backoff(2));
-        Assert.Equal(TimeSpan.FromSeconds(60), PosDeviceSettingsService.Backoff(3));
-        Assert.Equal(TimeSpan.FromMinutes(10), PosDeviceSettingsService.Backoff(9));
-        Assert.Equal(TimeSpan.FromMinutes(10), PosDeviceSettingsService.Backoff(500));
+        var point = new PosPointInfo(Guid.NewGuid(), Guid.NewGuid(), "نابلس", 3, "صندوق 3");
+        var operation = new DeviceSettingsOperation(PosDeviceSettingsService.ScopeDevice, [point], Change(true, T0, PosDeviceSettingSources.Branch), BranchUser, "سليم");
+        var parsed = PosDeviceSettingsService.ParseOperation(PosDeviceSettingsService.SerializeOperation(operation));
+
+        Assert.NotNull(parsed);
+        Assert.Equal(PosDeviceSettingsService.ScopeDevice, parsed!.Scope);
+        Assert.Equal(point, Assert.Single(parsed.Points));
+        Assert.True(Enabled(parsed.Settings));
+        Assert.Equal(BranchUser, parsed.ActorUserId);
+        Assert.Equal("القيم الأولية (نابلس · صندوق 3 (3)): تفعيل شاشة الزبون: مفعّل", PosDeviceSettingsService.Describe(parsed));
+    }
+
+    [Fact]
+    public void LoggedOperation_ForAllPointsNeedsNoPointList()
+    {
+        var operation = new DeviceSettingsOperation(PosDeviceSettingsService.ScopeAll, [], Change(false, T0, PosDeviceSettingSources.Branch), BranchUser, null);
+        var parsed = PosDeviceSettingsService.ParseOperation(PosDeviceSettingsService.SerializeOperation(operation));
+
+        Assert.NotNull(parsed);
+        Assert.Equal(PosDeviceSettingsService.ScopeAll, parsed!.Scope);
+        Assert.Empty(parsed.Points);
+        Assert.False(Enabled(parsed.Settings));
+        Assert.StartsWith("القيم الأولية (جميع النقاط)", PosDeviceSettingsService.Describe(parsed));
+    }
+
+    [Fact]
+    public void LoggedOperation_RejectsBrokenPayloads()
+    {
+        Assert.Null(PosDeviceSettingsService.ParseOperation(null));
+        Assert.Null(PosDeviceSettingsService.ParseOperation("{not json"));
+        Assert.Null(PosDeviceSettingsService.ParseOperation("""{"scope":"Device","points":[],"settings":{}}"""));
+        Assert.Null(PosDeviceSettingsService.ParseOperation("""{"scope":5}"""));
     }
 }

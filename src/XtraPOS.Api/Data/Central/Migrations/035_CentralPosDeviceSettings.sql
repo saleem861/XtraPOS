@@ -1,6 +1,6 @@
 -- النسخة المركزية من القيم الأولية لكل نقطة بيع.
--- الفرع يرفع تعديلاته إلى هنا، وموظف المركز يعدّل هنا مباشرة، وكل تعديل يُسجَّل في SyncChangeLog
--- بنوع PosDeviceSettings ليسحبه الفرع صاحب النقطة.
+-- الفرع يرفع تعديلاته إلى هنا عبر سجل الترحيل (BranchOperationLog، النوع DeviceSettings)،
+-- وكل تعديل يُسجَّل في SyncChangeLog بنوع PosDeviceSettings، فتسحبه كل الفروع ويتطابق جدولها مع المركز.
 -- Adds tables (settings, audit, receipts) and two permissions. Does not touch customers, items, stock or sales. Safe to run again.
 
 SET ANSI_NULLS ON;
@@ -35,7 +35,7 @@ IF NOT EXISTS (
         ON dbo.CentralPosDeviceSettings (BranchID);
 
 -- سجل تدقيق: لكل إعداد تغيّرت قيمته الفعلية سطر بالقيمة قبل وبعد، ومن، ومن أين.
--- OutboxEventID يربط السطر بترحيل الفرع، ويمنع تسجيل الترحيل نفسه مرتين عند إعادة المحاولة.
+-- OperationID يربط السطر بعملية سجل الترحيل في الفرع.
 IF OBJECT_ID(N'dbo.PosDeviceSettingsAudit', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.PosDeviceSettingsAudit
@@ -49,7 +49,7 @@ BEGIN
         Source nvarchar(20) NOT NULL,
         ActorUserID uniqueidentifier NULL,
         ActorName nvarchar(150) NULL,
-        OutboxEventID uniqueidentifier NULL,
+        OperationID uniqueidentifier NULL,
         SettingsVersion bigint NOT NULL,
         OccurredAt datetime2(0) NOT NULL
             CONSTRAINT DF_PosDeviceSettingsAudit_OccurredAt DEFAULT (SYSUTCDATETIME()),
@@ -64,15 +64,16 @@ IF NOT EXISTS (
     CREATE INDEX IX_PosDeviceSettingsAudit_Device
         ON dbo.PosDeviceSettingsAudit (DeviceID, OccurredAt);
 
--- سجل لكل ترحيل وصل من الفرع (حتى لو لم يغيّر قيمة فعلية)، لمنع التكرار ولمعرفة متى وصل.
+-- سطر لكل عملية وصلت من سجل ترحيل فرع (حتى لو لم تغيّر قيمة فعلية)، فإعادة المحاولة لا تطبّقها مرتين.
+-- DeviceID فارغ (00000000-...) عندما تكون العملية لجميع النقاط.
 IF OBJECT_ID(N'dbo.PosDeviceSettingsReceipts', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.PosDeviceSettingsReceipts
     (
-        OutboxEventID uniqueidentifier NOT NULL CONSTRAINT PK_PosDeviceSettingsReceipts PRIMARY KEY,
+        OperationID uniqueidentifier NOT NULL CONSTRAINT PK_PosDeviceSettingsReceipts PRIMARY KEY,
         DeviceID uniqueidentifier NOT NULL,
         BranchID uniqueidentifier NOT NULL,
-        SettingsVersion bigint NOT NULL,
+        AffectedDevices int NOT NULL,
         ReceivedAt datetime2(0) NOT NULL
             CONSTRAINT DF_PosDeviceSettingsReceipts_ReceivedAt DEFAULT (SYSUTCDATETIME())
     );
