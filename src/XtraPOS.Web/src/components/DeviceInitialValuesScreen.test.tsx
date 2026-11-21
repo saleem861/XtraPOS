@@ -61,7 +61,6 @@ function stubServer(list: PointsList) {
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
     const reply = (body: unknown, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => body });
     if (url === "/api/device-settings/points") return reply(list);
-    if (url.startsWith("/api/device-settings/history")) return reply([]);
     if (url === "/api/device-settings" && init?.method === "PUT") {
       const body = JSON.parse(String(init.body));
       saved.push(body);
@@ -88,6 +87,7 @@ describe("DeviceInitialValuesScreen", () => {
     await userEvent.click(save);
 
     expect(await screen.findByText(/أُضيفت إلى سجل الترحيل/)).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
     expect(saved).toEqual([expect.objectContaining({ scope: "Device", deviceId: "d1", values: { [CUSTOMER_DISPLAY_ENABLED]: true } })]);
   });
 

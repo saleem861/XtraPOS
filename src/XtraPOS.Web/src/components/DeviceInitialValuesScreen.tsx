@@ -5,20 +5,11 @@ import {
   CUSTOMER_DISPLAY_ENABLED,
   pointLabel,
   settingValue,
-  type DeviceSettingsLogRow,
   type DeviceSettingValue,
   type PointSettings,
 } from "../api/deviceSettings";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { ScreenHeader } from "./ScreenHeader";
-
-const statusText: Record<DeviceSettingsLogRow["status"], string> = {
-  Pending: "بانتظار التنفيذ",
-  Executing: "قيد التنفيذ",
-  Completed: "تم التنفيذ",
-  Blocked: "متوقف",
-  Cancelled: "ملغى",
-};
 
 function formatTime(value: string | null) {
   if (!value) return "";
@@ -39,7 +30,7 @@ function syncLine(point: PointSettings) {
   if (point.centralVersion > 0 && point.syncedAtUtc) {
     return `مطابق لجدول الإدارة المركزية (الإصدار ${point.centralVersion}) · ${formatTime(point.syncedAtUtc)}`;
   }
-  return "لم تصل نسخة هذه النقطة من الإدارة المركزية بعد. التعديلات تُرحَّل عبر سجل الترحيل.";
+  return "لم تصل نسخة هذه النقطة من الإدارة المركزية بعد.";
 }
 
 /** القيم الأولية: تفتح على النقطة الحالية، ويختار المدير أي نقطة في أي فرع أو جميع النقاط. */
@@ -55,14 +46,11 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
   const [selected, setSelected] = useState<string>("");
   const [enabled, setEnabled] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [history, setHistory] = useState<DeviceSettingsLogRow[]>([]);
   const [pending, setPending] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const current = points.find((point) => point.isCurrent) ?? null;
   const point = selected === ALL_POINTS ? null : points.find((item) => item.deviceId === selected) ?? null;
-  const historyDevice = point?.deviceId ?? current?.deviceId ?? "";
 
   const load = useCallback(async (keep?: string) => {
     setPending(true);
@@ -93,15 +81,6 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
       setEnabled(settingValue(point?.settings, CUSTOMER_DISPLAY_ENABLED));
     }
   }, [selected, points, point]);
-
-  useEffect(() => {
-    if (!historyDevice) return;
-    let stop = false;
-    void client.history(historyDevice)
-      .then((rows) => { if (!stop) setHistory(rows); })
-      .catch(() => { if (!stop) setHistory([]); });
-    return () => { stop = true; };
-  }, [client, historyDevice, message]);
 
   async function save() {
     if (!selected) return;
@@ -170,37 +149,6 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
         {selected === ALL_POINTS ? "حفظ لجميع النقاط" : "حفظ"}
       </button>
 
-      <section className="device-transfer-log" aria-label="عمليات القيم الأولية في سجل الترحيل">
-        <h2>في سجل الترحيل</h2>
-        {history.length === 0 ? (
-          <p className="device-settings-hint">لا توجد عمليات قيم أولية لهذه النقطة في سجل الترحيل بعد.</p>
-        ) : (
-          <table className="device-log-table">
-            <thead>
-              <tr>
-                <th>الوقت</th>
-                <th>العملية</th>
-                <th>بواسطة</th>
-                <th>الحالة</th>
-                <th>المحاولات</th>
-                <th>النتيجة</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((row) => (
-                <tr key={row.operationId}>
-                  <td>{formatTime(row.createdAt)}</td>
-                  <td>{row.description}{row.referenceNumber ? <small> · {row.referenceNumber}</small> : null}</td>
-                  <td>{row.actorName ?? "—"}</td>
-                  <td>{statusText[row.status] ?? row.status}</td>
-                  <td>{row.attemptCount}</td>
-                  <td>{row.resultMessage ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
     </section>
   );
 }
