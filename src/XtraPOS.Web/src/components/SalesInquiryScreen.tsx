@@ -320,7 +320,12 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const allClasses = options.classes.length > 0 && options.classes.every((name) => classifications.includes(name));
   const selectedBranch = options.branches?.find((branch) => branch.branchName.trim() === branchName.trim());
-  const visibleStations = options.stations.filter((station) => !useBranch || station.branchId === selectedBranch?.branchId || station.branchName.trim() === branchName.trim());
+  // The same branch can come from central and from this branch database with different IDs. Matched by ID or
+  // name, its points would show twice, so a selected branch lists each point number once.
+  const visibleStations = distinctBy(
+    options.stations.filter((station) => !useBranch || station.branchId === selectedBranch?.branchId || station.branchName.trim() === branchName.trim()),
+    (station) => useBranch ? String(station.stationNumber) : `${station.branchName.trim()}:${station.stationNumber}`,
+  );
 
   return (
     <section className={desktop && keyboardOpen ? "new-customer sales-review has-keyboard" : "new-customer sales-review"} dir="rtl" aria-label="مراجعة المبيعات" onKeyDown={moveToNextField}>
