@@ -58,6 +58,7 @@ import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
 import { buildDisplayState, customerDisplayChannel, isCustomerDisplayOpen, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
+import { Waiting } from "./Waiting";
 import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
@@ -67,6 +68,7 @@ import { hebronToday } from "../cart/heldDraftFilters";
 import { interpretFastEntry, sameItemNumber } from "../cart/fastEntry";
 import { POS_SEARCH_PAGE_SIZE, sortSearchResults, type SearchSortColumn } from "../cart/itemSearch";
 import { sortCustomers, type CustomerSortColumn } from "../cart/customerSearch";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import {
   addFixedLine,
   addVariableLine,
@@ -314,6 +316,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [paying, setPaying] = useState(false);
   const [finePointer, setFinePointer] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches);
   const [desktopKeyboard, setDesktopKeyboard] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine) and (hover: hover)").matches);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [payField, setPayField] = useState<"tendered" | "cashPart">("tendered");
   const [payFresh, setPayFresh] = useState(true);
   const [payMethod, setPayMethod] = useState<"Cash" | "Card" | "Split">("Cash");
@@ -1266,7 +1269,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     };
   }, [session]);
 
-  if (cartRestore === "loading" || !cart) return <section className="card">جاري استعادة السلة…</section>;
+  if (cartRestore === "loading" || !cart) return <section className="card"><Waiting label="جاري استعادة السلة…" /></section>;
   const totals = cartTotals(cart);
   const orderedResults = searchSort ? sortSearchResults(results, searchSort.column, searchSort.direction, (item) => item.resolvedPrice ?? null) : results;
   const shownResults = orderedResults.slice(0, visibleResults);
@@ -1628,7 +1631,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         />
       ) : null}
       {customerOpen ? (
-        <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="بحث عن زبون">
+        <section className={desktopKeyboard && keyboardOpen ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="بحث عن زبون">
           <header className="new-customer-bar">
             <strong className="new-customer-brand">XtraPOS</strong>
             <h2>بحث عن زبون</h2>
@@ -1685,7 +1688,8 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
               <button className="primary-button" type="button" disabled={customerSelected < 0 || !orderedCustomers[customerSelected]} onClick={() => { const customer = orderedCustomers[customerSelected]; if (customer) chooseCustomer(customer); }}>إدخال</button>
             </div>
           </form>
-          {desktopKeyboard ? <FullKeyboard onEnter={() => void searchCustomers(1)} /> : null}
+          {desktopKeyboard ? <KeyboardToggle /> : null}
+          {desktopKeyboard && keyboardOpen ? <FullKeyboard onEnter={() => void searchCustomers(1)} /> : null}
         </section>
       ) : null}
       {searchOpen ? (

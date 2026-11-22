@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { blank } from "../catalog/format";
 import type { ItemActivity, ItemCatalogClient, ItemListItem, ItemQuery, ItemSort } from "../catalog/types";
-import { OperationProgress } from "./OperationProgress";
 import { ScreenHeader } from "./ScreenHeader";
 import { ItemDetailScreen } from "./ItemDetailScreen";
+import { Waiting } from "./Waiting";
 
 interface ItemCatalogScreenProps {
   client: ItemCatalogClient;
@@ -135,7 +135,7 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
         <p className="result-count">{totalCount.toLocaleString("ar-EG")} صنف</p>
       </div>
       {error ? <p className="form-error">{error}</p> : null}
-      {loading ? <OperationProgress label="جاري تحميل الأصناف" /> : null}
+      {loading ? <Waiting compact label="جاري تحميل الأصناف…" /> : null}
       {!loading && !error && items.length === 0 ? <p className="catalog-status">لا توجد أصناف مطابقة للبحث</p> : null}
       <div className="item-table-wrap">
         <table className="data-table item-table">

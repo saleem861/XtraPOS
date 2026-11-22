@@ -853,7 +853,7 @@ public static class SalesInquiryEndpoints
         return actor is null ? (null, null, Results.Unauthorized()) : (actor, current, null);
     }
 
-    private static byte[] Workbook(IReadOnlyList<string> meta, IReadOnlyList<string> headers, IReadOnlyList<IReadOnlyList<string>> rows)
+    internal static byte[] Workbook(IReadOnlyList<string> meta, IReadOnlyList<string> headers, IReadOnlyList<IReadOnlyList<string>> rows)
     {
         using var stream = new MemoryStream();
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, true))

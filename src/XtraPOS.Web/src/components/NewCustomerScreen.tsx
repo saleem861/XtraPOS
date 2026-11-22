@@ -32,6 +32,7 @@ import {
 } from "../customers/newCustomerForm";
 import { creditActivationError, creditStatusState, creditSwitchState } from "../credit/creditPolicyForm";
 import type { DeviceSession } from "../types/setup";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 const countryFlags: Record<string, string> = {
   فلسطين: "🇵🇸",
@@ -129,6 +130,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const [specials, setSpecials] = useState<SpecialPriceRow[]>([]);
   const [specialsOpen, setSpecialsOpen] = useState(false);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [savedCustomerId, setSavedCustomerId] = useState(customerId);
   const [pendingEnrollment, setPendingEnrollment] = useState("");
   const [membershipDisplay, setMembershipDisplay] = useState("");
@@ -657,7 +659,7 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
   const searchEnter = useRef<() => void>(() => undefined);
 
   return (
-    <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label={specialsOpen ? "الأسعار الاستثنائية للزبون" : title}>
+    <section className={desktopKeyboard && keyboardOpen ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label={specialsOpen ? "الأسعار الاستثنائية للزبون" : title}>
       <ScreenHeader title={specialsOpen ? "الأسعار الاستثنائية للزبون" : title} onBack={onBack} />
       <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
@@ -796,7 +798,8 @@ export function NewCustomerScreen({ session, onBack, onSaved, title = "إضاف�
           </div>
         </div>
       ) : null}
-      {desktopKeyboard ? <FullKeyboard onEnter={() => (specialsOpen ? searchEnter.current() : advance(document.activeElement?.id || ""))} /> : null}
+      {desktopKeyboard ? <KeyboardToggle /> : null}
+      {desktopKeyboard && keyboardOpen ? <FullKeyboard onEnter={() => (specialsOpen ? searchEnter.current() : advance(document.activeElement?.id || ""))} /> : null}
     </section>
   );
 }

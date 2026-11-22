@@ -4,6 +4,8 @@ import { dateRangeError, draftRange, hebronToday } from "../cart/heldDraftFilter
 import type { DeviceSession } from "../types/setup";
 import { ArrowLeft } from "lucide-react";
 import { FullKeyboard } from "./FullKeyboard";
+import { Waiting } from "./Waiting";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 export function HeldDraftsScreen({
   session,
@@ -29,6 +31,7 @@ export function HeldDraftsScreen({
   const client = useMemo(() => createHeldSaleClient(session), [session]);
   const today = hebronToday();
   const searchRef = useRef<HTMLInputElement>(null);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [customer, setCustomer] = useState("");
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
@@ -85,7 +88,7 @@ export function HeldDraftsScreen({
   }
 
   return (
-    <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard held-drafts" : "new-customer held-drafts"} dir="rtl" aria-label="استرجاع المسودات المحفوظة">
+    <section className={desktopKeyboard && keyboardOpen ? "new-customer full-keyboard-screen has-keyboard held-drafts" : "new-customer held-drafts"} dir="rtl" aria-label="استرجاع المسودات المحفوظة">
       <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <h2>استرجاع المسودات المحفوظة</h2>
@@ -112,7 +115,7 @@ export function HeldDraftsScreen({
         </form>
         <div className="held-drafts-main">
           <section className="held-drafts-results">
-            <p>{loading ? "جاري التحميل…" : `${rows.length} مسودة`}</p>
+            {loading ? <Waiting compact label="جاري تحميل المسودات…" /> : <p>{`${rows.length} مسودة`}</p>}
             {error ? <p className="status-error">{error}<button type="button" onClick={() => void load()}>إعادة المحاولة</button></p> : null}
             {!loading && !error && rows.length === 0 ? <p>لا توجد مسودات مطابقة.</p> : null}
             <div className="held-drafts-table" role="table">
@@ -160,7 +163,8 @@ export function HeldDraftsScreen({
           </aside>
         </div>
       </div>
-      {desktopKeyboard ? <FullKeyboard onEnter={() => void load()} /> : null}
+      {desktopKeyboard ? <KeyboardToggle /> : null}
+      {desktopKeyboard && keyboardOpen ? <FullKeyboard onEnter={() => void load()} /> : null}
     </section>
   );
 }

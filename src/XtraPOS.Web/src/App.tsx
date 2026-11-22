@@ -41,6 +41,7 @@ import {
 import { clearSetupProgress, readSetupProgress } from "./setup/setupProgress";
 import { localAppOriginMatches, localPosAfterSetup, probeLocalAgentStatus, type LocalBranchConfiguration } from "./setup/branchAgentLocal";
 import { visibleSteps } from "./setup/wizardFlow";
+import { GlobalWaiting } from "./components/GlobalWaiting";
 
 type Phase =
   | { kind: "loading" }
@@ -540,6 +541,7 @@ export default function App({ onNavigate = defaultNavigate }: { onNavigate?: (ur
           </>
         ) : <div id="app-back-slot" />}
       </header>
+      <GlobalWaiting />
       <main className="workspace">
         {phase.kind === "loading" ? <StatusScreen title="XtraPOS" message="جاري التحقق من الإعداد" /> : null}
         {phase.kind === "handoff" ? (

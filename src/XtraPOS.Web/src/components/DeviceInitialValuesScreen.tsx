@@ -10,6 +10,7 @@ import {
 } from "../api/deviceSettings";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 import { distinctBy } from "../distinct";
+import { Waiting } from "./Waiting";
 import { ScreenHeader } from "./ScreenHeader";
 
 function formatTime(value: string | null) {
@@ -48,6 +49,7 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
   const [enabled, setEnabled] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [pending, setPending] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -70,6 +72,7 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
       setError(caught instanceof Error ? caught.message : "تعذر تحميل نقاط البيع.");
     } finally {
       setPending(false);
+      setLoaded(true);
     }
   }, [client]);
 
@@ -104,8 +107,10 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
 
   const setting = point?.settings.find((item) => item.key === CUSTOMER_DISPLAY_ENABLED);
   return (
-    <section className="card device-settings">
+    <section className="card device-settings" style={{ position: "relative" }}>
       <ScreenHeader title="القيم الأولية" context={`${user.branchName} · ${user.deviceName}`} onBack={onBack} />
+      {!loaded ? <Waiting label="جاري تحميل نقاط البيع وقيمها…" /> : <>
+      {pending ? <Waiting variant="overlay" label="يرجى الانتظار…" /> : null}
 
       <label className="device-point-picker">
         <span>النقطة</span>
@@ -150,7 +155,7 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
       <button className="primary-button" type="button" disabled={pending || !dirty} onClick={() => void save()}>
         {selected === ALL_POINTS ? "حفظ لجميع النقاط" : "حفظ"}
       </button>
-
+      </>}
     </section>
   );
 }

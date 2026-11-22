@@ -1,4 +1,4 @@
-import { Calendar, ChevronDown, Clock, Database, FileSpreadsheet, Filter, RefreshCw, Sigma, Trash2, TrendingUp, Zap } from "lucide-react";
+import { Calendar, Clock, Database, FileSpreadsheet, Filter, RefreshCw, Sigma, Trash2, TrendingUp, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { deviceHeaders } from "../api/client";
 import { distinctBy } from "../distinct";
@@ -7,6 +7,7 @@ import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { FullKeyboard } from "./FullKeyboard";
 import { OrderDetailsScreen, type DebtDocument } from "./OrderDetailsScreen";
 import { ScreenHeader } from "./ScreenHeader";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 interface SalesLine {
   saleId: string;
@@ -73,7 +74,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
   const initial = today();
   const desktop = usesDesktopCustomerKeyboard();
   const [useDate, setUseDate] = useState(true);
-  const [keyboardOpen, setKeyboardOpen] = useState(true);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [dateFrom, setDateFrom] = useState(initial);
   const [dateTo, setDateTo] = useState(initial);
   const [useTime, setUseTime] = useState(false);
@@ -481,10 +482,7 @@ export function SalesInquiryScreen({ session, onBack }: { session: DeviceSession
           </div>
       </div>
       {desktop ? (
-        <button type="button" className="sales-review-keyboard-toggle" onClick={() => setKeyboardOpen((value) => !value)}>
-          <ChevronDown aria-hidden="true" style={{ transform: keyboardOpen ? "none" : "rotate(180deg)" }} />
-          {keyboardOpen ? "إخفاء لوحة المفاتيح والأرقام" : "إظهار لوحة المفاتيح والأرقام"}
-        </button>
+        <KeyboardToggle />
       ) : null}
       {desktop && keyboardOpen ? <FullKeyboard onEnter={applyFilters} /> : null}
       {openedOrder ? (

@@ -7,6 +7,8 @@ import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
 import { ScreenHeader } from "./ScreenHeader";
 import { NewCustomerScreen } from "./NewCustomerScreen";
+import { Waiting } from "./Waiting";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 interface CustomerBrowseScreenProps {
   session: DeviceSession;
@@ -29,6 +31,7 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
   const [pendingDelete, setPendingDelete] = useState<CustomerListItem | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [desktopKeyboard, setDesktopKeyboard] = useState(usesDesktopCustomerKeyboard);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -107,7 +110,7 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
   }
 
   return (
-    <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="استعراض الزبائن">
+    <section className={desktopKeyboard && keyboardOpen ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="استعراض الزبائن">
       <ScreenHeader title="استعراض الزبائن" onBack={onBack} />
       <header className="new-customer-bar shell-page-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
@@ -124,7 +127,7 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
             window.setTimeout(() => searchRef.current?.focus(), 0);
           }} />
         </label>
-        {state === "loading" ? <p>جارٍ البحث...</p> : null}
+        {state === "loading" ? <Waiting compact label="جارٍ البحث…" /> : null}
         {state === "error" ? <p className="status-error">{message}</p> : null}
         {state === "ready" && rows.length === 0 ? <p>لا توجد نتائج.</p> : null}
         {message && state !== "error" ? <p className="new-customer-success">{message}</p> : null}
@@ -154,7 +157,8 @@ export function CustomerBrowseScreen({ session, permissions, onBack }: CustomerB
           </div>
         ) : null}
       </div>
-      {desktopKeyboard ? <FullKeyboard onEnter={() => undefined} /> : null}
+      {desktopKeyboard ? <KeyboardToggle /> : null}
+      {desktopKeyboard && keyboardOpen ? <FullKeyboard onEnter={() => undefined} /> : null}
       {pendingDelete ? (
         <div className="customer-delete-dialog" role="presentation">
           <div className="customer-delete-card" role="dialog" aria-modal="true" aria-label="تأكيد حذف الزبون">

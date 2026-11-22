@@ -5,6 +5,8 @@ import type { DeviceSession } from "../types/setup";
 import { sortCustomers, type CustomerSortColumn } from "../cart/customerSearch";
 import { FullKeyboard } from "./FullKeyboard";
 import { NewCustomerScreen } from "./NewCustomerScreen";
+import { Waiting } from "./Waiting";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 function customerSyncLabel(state: string | null): string {
   switch (state) {
@@ -25,6 +27,7 @@ export function CustomerSearchScreen({ session, permissions, onClose, onChoose }
   const customers = createCustomerClient(session);
   const inputRef = useRef<HTMLInputElement>(null);
   const desktopKeyboard = typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine) and (hover: hover)").matches;
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CustomerListItem[]>([]);
   const [syncState, setSyncState] = useState<string | null>(null);
@@ -83,7 +86,7 @@ export function CustomerSearchScreen({ session, permissions, onClose, onChoose }
   }
 
   return (
-    <section className={desktopKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="بحث عن زبون" style={{ zIndex: 50 }}>
+    <section className={desktopKeyboard && keyboardOpen ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="بحث عن زبون" style={{ zIndex: 50 }}>
       <header className="new-customer-bar">
         <strong className="new-customer-brand">XtraPOS</strong>
         <h2>بحث عن زبون</h2>
@@ -118,7 +121,7 @@ export function CustomerSearchScreen({ session, permissions, onClose, onChoose }
             ))}
           </div>
           <div className="pos-search-body">
-            {loading ? <p className="pos-search-empty">جاري البحث…</p> : null}
+            {loading ? <Waiting compact label="جاري البحث…" /> : null}
             {ordered.map((customer, index) => (
               <button key={customer.customerId} type="button" className={index === selected ? "customer-search-row is-selected" : "customer-search-row"} onClick={() => onChoose(customer)}>
                 <span className="customer-search-cell" role="cell">{customer.customerNumber ?? "—"}</span>
@@ -140,7 +143,8 @@ export function CustomerSearchScreen({ session, permissions, onClose, onChoose }
           <button className="primary-button" type="button" disabled={selected < 0 || !ordered[selected]} onClick={() => { const customer = ordered[selected]; if (customer) onChoose(customer); }}>إدخال</button>
         </div>
       </form>
-      {desktopKeyboard ? <FullKeyboard onEnter={() => void search(1)} /> : null}
+      {desktopKeyboard ? <KeyboardToggle /> : null}
+      {desktopKeyboard && keyboardOpen ? <FullKeyboard onEnter={() => void search(1)} /> : null}
     </section>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { blank, formatFactor, formatPrice, formatQuantity, inventoryStatus } from "../catalog/format";
 import type { ItemCatalogClient, ItemDetail, ItemEditForm, ItemInventory, ItemMovement, ItemPrice, ItemUnits } from "../catalog/types";
 import { ScreenHeader } from "./ScreenHeader";
+import { Waiting } from "./Waiting";
 
 type DetailTab = "profile" | "prices" | "units" | "inventory" | "movements";
 
@@ -84,7 +85,7 @@ export function ItemDetailScreen({ client, itemId, onBack }: ItemDetailScreenPro
       </div>
       {error ? <p className="form-error">{error}</p> : null}
       {notice ? <p className="catalog-status">{notice}</p> : null}
-      {!detail && !error ? <p className="catalog-status">جاري التحميل</p> : null}
+      {!detail && !error ? <Waiting label="جاري تحميل تفاصيل الصنف…" /> : null}
       {detail && tab === "profile" ? <ProfileTab detail={detail} form={form} client={client} itemId={itemId} onSaved={setNotice} onError={setError} /> : null}
       {prices && tab === "prices" ? <PricesTab prices={prices} form={form} client={client} itemId={itemId} onSaved={setNotice} onError={setError} /> : null}
       {units && tab === "units" ? <UnitsTab units={units} form={form} client={client} itemId={itemId} onSaved={setNotice} onError={setError} /> : null}

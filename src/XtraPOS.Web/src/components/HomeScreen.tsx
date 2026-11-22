@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, Coins, Link2, Monitor, Package, RotateCcw, ScrollText, Settings, ShoppingCart, Users, UsersRound } from "lucide-react";
+import { ClipboardList, Coins, Link2, Monitor, Package, ReceiptText, RotateCcw, ScrollText, Settings, ShieldCheck, ShoppingCart, TriangleAlert, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
@@ -15,6 +15,8 @@ import { UserManagementScreen } from "./UserManagementScreen";
 import { CashDenominationScreen } from "./CashDenominationScreen";
 import { CashDrawerReviewScreen } from "./CashDrawerReviewScreen";
 import { DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
+import { EmployeeCashErrorsScreen } from "./EmployeeCashErrorsScreen";
+import { SalesInquiryScreen } from "./SalesInquiryScreen";
 
 interface HomeScreenProps {
   session: DeviceSession;
@@ -35,6 +37,9 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showDenominations, setShowDenominations] = useState(false);
   const [showDrawerReview, setShowDrawerReview] = useState(false);
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
+  const [showSales, setShowSales] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -59,6 +64,9 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowDenominations(false);
       setShowDrawerReview(false);
       setShowDeviceSettings(false);
+      setShowAudit(false);
+      setShowSales(false);
+      setShowErrors(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -127,6 +135,50 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
 
   if (showDrawerReview && canReviewDrawer) {
     return <CashDrawerReviewScreen session={session} onBack={() => setShowDrawerReview(false)} />;
+  }
+
+  if (showSales && canReviewDrawer) {
+    return <SalesInquiryScreen session={session} onBack={() => setShowSales(false)} />;
+  }
+
+  if (showErrors && canReviewDrawer) {
+    return <EmployeeCashErrorsScreen session={session} user={user} onBack={() => setShowErrors(false)} />;
+  }
+
+  // «التدقيق والمراجعة»: للمشرف والمدير.
+  if (showAudit && canReviewDrawer) {
+    return (
+      <section className="card settings-screen">
+        <ScreenHeader
+          title="التدقيق والمراجعة"
+          context={`${user.branchName} · ${user.stationName} · ${user.deviceName}`}
+          onBack={() => setShowAudit(false)}
+        />
+        <div className="home-nav">
+          <button className="home-nav-card" type="button" onClick={() => setShowSales(true)}>
+            <span className="home-nav-icon" aria-hidden="true"><ReceiptText /></span>
+            <span>
+              <strong>المبيعات</strong>
+              <small>مراجعة المبيعات وتصديرها</small>
+            </span>
+          </button>
+          <button className="home-nav-card" type="button" onClick={() => setShowErrors(true)}>
+            <span className="home-nav-icon" aria-hidden="true"><TriangleAlert /></span>
+            <span>
+              <strong>الأخطاء</strong>
+              <small>أخطاء الموظفين بالجرار وتسويتها</small>
+            </span>
+          </button>
+          <button className="home-nav-card" type="button" onClick={() => setShowDrawerReview(true)}>
+            <span className="home-nav-icon" aria-hidden="true"><ClipboardList /></span>
+            <span>
+              <strong>مراجعة الجرد</strong>
+              <small>عمليات جرار كل الفروع</small>
+            </span>
+          </button>
+        </div>
+      </section>
+    );
   }
 
   if (showDeviceSettings && canConfigureDevice) {
@@ -246,11 +298,11 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
           </button>
         ) : null}
         {canReviewDrawer ? (
-          <button className="home-nav-card" type="button" onClick={() => setShowDrawerReview(true)}>
-            <span className="home-nav-icon" aria-hidden="true"><ClipboardList /></span>
+          <button className="home-nav-card" type="button" onClick={() => setShowAudit(true)}>
+            <span className="home-nav-icon" aria-hidden="true"><ShieldCheck /></span>
             <span>
-              <strong>مراجعة الجرد</strong>
-              <small>عمليات جرار كل الفروع</small>
+              <strong>التدقيق والمراجعة</strong>
+              <small>المبيعات والأخطاء ومراجعة الجرد</small>
             </span>
           </button>
         ) : null}

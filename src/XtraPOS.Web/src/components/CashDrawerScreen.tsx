@@ -1,10 +1,11 @@
-import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { deviceHeaders } from "../api/client";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
 import { ScreenHeader } from "./ScreenHeader";
+import { Waiting } from "./Waiting";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 interface Denomination {
   denominationId: string;
@@ -38,7 +39,7 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
   const [pending, setPending] = useState(false);
   const [focus, setFocus] = useState(0);
   const desktop = useDrawerKeyboard();
-  const [keyboardOpen, setKeyboardOpen] = useState(desktop);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const columns = 3;
   const rows = Math.max(1, Math.ceil(denominations.length / columns));
   const counted = useMemo(
@@ -178,16 +179,12 @@ export function CashDrawerScreen({ session, onBack }: { session: DeviceSession; 
         </div>
       )}
       {desktop && !done ? (
-        <button type="button" className="sales-review-keyboard-toggle" onClick={() => setKeyboardOpen((value) => !value)}>
-          <ChevronDown aria-hidden="true" style={{ transform: keyboardOpen ? "none" : "rotate(180deg)" }} />
-          {keyboardOpen ? "إخفاء لوحة المفاتيح والأرقام" : "إظهار لوحة المفاتيح والأرقام"}
-        </button>
+        <KeyboardToggle />
       ) : null}
       {desktop && keyboardOpen && !done ? <FullKeyboard onEnter={moveFromPad} /> : null}
       {pending ? (
-        <div className="drawer-wait" role="status" aria-live="polite">
-          <span className="customer-save-spinner" />
-          <strong>جاري حفظ العد</strong>
+        <div className="drawer-wait">
+          <Waiting compact label="جاري حفظ العد" />
         </div>
       ) : null}
     </section>

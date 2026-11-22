@@ -1,10 +1,11 @@
-import { ChevronDown, RefreshCw, Trash2 } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { deviceHeaders } from "../api/client";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
 import { ScreenHeader } from "./ScreenHeader";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 interface ReviewLine {
   countId: string;
@@ -72,7 +73,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
   const [note, setNote] = useState("");
   const [message, setMessage] = useState("");
   const desktop = usesDesktopCustomerKeyboard() || (typeof window.matchMedia === "function" && window.matchMedia("(orientation: landscape) and (min-width: 900px)").matches);
-  const [keyboardOpen, setKeyboardOpen] = useState(desktop);
+  const [keyboardOpen] = useFullKeyboardVisible();
   const [showFirst, setShowFirst] = useState(false);
   const { branches, stations } = reviewChoices(options, branchId);
 
@@ -269,10 +270,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
       </div>
       )}
       {desktop ? (
-        <button type="button" className="sales-review-keyboard-toggle" onClick={() => setKeyboardOpen((value) => !value)}>
-          <ChevronDown aria-hidden="true" style={{ transform: keyboardOpen ? "none" : "rotate(180deg)" }} />
-          {keyboardOpen ? "إخفاء لوحة المفاتيح والأرقام" : "إظهار لوحة المفاتيح والأرقام"}
-        </button>
+        <KeyboardToggle />
       ) : null}
       {desktop && keyboardOpen ? <FullKeyboard onEnter={canDecide ? moveDecision : apply} /> : null}
     </section>

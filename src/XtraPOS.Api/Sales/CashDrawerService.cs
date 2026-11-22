@@ -1038,7 +1038,7 @@ public sealed class CashDrawerService(SqlConnectionFactory connections, SyncEndp
         return rows;
     }
 
-    private static async Task<object> ReviewOptionsAsync(SqlConnection connection, CancellationToken cancellationToken)
+    internal static async Task<object> ReviewOptionsAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         var branches = await ReadPairsAsync(
             connection,

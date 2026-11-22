@@ -5,6 +5,7 @@ import { shownReversalDebt } from "../credit/reversalPreview";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { FullKeyboard } from "./FullKeyboard";
 import type { DeviceSession } from "../types/setup";
+import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 
 type Line = { amount: number; sourceSaleNumber: number | null; sourceBranchName: string | null };
 type Preview = {
@@ -116,7 +117,9 @@ export function DebtReversalScreen({ session, customer, collectionId, branchName
   const locked = state === "Completed" || state === "PendingCentral" || state === "ReconciliationRequired" || preview?.state === "Completed";
   const posted = state === "Completed" || preview?.state === "Completed";
   const debt = preview ? shownReversalDebt({ outstanding: preview.outstanding, expectedOutstanding: preview.expectedOutstanding, state: posted ? "Completed" : preview.state, reason: reason === "IncorrectRecording" ? "IncorrectRecording" : "RefundToCustomer" }) : null;
-  const showKeyboard = desktopKeyboard && editing && !locked;
+  const [keyboardOpen] = useFullKeyboardVisible();
+  const keyboardAllowed = desktopKeyboard && editing && !locked;
+  const showKeyboard = keyboardAllowed && keyboardOpen;
 
   return (
     <section className={showKeyboard ? "new-customer full-keyboard-screen has-keyboard" : "new-customer"} dir="rtl" aria-label="عكس عملية تسديد دين">
@@ -157,6 +160,7 @@ export function DebtReversalScreen({ session, customer, collectionId, branchName
           </article>
         ) : null}
       </div>
+      {keyboardAllowed ? <KeyboardToggle /> : null}
       {showKeyboard ? <FullKeyboard onEnter={() => setEditing(false)} /> : null}
     </section>
   );

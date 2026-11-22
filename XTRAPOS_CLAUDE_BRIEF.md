@@ -138,6 +138,10 @@ XtraPOS نظام نقطة بيع يعمل بلا اتصال على جهاز ال
 - فهرس `UX_CashDrawerCounts_OpenAttempt` أُسقط في ترحيل الفرع `048` والمركز `034` حتى يُحفظ عد لاحق في الوردية نفسها.
 - كل تأكيد يُسجَّل أيضاً في `BranchOperationLog` بنوع `CashDrawerCount`.
 
+### 4.5أ التدقيق والمراجعة (الرئيسية)
+
+- بطاقة للمشرف والمدير (`CashDrawer.Review`) فيها: «المبيعات» (`SalesInquiryScreen`)، «الأخطاء» (`EmployeeCashErrorsScreen`، انظر `docs/employee-cash-errors.md`)، «مراجعة الجرد». «مراجعة الجرد» لم تعد بطاقة مستقلة في الرئيسية.
+
 ### 4.6 مراجعة الجرد `CashDrawerReviewScreen.tsx`
 
 - المدير والمشرف يريان كل الفروع. الكاشير لا يفتح الشاشة.
@@ -382,6 +386,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-branch-release.ps1
 
 - **22 نوفمبر:** `CentralPosRegistry` على المركز فارغ، والنقاط الحقيقية في `dbo.Devices` على المركز (Asus 1، Labtop 3، Sharbel 3). قائمة القيم الأولية و«جميع النقاط» صارت تُبنى من أجهزة `POS` الفعّالة غير الملغاة في `Devices` مع رقمها من `POSStations`. ترحيل المركز `035` مطبّق.
 
+0. «أخطاء الموظفين» (`docs/employee-cash-errors.md`): مقاصة وتسوية وتأجيل وملاحظات كسجلات إضافية. ترحيل الفرع `051` والمركز `036` (موافقة المالك 22 نوفمبر، نسخة احتياطية من `XtraPOS_Central` قبل النشر). نوع سجل الترحيل `EmployeeCashErrorAction`.
 0. «القيم الأولية» (`docs/pos-device-settings.md`): جدول `PosDeviceSettings` على كل فرع يطابق `CentralPosDeviceSettings` لكل النقاط. الحفظ يدخل سجل الترحيل الموجود بنوع `DeviceSettings`، والسحب من `SyncChangeLog`. ترحيل المركز `035` مسجّل بموافقة المالك (21 نوفمبر)، ويُطبَّق تلقائياً عند أول دورة لأي جهاز فرع بعد النشر، فتؤخذ نسخة احتياطية من `XtraPOS_Central` قبل النشر.
 
 1. صفحة فاتورة عامة على موقع الإعداد (عبر وكيل الفرع)، حتى يعمل رمز «افتح فاتورتك» في شاشة الزبون وزر مشاركة واتساب. حالياً `VITE_PUBLIC_INVOICE_BASE` غير مضبوط ويظهر رمز العضوية مكانه.
@@ -404,6 +409,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-branch-release.ps1
 - جرد الجرار: صفوف غير قابلة للتعديل، والقرار صف لاحق، والفئات فوق لوحة المفاتيح، وجملة إعادة العد مرة واحدة بين العدين.
 - لا تُضاف مزامنة فرع بعيد وكأنها تعمل. العلم `BranchRemoteSync.IsImplemented` يساوي `false`.
 - لا تُطبع أسرار، ولا تُحذف قواعد الإنتاج ضمن سكربت نشر.
+- أي انتظار يراه المستخدم يُعرض بمؤشر: `Waiting` داخل الشاشة، و`GlobalWaiting` عائم لطلبات `/api` التي بدأت بعد تفاعل المستخدم بقليل (لا يظهر مع مؤشر الشاشة).
+- لوحة المفاتيح الكاملة (ومعها الأرقام) حالة واحدة لكل الشاشات تُحفظ على الجهاز: `keyboardVisibility.tsx` (`KeyboardToggle`، `useFullKeyboardVisible`).
 - أي قائمة اختيار (combobox) تُعبّأ بقيم مميزة (distinct): `distinctBy` في `src/XtraPOS.Web/src/distinct.ts` على النص الظاهر، ومن الخادم صف واحد لكل قيمة ظاهرة إن أمكن.
 
 ---
