@@ -760,27 +760,30 @@ public sealed class PosDeviceSettingsService(
     }
 
     /// <summary>
-    /// نقاط البيع في كل الفروع كما يعرفها المركز: أجهزة dbo.Devices من نوع POS الفعّالة وغير الملغاة،
-    /// ورقمها من POSStations. CentralPosRegistry يُضاف إن كان فيه شيء (قد يكون فارغاً).
+    /// نقاط البيع في كل الفروع كما يعرفها المركز.
+    /// المصدر الأول CentralPosRegistry (سجل حجز الأرقام): صفوف Active المربوطة بجهاز، ورقمها PosNumber.
+    /// السجل قد يكون فارغاً لنقاط أُعدّت قبله، فتُضاف أجهزة dbo.Devices من نوع POS الفعّالة وغير الملغاة
+    /// (تُنسخ إلى المركز مع ترحيل البيعات) ورقمها من POSStations، إلا جهازاً ألغي في السجل (Revoked).
     /// </summary>
     private static async Task<IReadOnlyList<PosPointInfo>> CentralPointListAsync(SqlConnection remote, SqlTransaction? transaction, CancellationToken cancellationToken)
     {
         var parts = new List<string>();
-        if (await TableExistsAsync(remote, transaction, "dbo.Devices", cancellationToken))
-        {
-            parts.Add(await TableExistsAsync(remote, transaction, "dbo.POSStations", cancellationToken)
-                ? """
-                  SELECT d.DeviceID, d.BranchID, s.StationNumber AS PosNumber, d.DeviceName
-                  FROM dbo.Devices AS d
-                  LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID
-                  WHERE d.DeviceType = N'POS' AND d.IsActive = 1 AND d.RevokedAt IS NULL
-                  """
-                : "SELECT DeviceID, BranchID, CAST(NULL AS int) AS PosNumber, DeviceName FROM dbo.Devices WHERE DeviceType = N'POS' AND IsActive = 1 AND RevokedAt IS NULL");
-        }
-
-        if (await TableExistsAsync(remote, transaction, "dbo.CentralPosRegistry", cancellationToken))
+        var hasRegistry = await TableExistsAsync(remote, transaction, "dbo.CentralPosRegistry", cancellationToken);
+        if (hasRegistry)
         {
             parts.Add("SELECT DeviceID, BranchID, PosNumber, PosName AS DeviceName FROM dbo.CentralPosRegistry WHERE DeviceID IS NOT NULL AND Status = N'Active'");
+        }
+
+        if (await TableExistsAsync(remote, transaction, "dbo.Devices", cancellationToken))
+        {
+            var hasStations = await TableExistsAsync(remote, transaction, "dbo.POSStations", cancellationToken);
+            parts.Add($"""
+                SELECT d.DeviceID, d.BranchID, {(hasStations ? "s.StationNumber" : "CAST(NULL AS int)")} AS PosNumber, d.DeviceName
+                FROM dbo.Devices AS d
+                {(hasStations ? "LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID" : "")}
+                WHERE d.DeviceType = N'POS' AND d.IsActive = 1 AND d.RevokedAt IS NULL
+                {(hasRegistry ? "AND NOT EXISTS (SELECT 1 FROM dbo.CentralPosRegistry AS r WHERE r.DeviceID = d.DeviceID AND r.Status <> N'Active')" : "")}
+                """);
         }
 
         if (parts.Count == 0)
