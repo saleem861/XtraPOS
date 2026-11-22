@@ -295,11 +295,13 @@ public sealed class PosDeviceSettingsService(
         return description.Length <= 400 ? description : description[..400];
     }
 
-    private static string PointLabel(PosPointInfo point)
+    /// <summary>«كاونتر 1 - Labtop»: اسم النقطة ثم الفرع.</summary>
+    public static string PointLabel(PosPointInfo point)
     {
-        var name = string.IsNullOrWhiteSpace(point.DeviceName) ? "نقطة" : point.DeviceName.Trim();
-        var number = point.PosNumber is int pos ? $" ({pos})" : "";
-        return string.IsNullOrWhiteSpace(point.BranchName) ? name + number : $"{point.BranchName.Trim()} · {name}{number}";
+        var name = string.IsNullOrWhiteSpace(point.DeviceName)
+            ? point.PosNumber is int pos ? $"نقطة {pos}" : "نقطة"
+            : point.DeviceName.Trim();
+        return string.IsNullOrWhiteSpace(point.BranchName) ? name : $"{name} - {point.BranchName.Trim()}";
     }
 
     public static string SerializeOperation(DeviceSettingsOperation operation)
@@ -778,7 +780,8 @@ public sealed class PosDeviceSettingsService(
         {
             var hasStations = await TableExistsAsync(remote, transaction, "dbo.POSStations", cancellationToken);
             parts.Add($"""
-                SELECT d.DeviceID, d.BranchID, {(hasStations ? "s.StationNumber" : "CAST(NULL AS int)")} AS PosNumber, d.DeviceName
+                SELECT d.DeviceID, d.BranchID, {(hasStations ? "s.StationNumber" : "CAST(NULL AS int)")} AS PosNumber,
+                       {(hasStations ? "COALESCE(NULLIF(LTRIM(RTRIM(s.StationName)), N''), d.DeviceName)" : "d.DeviceName")} AS DeviceName
                 FROM dbo.Devices AS d
                 {(hasStations ? "LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID" : "")}
                 WHERE d.DeviceType = N'POS' AND d.IsActive = 1 AND d.RevokedAt IS NULL
@@ -839,7 +842,7 @@ public sealed class PosDeviceSettingsService(
     {
         await using var command = new SqlCommand(
             """
-            SELECT b.BranchName, st.StationNumber, d.DeviceName
+            SELECT b.BranchName, st.StationNumber, COALESCE(NULLIF(LTRIM(RTRIM(st.StationName)), N''), d.DeviceName)
             FROM dbo.Devices AS d
             LEFT JOIN dbo.Branches AS b ON b.BranchID = d.BranchID
             LEFT JOIN dbo.POSStations AS st ON st.StationID = d.StationID

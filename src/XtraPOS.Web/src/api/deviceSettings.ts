@@ -84,10 +84,10 @@ export function settingValue(settings: DeviceSettingValue[] | undefined, key: st
   return settings?.find((setting) => setting.key === key)?.value ?? false;
 }
 
+/** «كاونتر 1 - Labtop»: اسم النقطة ثم الفرع. */
 export function pointLabel(point: Pick<PointSettings, "branchName" | "deviceName" | "posNumber">) {
-  const name = point.deviceName?.trim() || "نقطة";
-  const number = point.posNumber != null ? ` (${point.posNumber})` : "";
-  return point.branchName?.trim() ? `${point.branchName.trim()} · ${name}${number}` : `${name}${number}`;
+  const name = point.deviceName?.trim() || (point.posNumber != null ? `نقطة ${point.posNumber}` : "نقطة");
+  return point.branchName?.trim() ? `${name} - ${point.branchName.trim()}` : name;
 }
 
 export function createDeviceSettingsClient(session: DeviceSession) {

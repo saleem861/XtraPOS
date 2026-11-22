@@ -47,7 +47,7 @@ function point(deviceId: string, branchName: string, posNumber: number, enabled:
     branchId: `branch-${branchName}`,
     branchName,
     posNumber,
-    deviceName: `صندوق ${posNumber}`,
+    deviceName: `كاونتر ${posNumber}`,
     isCurrent,
     settings: [{ key: CUSTOMER_DISPLAY_ENABLED, label: "تفعيل شاشة الزبون", kind: "boolean", value: enabled, isDefault: !enabled, updatedAtUtc: null, updatedByName: null, source: null }],
     centralVersion: 0,
@@ -102,6 +102,8 @@ describe("DeviceInitialValuesScreen", () => {
     const picker = await screen.findByRole("combobox") as HTMLSelectElement;
     await waitFor(() => expect(picker.value).toBe("d1"));
     expect(picker.disabled).toBe(false);
+    expect(screen.getByRole("option", { name: "كاونتر 1 - فرع نابلس — النقطة الحالية" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "كاونتر 4 - فرع رام الله" })).toBeTruthy();
 
     fireEvent.change(picker, { target: { value: "d9" } });
     const checkbox = screen.getByRole("checkbox", { name: "تفعيل شاشة الزبون" }) as HTMLInputElement;

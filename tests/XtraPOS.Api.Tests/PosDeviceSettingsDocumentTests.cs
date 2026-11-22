@@ -127,7 +127,7 @@ public sealed class PosDeviceSettingsDocumentTests
     [Fact]
     public void LoggedOperation_RoundTripsThroughTheExistingRelayLog()
     {
-        var point = new PosPointInfo(Guid.NewGuid(), Guid.NewGuid(), "نابلس", 3, "صندوق 3");
+        var point = new PosPointInfo(Guid.NewGuid(), Guid.NewGuid(), "Labtop", 2, "كاونتر 2");
         var operation = new DeviceSettingsOperation(PosDeviceSettingsService.ScopeDevice, [point], Change(true, T0, PosDeviceSettingSources.Branch), BranchUser, "سليم");
         var parsed = PosDeviceSettingsService.ParseOperation(PosDeviceSettingsService.SerializeOperation(operation));
 
@@ -136,7 +136,8 @@ public sealed class PosDeviceSettingsDocumentTests
         Assert.Equal(point, Assert.Single(parsed.Points));
         Assert.True(Enabled(parsed.Settings));
         Assert.Equal(BranchUser, parsed.ActorUserId);
-        Assert.Equal("القيم الأولية (نابلس · صندوق 3 (3)): تفعيل شاشة الزبون: مفعّل", PosDeviceSettingsService.Describe(parsed));
+        Assert.Equal("القيم الأولية (كاونتر 2 - Labtop): تفعيل شاشة الزبون: مفعّل", PosDeviceSettingsService.Describe(parsed));
+        Assert.Equal("نقطة 1 - Asus", PosDeviceSettingsService.PointLabel(new PosPointInfo(Guid.NewGuid(), Guid.NewGuid(), "Asus", 1, " ")));
     }
 
     [Fact]
