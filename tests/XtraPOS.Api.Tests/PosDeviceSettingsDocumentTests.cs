@@ -161,4 +161,27 @@ public sealed class PosDeviceSettingsDocumentTests
         Assert.Null(PosDeviceSettingsService.ParseOperation("""{"scope":"Device","points":[],"settings":{}}"""));
         Assert.Null(PosDeviceSettingsService.ParseOperation("""{"scope":5}"""));
     }
+
+    [Fact]
+    public void Point_list_keeps_one_entry_per_counter_in_each_branch()
+    {
+        var labtop = Guid.NewGuid();
+        var sharbel = Guid.NewGuid();
+        var current = new PosPointInfo(Guid.NewGuid(), labtop, "Labtop", 1, "كاونتر 1");
+        var oldSame = new PosPointInfo(Guid.NewGuid(), labtop, "Labtop", 1, "كاونتر 1");
+        var older = new PosPointInfo(Guid.NewGuid(), labtop, "Labtop", 1, " كاونتر 1 ");
+        var sharbelOld = new PosPointInfo(Guid.NewGuid(), sharbel, "Sharbel", 1, "كاونتر 1");
+        var sharbelNew = new PosPointInfo(Guid.NewGuid(), sharbel, "Sharbel", 1, "كاونتر 1");
+        var sharbelTwo = new PosPointInfo(Guid.NewGuid(), sharbel, "Sharbel", 2, "كاونتر 2");
+
+        var list = PosDeviceSettingsService.DistinctPoints(
+            [oldSame, older, current, sharbelOld, sharbelNew, sharbelTwo],
+            current.DeviceId,
+            [sharbelNew, oldSame, sharbelTwo, sharbelOld, older]);
+
+        Assert.Equal(3, list.Count);
+        Assert.Contains(list, point => point.DeviceId == current.DeviceId);
+        Assert.Contains(list, point => point.DeviceId == sharbelNew.DeviceId);
+        Assert.Contains(list, point => point.DeviceId == sharbelTwo.DeviceId);
+    }
 }

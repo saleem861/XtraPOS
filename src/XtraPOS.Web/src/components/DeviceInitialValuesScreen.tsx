@@ -9,6 +9,7 @@ import {
   type PointSettings,
 } from "../api/deviceSettings";
 import type { CurrentUser, DeviceSession } from "../types/setup";
+import { distinctBy } from "../distinct";
 import { ScreenHeader } from "./ScreenHeader";
 
 function formatTime(value: string | null) {
@@ -57,7 +58,8 @@ export function DeviceInitialValuesScreen({ session, user, onBack }: {
     setError("");
     try {
       const list = await client.points();
-      setPoints(list.points);
+      // قاعدة ثابتة: أي قائمة اختيار تُعبّأ بقيم مميزة (distinct). الحالية أولًا فتبقى هي.
+      setPoints(distinctBy([...list.points].sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent)), pointLabel));
       setCanManageAll(list.canManageAll);
       setNotice(list.notice);
       const next = keep && (keep === ALL_POINTS || list.points.some((item) => item.deviceId === keep))

@@ -136,7 +136,7 @@ public sealed class PosDeviceSettingsService(
                 : registered;
         }
 
-        var list = points.Values
+        var list = DistinctPoints(points.Values, current.DeviceId, snapshot.Points, rows.Keys.ToHashSet())
             .Select(point => ToView(point, rows.GetValueOrDefault(point.DeviceId), point.DeviceId == current.DeviceId))
             .OrderByDescending(point => point.IsCurrent)
             .ThenBy(point => point.BranchName, StringComparer.CurrentCulture)
@@ -144,6 +144,32 @@ public sealed class PosDeviceSettingsService(
             .ThenBy(point => point.DeviceName, StringComparer.CurrentCulture)
             .ToArray();
         return new PosPointsList(list, true, snapshot.Notice);
+    }
+
+    /// <summary>
+    /// نقطة واحدة لكل اسم في كل فرع: أجهزة قديمة مسجلة على نفس الكاونتر لا تتكرر في القائمة.
+    /// يُبقى الجهاز الحالي، ثم الأحدث ظهورًا على المركز، ثم من له قيم محفوظة.
+    /// </summary>
+    public static IReadOnlyList<PosPointInfo> DistinctPoints(
+        IEnumerable<PosPointInfo> points,
+        Guid currentDeviceId,
+        IReadOnlyList<PosPointInfo> centralByRecency,
+        IReadOnlySet<Guid>? withSettings = null)
+    {
+        var recency = new Dictionary<Guid, int>();
+        for (var index = 0; index < centralByRecency.Count; index++)
+        {
+            recency.TryAdd(centralByRecency[index].DeviceId, index);
+        }
+
+        return points
+            .GroupBy(point => (point.BranchId, Name: PointName(point).ToLowerInvariant()))
+            .Select(group => group
+                .OrderByDescending(point => point.DeviceId == currentDeviceId)
+                .ThenBy(point => recency.TryGetValue(point.DeviceId, out var rank) ? rank : int.MaxValue)
+                .ThenByDescending(point => withSettings?.Contains(point.DeviceId) == true)
+                .First())
+            .ToArray();
     }
 
     private sealed record CentralSnapshot(
@@ -431,11 +457,14 @@ public sealed class PosDeviceSettingsService(
     }
 
     /// <summary>«كاونتر 1 - Labtop»: اسم النقطة ثم الفرع.</summary>
-    public static string PointLabel(PosPointInfo point)
-    {
-        var name = string.IsNullOrWhiteSpace(point.DeviceName)
+    private static string PointName(PosPointInfo point) =>
+        string.IsNullOrWhiteSpace(point.DeviceName)
             ? point.PosNumber is int pos ? $"نقطة {pos}" : "نقطة"
             : point.DeviceName.Trim();
+
+    public static string PointLabel(PosPointInfo point)
+    {
+        var name = PointName(point);
         return string.IsNullOrWhiteSpace(point.BranchName) ? name : $"{name} - {point.BranchName.Trim()}";
     }
 
@@ -895,15 +924,17 @@ public sealed class PosDeviceSettingsService(
         var hasRegistry = await TableExistsAsync(remote, transaction, "dbo.CentralPosRegistry", cancellationToken);
         if (hasRegistry)
         {
-            parts.Add("SELECT DeviceID, BranchID, PosNumber, PosName AS DeviceName FROM dbo.CentralPosRegistry WHERE DeviceID IS NOT NULL AND Status = N'Active'");
+            parts.Add("SELECT DeviceID, BranchID, PosNumber, PosName AS DeviceName, CAST(NULL AS datetime2(0)) AS SeenAt FROM dbo.CentralPosRegistry WHERE DeviceID IS NOT NULL AND Status = N'Active'");
         }
 
         if (await TableExistsAsync(remote, transaction, "dbo.Devices", cancellationToken))
         {
             var hasStations = await TableExistsAsync(remote, transaction, "dbo.POSStations", cancellationToken);
+            var hasLastSeen = await ColumnExistsAsync(remote, transaction, "dbo.Devices", "LastSeenAt", cancellationToken);
             parts.Add($"""
                 SELECT d.DeviceID, d.BranchID, {(hasStations ? "s.StationNumber" : "CAST(NULL AS int)")} AS PosNumber,
-                       {(hasStations ? "COALESCE(NULLIF(LTRIM(RTRIM(s.StationName)), N''), d.DeviceName)" : "d.DeviceName")} AS DeviceName
+                       {(hasStations ? "COALESCE(NULLIF(LTRIM(RTRIM(s.StationName)), N''), d.DeviceName)" : "d.DeviceName")} AS DeviceName,
+                       {(hasLastSeen ? "CAST(d.LastSeenAt AS datetime2(0))" : "CAST(NULL AS datetime2(0))")} AS SeenAt
                 FROM dbo.Devices AS d
                 {(hasStations ? "LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID" : "")}
                 WHERE d.DeviceType = N'POS' AND d.IsActive = 1 AND d.RevokedAt IS NULL
@@ -922,7 +953,8 @@ public sealed class PosDeviceSettingsService(
                    MIN(p.PosNumber) AS PosNumber, MIN(p.DeviceName) AS DeviceName
             FROM ({string.Join(" UNION ALL ", parts)}) AS p
             LEFT JOIN dbo.Branches AS b ON b.BranchID = p.BranchID
-            GROUP BY p.DeviceID;
+            GROUP BY p.DeviceID
+            ORDER BY MAX(p.SeenAt) DESC;
             """,
             remote,
             transaction);
@@ -1126,6 +1158,14 @@ public sealed class PosDeviceSettingsService(
     {
         await using var command = new SqlCommand("SELECT OBJECT_ID(@name, N'U');", connection, transaction);
         command.Parameters.Add("@name", SqlDbType.NVarChar, 256).Value = name;
+        return await command.ExecuteScalarAsync(cancellationToken) is not (null or DBNull);
+    }
+
+    private static async Task<bool> ColumnExistsAsync(SqlConnection connection, SqlTransaction? transaction, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT COL_LENGTH(@table, @column);", connection, transaction);
+        command.Parameters.Add("@table", SqlDbType.NVarChar, 256).Value = table;
+        command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = column;
         return await command.ExecuteScalarAsync(cancellationToken) is not (null or DBNull);
     }
 

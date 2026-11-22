@@ -119,6 +119,26 @@ describe("DeviceInitialValuesScreen", () => {
     await waitFor(() => expect(saved).toHaveLength(2));
     expect(saved[1]).toEqual({ scope: "All", values: { [CUSTOMER_DISPLAY_ENABLED]: true } });
   });
+
+  it("fills the point picker with distinct entries", async () => {
+    stubServer({
+      points: [
+        point("old", "Labtop", 1, false),
+        point("d1", "Labtop", 1, false, true),
+        point("older", "Labtop", 1, false),
+        point("s1", "Sharbel", 1, false),
+      ],
+      canManageAll: true,
+      notice: null,
+    });
+    render(<DeviceInitialValuesScreen session={session} user={makeUser(["Devices.ManageAll"])} onBack={() => {}} />);
+
+    const picker = await screen.findByRole("combobox") as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe("d1"));
+    expect(screen.getAllByRole("option", { name: /كاونتر 1 - Labtop/ })).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "كاونتر 1 - Labtop — النقطة الحالية" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "كاونتر 1 - Sharbel" })).toBeTruthy();
+  });
 });
 
 describe("HomeScreen settings menu", () => {

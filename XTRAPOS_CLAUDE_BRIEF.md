@@ -404,6 +404,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-branch-release.ps1
 - جرد الجرار: صفوف غير قابلة للتعديل، والقرار صف لاحق، والفئات فوق لوحة المفاتيح، وجملة إعادة العد مرة واحدة بين العدين.
 - لا تُضاف مزامنة فرع بعيد وكأنها تعمل. العلم `BranchRemoteSync.IsImplemented` يساوي `false`.
 - لا تُطبع أسرار، ولا تُحذف قواعد الإنتاج ضمن سكربت نشر.
+- أي قائمة اختيار (combobox) تُعبّأ بقيم مميزة (distinct): `distinctBy` في `src/XtraPOS.Web/src/distinct.ts` على النص الظاهر، ومن الخادم صف واحد لكل قيمة ظاهرة إن أمكن.
 
 ---
 
