@@ -118,10 +118,11 @@ export function buildDisplayState(input: DisplayInput): CustomerDisplayState {
   return { phase: "idle", business, branch, memberQr: input.memberQr };
 }
 
-// Opens the customer display, on the second screen when Chrome may place windows there.
+// Opens the customer display, on the second screen when Chrome may place windows there,
+// sized to that whole screen. The display page itself then asks for full screen.
 export async function openCustomerDisplay(): Promise<boolean> {
   const url = `${window.location.origin}${customerDisplayPath}`;
-  let features = "popup=yes,width=1280,height=720";
+  let features = `popup=yes,left=0,top=0,width=${window.screen.availWidth},height=${window.screen.availHeight}`;
   try {
     const details = await (window as unknown as { getScreenDetails?: () => Promise<{ screens: ScreenArea[]; currentScreen: ScreenArea }> }).getScreenDetails?.();
     const other = details?.screens.find((screen) => screen !== details.currentScreen);
@@ -132,6 +133,24 @@ export async function openCustomerDisplay(): Promise<boolean> {
   const opened = window.open(url, "xtrapos-customer-display", features);
   opened?.focus();
   return opened != null;
+}
+
+// Asks any open customer display to answer; resolves true if one answers in time.
+export function isCustomerDisplayOpen(timeoutMs = 800): Promise<boolean> {
+  if (typeof BroadcastChannel !== "function") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const channel = new BroadcastChannel(customerDisplayChannel);
+    const done = (open: boolean) => {
+      window.clearTimeout(timer);
+      channel.close();
+      resolve(open);
+    };
+    const timer = window.setTimeout(() => done(false), timeoutMs);
+    channel.onmessage = (event: MessageEvent<{ type?: string }>) => {
+      if (event.data?.type === "hello") done(true);
+    };
+    channel.postMessage({ type: "ping" });
+  });
 }
 
 interface ScreenArea {

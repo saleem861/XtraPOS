@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CUSTOMER_DISPLAY_ENABLED, type PointSettings, type PointsList } from "../api/deviceSettings";
@@ -134,5 +134,15 @@ describe("HomeScreen settings menu", () => {
 
     render(<HomeScreen session={session} user={makeUser(["POS.Sell"])} pending={false} onLogout={() => {}} onReset={() => {}} />);
     expect(screen.queryByRole("button", { name: /الإعدادات/ })).toBeNull();
+  });
+
+  it("returns to the home menu from the initial values screen on the home button", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, status: 200, json: async () => ({ points: [], canManageAll: false, notice: null }) })));
+    render(<HomeScreen session={session} user={makeUser(["Devices.ConfigureCurrent"])} pending={false} onLogout={() => {}} onReset={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: /الإعدادات/ }));
+    await userEvent.click(screen.getByRole("button", { name: "القيم الأولية" }));
+    expect(screen.queryByRole("button", { name: "القيم الأولية" })).toBeNull();
+    act(() => { window.dispatchEvent(new Event("xtrapos-home")); });
+    expect(await screen.findByRole("button", { name: /الإعدادات/ })).toBeTruthy();
   });
 });

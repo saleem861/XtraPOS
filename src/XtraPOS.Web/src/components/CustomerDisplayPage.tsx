@@ -18,6 +18,7 @@ export function CustomerDisplayPage() {
     const channel = new BroadcastChannel(customerDisplayChannel);
     channel.onmessage = (event: MessageEvent<{ type?: string; state?: CustomerDisplayState }>) => {
       if (event.data?.type === "state" && event.data.state) setState(event.data.state);
+      if (event.data?.type === "ping") channel.postMessage({ type: "hello" });
     };
     const hello = () => channel.postMessage({ type: "hello" });
     hello();
@@ -68,6 +69,21 @@ export function CustomerDisplayPage() {
     const sync = () => setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  // Full screen on its own: tried on open, and again on the first touch or key if the browser refused.
+  useEffect(() => {
+    const enter = () => {
+      if (document.fullscreenElement) return;
+      void document.documentElement.requestFullscreen?.()?.catch(() => undefined);
+    };
+    enter();
+    window.addEventListener("pointerdown", enter);
+    window.addEventListener("keydown", enter);
+    return () => {
+      window.removeEventListener("pointerdown", enter);
+      window.removeEventListener("keydown", enter);
+    };
   }, []);
 
   const shown: CustomerDisplayState = state.phase === "thanks" && now - state.at > THANKS_SECONDS * 1000

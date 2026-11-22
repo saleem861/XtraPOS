@@ -58,6 +58,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowOperationLog(false);
       setShowDenominations(false);
       setShowDrawerReview(false);
+      setShowDeviceSettings(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);

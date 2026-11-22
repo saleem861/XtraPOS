@@ -57,7 +57,7 @@ import { membershipPricingCustomer } from "../membership/membershipPricing";
 import { phoneMembershipUrl } from "../membership/phoneMembershipUrl";
 import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
-import { buildDisplayState, customerDisplayChannel, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
+import { buildDisplayState, customerDisplayChannel, isCustomerDisplayOpen, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
 import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
@@ -1148,6 +1148,32 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       .catch(() => { if (!stop) setDisplayEnabled(false); });
     return () => { stop = true; };
   }, [session]);
+
+  // عند فتح شاشة البيع: إن كانت شاشة الزبون مفعّلة لهذه النقطة وغير مفتوحة، تُفتح تلقائيًا
+  // على الشاشة الثانية بكامل حجمها. إن منع المتصفح النافذة تُفتح عند أول لمسة على شاشة البيع.
+  const displayAutoOpened = useRef(false);
+  useEffect(() => {
+    if (!displayEnabled || displayAutoOpened.current) return undefined;
+    let stop = false;
+    let armed: (() => void) | null = null;
+    void isCustomerDisplayOpen().then(async (open) => {
+      if (stop || displayAutoOpened.current) return;
+      displayAutoOpened.current = true;
+      if (open) return;
+      if (await openCustomerDisplay()) return;
+      if (stop) return;
+      armed = () => {
+        if (armed) window.removeEventListener("pointerdown", armed, true);
+        armed = null;
+        void openCustomerDisplay();
+      };
+      window.addEventListener("pointerdown", armed, true);
+    });
+    return () => {
+      stop = true;
+      if (armed) window.removeEventListener("pointerdown", armed, true);
+    };
+  }, [displayEnabled]);
 
   // Customer display on the second screen: same computer, BroadcastChannel, customer-facing fields only.
   const displayState = useMemo(() => buildDisplayState({
