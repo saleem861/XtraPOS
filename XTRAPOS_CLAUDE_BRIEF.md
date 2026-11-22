@@ -380,7 +380,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-branch-release.ps1
 
 أعمال مفتوحة:
 
-- **للغد (22 نوفمبر):** قائمة «النقطة» في شاشة القيم الأولية على Labtop (إصدار `20261121-193456`) أظهرت «Labtop · صندوق 1 (1)» و«جميع النقاط» فقط. لم تُفحص بعد: هل في `CentralPosRegistry` على المركز نقاط أخرى بحالة `Active` ولها `DeviceID`؟ وهل ظهرت ملاحظة «تعذر الوصول إلى الإدارة المركزية»؟ القائمة تأتي من `PosDeviceSettingsService.ListPointsAsync` ← `CentralPointListAsync`. إزالة جدول سجل الترحيل من الشاشة تمت في الكود (`DeviceInitialValuesScreen.tsx`) ولم تُنشر بعد.
+- **22 نوفمبر:** `CentralPosRegistry` على المركز فارغ، والنقاط الحقيقية في `dbo.Devices` على المركز (Asus 1، Labtop 3، Sharbel 3). قائمة القيم الأولية و«جميع النقاط» صارت تُبنى من أجهزة `POS` الفعّالة غير الملغاة في `Devices` مع رقمها من `POSStations`. ترحيل المركز `035` مطبّق.
 
 0. «القيم الأولية» (`docs/pos-device-settings.md`): جدول `PosDeviceSettings` على كل فرع يطابق `CentralPosDeviceSettings` لكل النقاط. الحفظ يدخل سجل الترحيل الموجود بنوع `DeviceSettings`، والسحب من `SyncChangeLog`. ترحيل المركز `035` مسجّل بموافقة المالك (21 نوفمبر)، ويُطبَّق تلقائياً عند أول دورة لأي جهاز فرع بعد النشر، فتؤخذ نسخة احتياطية من `XtraPOS_Central` قبل النشر.
 

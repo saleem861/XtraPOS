@@ -759,24 +759,33 @@ public sealed class PosDeviceSettingsService(
         return await CentralPointListAsync(remote, null, cancellationToken);
     }
 
+    /// <summary>
+    /// نقاط البيع في كل الفروع كما يعرفها المركز: أجهزة dbo.Devices من نوع POS الفعّالة وغير الملغاة،
+    /// ورقمها من POSStations. CentralPosRegistry يُضاف إن كان فيه شيء (قد يكون فارغاً).
+    /// </summary>
     private static async Task<IReadOnlyList<PosPointInfo>> CentralPointListAsync(SqlConnection remote, SqlTransaction? transaction, CancellationToken cancellationToken)
     {
-        var hasRegistry = await TableExistsAsync(remote, transaction, "dbo.CentralPosRegistry", cancellationToken);
-        var hasSettings = await TableExistsAsync(remote, transaction, "dbo.CentralPosDeviceSettings", cancellationToken);
-        if (!hasRegistry && !hasSettings)
+        var parts = new List<string>();
+        if (await TableExistsAsync(remote, transaction, "dbo.Devices", cancellationToken))
         {
-            return [];
+            parts.Add(await TableExistsAsync(remote, transaction, "dbo.POSStations", cancellationToken)
+                ? """
+                  SELECT d.DeviceID, d.BranchID, s.StationNumber AS PosNumber, d.DeviceName
+                  FROM dbo.Devices AS d
+                  LEFT JOIN dbo.POSStations AS s ON s.StationID = d.StationID
+                  WHERE d.DeviceType = N'POS' AND d.IsActive = 1 AND d.RevokedAt IS NULL
+                  """
+                : "SELECT DeviceID, BranchID, CAST(NULL AS int) AS PosNumber, DeviceName FROM dbo.Devices WHERE DeviceType = N'POS' AND IsActive = 1 AND RevokedAt IS NULL");
         }
 
-        var parts = new List<string>();
-        if (hasRegistry)
+        if (await TableExistsAsync(remote, transaction, "dbo.CentralPosRegistry", cancellationToken))
         {
             parts.Add("SELECT DeviceID, BranchID, PosNumber, PosName AS DeviceName FROM dbo.CentralPosRegistry WHERE DeviceID IS NOT NULL AND Status = N'Active'");
         }
 
-        if (hasSettings)
+        if (parts.Count == 0)
         {
-            parts.Add("SELECT DeviceID, BranchID, PosNumber, DeviceName FROM dbo.CentralPosDeviceSettings");
+            return [];
         }
 
         await using var command = new SqlCommand(

@@ -10,7 +10,7 @@
 - المدير (`Devices.ManageAll` أو `System.Administer`) يختار من القائمة أي نقطة في أي فرع، أو «جميع النقاط في كل الفروع».
 - المشرف يرى نقطته فقط والقائمة مقفلة.
 - أول إعداد: `customerDisplay.enabled` «تفعيل شاشة الزبون». الافتراضي غير مفعّل. زر «شاشة» في نقطة البيع يتبعه.
-- أسفل الشاشة عمليات القيم الأولية لهذه النقطة كما هي في سجل الترحيل الموجود.
+- القائمة تُبنى من أجهزة `POS` الفعّالة غير الملغاة في `Devices` على المركز، ومعها ما في جدول الفرع. العمليات تظهر في شاشة «سجل الترحيل» العامة، لا في هذه الشاشة.
 
 ## الجداول
 
@@ -25,7 +25,7 @@
 1. يدمج القيم في `PosDeviceSettings` للنقطة أو لكل النقاط المعروفة.
 2. يُدرج صفاً في `BranchOperationLog` بنوع `DeviceSettings`. المصدر `PosDeviceSettings`، و`SourceEntityID` معرّف النقطة أو `00000000-…` لجميع النقاط.
 
-`CreditOutboxWorker` ينفذه بالترتيب مع باقي العمليات عبر `PosDeviceSettingsService.RelayLoggedAsync`. على المركز: إن وُجد `OperationID` في `PosDeviceSettingsReceipts` يكتمل دون تكرار. غير ذلك يدمج كل نقطة (ولجميع النقاط: كل نقاط `CentralPosRegistry` و`CentralPosDeviceSettings`)، ويكتب التدقيق وسطراً في `SyncChangeLog` بنوع `PosDeviceSettings` لكل نقطة تغيّرت. خطأ 208 يعني أن `035` غير مطبّق، فيتوقف الصف `Blocked` ويُعاد في الدورة التالية.
+`CreditOutboxWorker` ينفذه بالترتيب مع باقي العمليات عبر `PosDeviceSettingsService.RelayLoggedAsync`. على المركز: إن وُجد `OperationID` في `PosDeviceSettingsReceipts` يكتمل دون تكرار. غير ذلك يدمج كل نقطة (ولجميع النقاط: أجهزة `POS` الفعّالة غير الملغاة في `Devices` على المركز، و`CentralPosRegistry` إن لم يكن فارغاً)، ويكتب التدقيق وسطراً في `SyncChangeLog` بنوع `PosDeviceSettings` لكل نقطة تغيّرت. خطأ 208 يعني أن `035` غير مطبّق، فيتوقف الصف `Blocked` ويُعاد في الدورة التالية.
 
 ## من المركز إلى كل الفروع
 
