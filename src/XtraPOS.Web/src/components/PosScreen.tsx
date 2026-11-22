@@ -10,7 +10,6 @@ import {
   CirclePlus,
   Clock3,
   Coins,
-  FolderOpen,
   Keyboard,
   LockKeyhole,
   Monitor,
@@ -60,6 +59,7 @@ import { FullKeyboard } from "./FullKeyboard";
 import { buildDisplayState, customerDisplayChannel, isCustomerDisplayOpen, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
 import { Waiting } from "./Waiting";
 import { CustomerPurchasesScreen } from "./CustomerPurchasesScreen";
+import { QuickItemsStrip } from "./QuickItemsStrip";
 import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
@@ -110,7 +110,6 @@ const QUICK_ACTIONS: { label: string; icon: LucideIcon; title: string }[] = [
   { label: "الجرار", icon: Banknote, title: "درج النقدية" },
   { label: "تأجيل الدفع", icon: Clock3, title: "تأجيل الدفع" },
   { label: "شاشة", icon: Monitor, title: "شاشة الزبون" },
-  { label: "فتح", icon: FolderOpen, title: "فتح" },
   { label: "مشتريات الزبون", icon: UserRoundSearch, title: "مشتريات الزبون في كل الفروع ونجومه" },
 ];
 
@@ -1461,6 +1460,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       </div>
       {receipt ? <p className="status-ok">تمت عملية البيع بنجاح. رقم الفاتورة {receipt.saleNumber}. المجموع {receipt.total} ₪.{receipt.payments.some((payment) => Number(payment.changeAmount) > 0) ? ` الباقي ${receipt.payments.find((payment) => payment.method === "Cash")?.changeAmount ?? ""} ₪.` : ""}</p> : null}
       {message && !searchOpen ? <p className="status-error">{message}</p> : null}
+      <QuickItemsStrip session={session} onPick={(itemNumber) => void submitEntry(itemNumber)} />
       <div className="actions pos-action-bar" onMouseDown={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.preventDefault(); }}>
         <button className="nav-button" type="button" onClick={() => void refreshPricesAndCosts()}><RefreshCw className="pos-pro-icon" aria-hidden="true" />تحديث الأسعار والتكاليف</button>
         {confirmClear ? (

@@ -36,6 +36,19 @@ public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogg
                     {
                         logger.LogWarning(exception, "POS initial values were not pulled from central.");
                     }
+
+                    try
+                    {
+                        var copied = await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Catalog.QuickItemsService>().PullAsync(stoppingToken);
+                        if (copied > 0)
+                        {
+                            logger.LogInformation("Quick items: copied {Copied} list(s) from central.", copied);
+                        }
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning(exception, "Quick items were not pulled from central.");
+                    }
                     finally
                     {
                         BranchDatabaseOverride.Set(null);

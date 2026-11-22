@@ -41,6 +41,9 @@
 .debt-screen .numeric-keypad { align-self: start; }
 .debt-receipt-sheet { display: none; width: 72mm; margin: 0 auto; color: #111; background: #fff; }
 .debt-receipt-sheet h1 { font-size: 16px; text-align: center; }
+.debt-receipt-lines { width: 100%; border-collapse: collapse; font-size: 11px; margin: 6px 0; }
+.debt-receipt-lines td { padding: 2px 1px; border-bottom: 1px dashed #999; text-align: right; }
+.debt-receipt-lines td:last-child { direction: ltr; text-align: left; white-space: nowrap; }
 @media (max-width: 900px) {
   .debt-facts, .debt-controls, .debt-totals, .debt-actions { grid-template-columns: 1fr; }
   .debt-screen .pos-sidebar { display: none; }

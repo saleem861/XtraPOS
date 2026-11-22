@@ -299,6 +299,12 @@
     <EmbeddedResource Include="Data\Central\Migrations\037_CentralCustomerStarThresholds.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.037_CentralCustomerStarThresholds.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\053_QuickItems.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.053_QuickItems.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\038_CentralQuickItems.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.038_CentralQuickItems.sql</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

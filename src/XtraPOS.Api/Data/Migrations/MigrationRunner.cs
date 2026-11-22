@@ -109,6 +109,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string EmployeeCashErrorActionsMigrationName = "Employee cash error offset, settlement and deferral";
     public const string CustomerStarThresholdsMigrationId = "052_CustomerStarThresholds";
     public const string CustomerStarThresholdsMigrationName = "Customer star thresholds";
+    public const string QuickItemsMigrationId = "053_QuickItems";
+    public const string QuickItemsMigrationName = "POS quick items";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -327,6 +329,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             CustomerStarThresholdsMigrationId,
             CustomerStarThresholdsMigrationName,
             "XtraPOS.Api.Data.Migrations.052_CustomerStarThresholds.sql"),
+        new(
+            QuickItemsMigrationId,
+            QuickItemsMigrationName,
+            "XtraPOS.Api.Data.Migrations.053_QuickItems.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

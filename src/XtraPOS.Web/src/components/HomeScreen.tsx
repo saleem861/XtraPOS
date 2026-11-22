@@ -18,6 +18,7 @@ import { DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
 import { EmployeeCashErrorsScreen } from "./EmployeeCashErrorsScreen";
 import { SalesInquiryScreen } from "./SalesInquiryScreen";
 import { CustomerStarsSettingsScreen } from "./CustomerStarsSettingsScreen";
+import { QuickItemsSettingsScreen } from "./QuickItemsSettingsScreen";
 
 interface HomeScreenProps {
   session: DeviceSession;
@@ -42,6 +43,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showSales, setShowSales] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [showStars, setShowStars] = useState(false);
+  const [showQuickItems, setShowQuickItems] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -52,6 +54,10 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const canViewUsers = isAdmin || user.permissions.includes("Users.View");
   const canReviewDrawer = isAdmin || user.permissions.includes("CashDrawer.Review") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
   const canConfigureDrawer = isAdmin || user.permissions.includes("CashDrawer.Configure") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
+  const canManageQuickItems = isAdmin
+    || user.permissions.includes("Items.EditMaster")
+    || user.permissions.includes("Items.EditBranchState")
+    || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin" || role.roleCode === "Manager");
   const canManageStars = isAdmin || user.permissions.includes("Customers.Manage");
   const canConfigureDevice = isAdmin || user.permissions.includes("Devices.ConfigureCurrent") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
 
@@ -71,6 +77,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowSales(false);
       setShowErrors(false);
       setShowStars(false);
+      setShowQuickItems(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -104,8 +111,12 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
     return <PosScreen session={session} user={user} onBack={() => setShowPos(false)} onLogout={onLogout} />;
   }
 
+  if (showItems && showQuickItems && canManageQuickItems) {
+    return <QuickItemsSettingsScreen session={session} onBack={() => setShowQuickItems(false)} />;
+  }
+
   if (showItems && canViewItems) {
-    return <ItemCatalogScreen client={client} onHome={() => setShowItems(false)} />;
+    return <ItemCatalogScreen client={client} onHome={() => setShowItems(false)} onQuickItems={canManageQuickItems ? () => setShowQuickItems(true) : undefined} />;
   }
 
   if (showUsers && canViewUsers) {

@@ -21,7 +21,7 @@ export interface DebtDocument {
   deferred?: number;
   notes?: string | null;
   amount?: number;
-  lines?: Array<{ number?: number; name?: string; unit?: string; quantity?: number; unitPrice?: number; discount?: number; total?: number }>;
+  lines?: Array<{ number?: number; itemNumber?: string | null; name?: string; unit?: string; quantity?: number; unitPrice?: number; discount?: number; total?: number }>;
   allocations?: Array<{ receivableId?: string; amount?: number }>;
 }
 
@@ -57,12 +57,13 @@ export function OrderDetailsScreen({
             <h3>تفاصيل الأصناف</h3>
             <table>
               <thead>
-                <tr><th>#</th><th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>سعر الوحدة</th><th>الخصم</th><th>الإجمالي</th></tr>
+                <tr><th>#</th><th>رقم الصنف</th><th>الصنف</th><th>الوحدة</th><th>الكمية</th><th>سعر الوحدة</th><th>الخصم</th><th>الإجمالي</th></tr>
               </thead>
               <tbody>
                 {lines.map((line, index) => (
                   <tr key={`${line.number ?? index}`}>
                     <td>{line.number ?? index + 1}</td>
+                    <td>{line.itemNumber || "—"}</td>
                     <td>{line.name}</td>
                     <td>{line.unit || "—"}</td>
                     <td>{line.quantity}</td>
@@ -100,6 +101,20 @@ export function OrderDetailsScreen({
         <p>{sheet.customerName || "—"} · {sheet.customerNumber || "—"}</p>
         <p>{sheet.saleNumber || "سند"} · {sheet.branchName || "—"}</p>
         <p>المبلغ {money(sheet.kind === "receipt" ? (sheet.amount ?? sheet.total) : sheet.deferred)}</p>
+        {lines.length > 0 ? (
+          <table className="debt-receipt-lines">
+            <tbody>
+              {lines.map((line, index) => (
+                <tr key={`r-${line.number ?? index}`}>
+                  <td>{line.itemNumber || "—"}</td>
+                  <td>{line.name}</td>
+                  <td>{line.quantity}</td>
+                  <td>{money(line.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
         <p>{sheet.notes || "—"}</p>
       </article>
       {preview ? (
@@ -129,7 +144,7 @@ function toA4(title: string, sheet: DebtDocument): A4Document {
     when: sheet.when ? new Date(sheet.when).toLocaleString("en-GB") : "—",
     reference: sheet.saleNumber ?? null,
     lines: (sheet.lines ?? []).map((line, index) => ({
-      number: String(line.number ?? index + 1),
+      number: line.itemNumber || String(line.number ?? index + 1),
       name: line.name || "—",
       quantity: String(line.quantity ?? ""),
       unitPrice: money(line.unitPrice),

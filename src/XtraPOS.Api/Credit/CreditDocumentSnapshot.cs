@@ -49,7 +49,7 @@ public static class CreditDocumentSnapshot
         var lines = new List<object>();
         await using var items = new SqlCommand(
             """
-            SELECT LineNumber, ItemNameSnapshot, Quantity, UnitPrice, LineTotal
+            SELECT LineNumber, ItemNameSnapshot, Quantity, UnitPrice, LineTotal, ItemNumberSnapshot
             FROM dbo.SaleItems
             WHERE SaleID = @sale
             ORDER BY LineNumber;
@@ -67,6 +67,7 @@ public static class CreditDocumentSnapshot
             lines.Add(new
             {
                 number = itemReader.GetInt32(0),
+                itemNumber = itemReader.IsDBNull(5) ? null : itemReader.GetString(5),
                 name = itemReader.GetString(1),
                 unit = "—",
                 quantity,

@@ -331,14 +331,14 @@ public static class SalesInquiryEndpoints
         var lines = new List<object>();
         await using var lineCommand = new SqlCommand(
             """
-            SELECT LineNumber, ItemNameSnapshot, Quantity, UnitPrice, LineTotal
+            SELECT LineNumber, ItemNameSnapshot, Quantity, UnitPrice, LineTotal, ItemNumberSnapshot
             FROM dbo.SaleItems WHERE SaleID = @sale ORDER BY LineNumber;
             """, connection);
         lineCommand.Parameters.Add("@sale", SqlDbType.UniqueIdentifier).Value = saleId;
         await using var lineReader = await lineCommand.ExecuteReaderAsync(cancellationToken);
         while (await lineReader.ReadAsync(cancellationToken))
         {
-            lines.Add(new { number = lineReader.GetInt32(0), name = lineReader.GetString(1), quantity = lineReader.GetDecimal(2), unitPrice = lineReader.GetDecimal(3), total = lineReader.GetDecimal(4) });
+            lines.Add(new { number = lineReader.GetInt32(0), name = lineReader.GetString(1), quantity = lineReader.GetDecimal(2), unitPrice = lineReader.GetDecimal(3), total = lineReader.GetDecimal(4), itemNumber = lineReader.IsDBNull(5) ? null : lineReader.GetString(5) });
         }
 
         return Results.Ok(new { body.saleNumber, body.customerNumber, body.customerName, body.branchName, body.posNumber, body.cashier, body.when, body.subtotal, body.discount, body.total, lines });

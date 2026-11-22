@@ -9,9 +9,11 @@ interface ItemCatalogScreenProps {
   client: ItemCatalogClient;
   onHome: () => void;
   debounceMs?: number;
+  /** للمشرف والمدير: يفتح ضبط «الأصناف السريعة» لشاشة البيع. */
+  onQuickItems?: () => void;
 }
 
-export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCatalogScreenProps) {
+export function ItemCatalogScreen({ client, onHome, debounceMs = 300, onQuickItems }: ItemCatalogScreenProps) {
   const [searchInput, setSearchInput] = useState("");
   const [activity, setActivity] = useState<ItemActivity>("active");
   const [sort, setSort] = useState<ItemSort>("number");
@@ -132,6 +134,9 @@ export function ItemCatalogScreen({ client, onHome, debounceMs = 300 }: ItemCata
             <option value={100}>100</option>
           </select>
         </label>
+        {onQuickItems ? (
+          <button type="button" className="catalog-quick-items" onClick={onQuickItems}>⚡ الأصناف السريعة لشاشة البيع</button>
+        ) : null}
         <p className="result-count">{totalCount.toLocaleString("ar-EG")} صنف</p>
       </div>
       {error ? <p className="form-error">{error}</p> : null}

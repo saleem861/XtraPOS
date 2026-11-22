@@ -71,6 +71,7 @@ public sealed class CreditOutboxWorker(
             "DeviceSettings" => await XtraPOS.Api.Devices.PosDeviceSettingsService.RelayLoggedAsync(central, branch, cancellationToken),
             "EmployeeCashErrorAction" => await XtraPOS.Api.Sales.EmployeeCashErrorService.RelayLoggedAsync(central, branch, cancellationToken),
             "CustomerStarThresholds" => await XtraPOS.Api.Customers.CustomerPurchasesService.RelayLoggedAsync(central, branch, cancellationToken),
+            "QuickItemSet" => await XtraPOS.Api.Catalog.QuickItemsService.RelayLoggedAsync(central, branch, cancellationToken),
             null => await processor.ProcessOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? (object?)await collection.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken)
                 ?? await reversal.RecoverOnceAsync(central, branch, Environment.MachineName, cancellationToken),

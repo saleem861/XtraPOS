@@ -1,0 +1,84 @@
+/* «الأصناف السريعة» */
+.quick-items {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin: 6px 0;
+  flex-shrink: 0;
+}
+.quick-items-track {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  padding: 2px;
+}
+.quick-items-track::-webkit-scrollbar { display: none; }
+.quick-items-nav {
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #c9d7e8;
+  border-radius: 10px;
+  background: #f4f8fc;
+  color: #14365c;
+  cursor: pointer;
+}
+.quick-items-nav svg { width: 20px; height: 20px; }
+/* 6 بطاقات على الشاشات الصغيرة وحتى 10 على العريضة */
+.quick-item {
+  flex: 0 0 clamp(84px, calc((100% - 72px) / 10), 120px);
+  min-width: calc((100% - 40px) / 6);
+  max-width: 120px;
+  height: 74px;
+  display: grid;
+  grid-template-rows: auto auto auto;
+  justify-items: center;
+  align-content: center;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid hsl(var(--quick-hue, 210) 45% 78%);
+  border-radius: 12px;
+  background: linear-gradient(160deg, hsl(var(--quick-hue, 210) 70% 97%), hsl(var(--quick-hue, 210) 55% 90%));
+  color: #14365c;
+  font: inherit;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.quick-item:hover:not(:disabled) { box-shadow: 0 6px 14px rgba(20, 48, 73, 0.14); }
+.quick-item:active:not(:disabled) { transform: scale(0.96); }
+.quick-item:disabled { opacity: 0.55; cursor: not-allowed; }
+.quick-item-icon { font-size: 20px; line-height: 1; }
+.quick-item-number { font-size: 15px; font-weight: 800; direction: ltr; }
+.quick-item-name { width: 100%; overflow: hidden; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; color: #344054; }
+
+/* شاشة الضبط */
+.quick-settings-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; overflow: auto; }
+.quick-settings-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid #d5e1ee; border-radius: 14px; background: #fff; }
+.quick-settings .quick-settings-bar label { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #14365c; }
+.quick-settings-bar select,
+.quick-settings-bar input { height: 42px; min-width: 160px; padding: 0 10px; border: 1px solid #c9d7e8; border-radius: 10px; background: #f8fbff; font: inherit; }
+.quick-settings-bar button,
+.quick-settings-row button,
+.quick-settings-suggest button { display: inline-flex; align-items: center; gap: 6px; height: 42px; padding: 0 14px; border: 1px solid #c9d7e8; border-radius: 10px; background: #f4f8fc; color: #14365c; font: inherit; font-weight: 700; cursor: pointer; }
+.quick-settings-bar button svg,
+.quick-settings-row button svg { width: 18px; height: 18px; }
+.quick-settings-bar .is-primary { background: #0d63d8; border-color: #0d63d8; color: #fff; }
+.quick-settings-hint { margin: 0; color: #5c6d7c; }
+.quick-settings-preview { padding: 8px; border: 1px dashed #c9d7e8; border-radius: 14px; background: #fff; }
+.quick-settings-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.quick-settings-row { display: grid; grid-template-columns: 36px 40px minmax(0, 120px) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #d5e1ee; border-radius: 12px; background: #fff; }
+.quick-settings-row.is-inactive { opacity: 0.6; }
+.quick-settings-row b { font-size: 18px; color: #0b3f6b; text-align: center; }
+.quick-settings-row strong { direction: ltr; text-align: right; }
+.quick-settings-row div { display: flex; gap: 4px; }
+.quick-settings-row button { width: 42px; padding: 0; justify-content: center; }
+.quick-settings-suggest { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid #f5c26b; border-radius: 14px; background: #fff8e6; }
+.quick-settings-suggest ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.quick-settings-suggest li label { display: flex; align-items: center; gap: 8px; }
+.quick-settings-suggest li input { width: 20px; height: 20px; }
+.quick-settings-suggest-actions { display: flex; gap: 8px; }
+.quick-settings-pad { width: min(360px, 100%); align-self: flex-start; }

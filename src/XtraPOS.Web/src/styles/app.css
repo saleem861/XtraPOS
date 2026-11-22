@@ -6897,3 +6897,17 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
 .xp-wait-floating .xp-wait-ring span:nth-child(2) { inset: 4px; }
 .xp-wait-floating .xp-wait-ring span:nth-child(3) { inset: 8px; }
 @keyframes xp-wait-pop { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* زر إظهار/إخفاء لوحة المفاتيح ملتصق دائماً بأسفل الشاشة، واللوحة (إن ظهرت) تحته. */
+.new-customer > .sales-review-keyboard-toggle { margin-top: auto; flex-shrink: 0; }
+.catalog-quick-items {
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #0d63d8;
+  border-radius: 10px;
+  background: #e3eeff;
+  color: #0b3f6b;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
