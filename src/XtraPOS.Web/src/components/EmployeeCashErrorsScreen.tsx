@@ -114,7 +114,9 @@ export function EmployeeCashErrorsScreen({ session, user, onBack }: { session: D
       (station) => `${station.stationNumber}|${station.name}`,
     );
   }, [options, filters.branchId, branches, data]);
+  const numbers = useMemo(() => data?.employeeNumbers ?? {}, [data]);
   const users = useMemo(() => distinctBy(options?.users, (row) => `${row.id}`).filter((row, index, all) => all.findIndex((other) => other.name === row.name) === index), [options]);
+  const [numberSearch, setNumberSearch] = useState("");
   const items = data?.items ?? [];
   const net = selectionNet(selected, items);
   const selectedEmployee = items.find((item) => item.itemId === selected[0]);
@@ -174,10 +176,25 @@ export function EmployeeCashErrorsScreen({ session, user, onBack }: { session: D
               change({ from: monthStart(last), to: monthEnd(last) });
             }}>الشهر الماضي</button>
           </div>
+          <label>رقم الموظف
+            <input
+              inputMode="numeric"
+              value={numberSearch}
+              placeholder="ابحث بالرقم"
+              onChange={(event) => {
+                const value = event.target.value;
+                setNumberSearch(value);
+                const match = Object.entries(numbers).find(([, number]) => number === value.trim());
+                if (match) change({ employeeId: match[0] });
+                else if (!value.trim()) change({ employeeId: "" });
+              }}
+              style={{ minWidth: 110, width: 110 }}
+            />
+          </label>
           <label>الموظف
-            <select value={filters.employeeId} onChange={(event) => change({ employeeId: event.target.value })}>
+            <select value={filters.employeeId} onChange={(event) => { setNumberSearch(numbers[event.target.value] ?? ""); change({ employeeId: event.target.value }); }}>
               <option value="">كل الموظفين</option>
-              {users.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+              {users.map((row) => <option key={row.id} value={row.id}>{numbers[row.id] ? `${row.name} — ${numbers[row.id]}` : row.name}</option>)}
             </select>
           </label>
           <label>الفرع
@@ -212,7 +229,7 @@ export function EmployeeCashErrorsScreen({ session, user, onBack }: { session: D
           </label>
           <div className="cash-errors-tools">
             <button type="button" onClick={() => void load(filters)}><RefreshCw aria-hidden="true" />تحديث</button>
-            <button type="button" className="is-danger" onClick={() => { setSelected([]); setFilters(emptyFilters()); }}><Trash2 aria-hidden="true" />إلغاء الفلاتر</button>
+            <button type="button" className="is-danger" onClick={() => { setSelected([]); setNumberSearch(""); setFilters(emptyFilters()); }}><Trash2 aria-hidden="true" />إلغاء الفلاتر</button>
             <button type="button" className="is-excel" onClick={() => void exportExcel()}><FileSpreadsheet aria-hidden="true" />Excel</button>
           </div>
         </div>
@@ -238,7 +255,7 @@ export function EmployeeCashErrorsScreen({ session, user, onBack }: { session: D
             <div className="cash-errors-balances">
               {data.employees.length === 0 ? <p className="cash-errors-empty">لا توجد أخطاء في هذه الفترة.</p> : data.employees.map((balance) => (
                 <button key={balance.employeeId} type="button" className="cash-errors-balance" onClick={() => setStatementFor(balance.employeeId)}>
-                  <span className="cash-errors-balance-name"><UserRound aria-hidden="true" />{balance.employeeName}</span>
+                  <span className="cash-errors-balance-name"><UserRound aria-hidden="true" />{balance.employeeName}{balance.employeeNumber ? <small> — {balance.employeeNumber}</small> : null}</span>
                   <strong className={amountClass(balance.summary.openNet)}>{signedMoney(balance.summary.openNet)}</strong>
                   <small>الصافي المستحق — {balance.summary.openCount} غير مسوّى من {balance.summary.count}</small>
                   <span className="cash-errors-balance-split">
@@ -319,6 +336,7 @@ function ErrorsTable({ items, selected, onToggle, onEmployee, readOnly = false }
           <tr>
             {readOnly ? null : <th aria-label="اختيار" />}
             <th>التاريخ</th>
+            <th>رقم الموظف</th>
             <th>الموظف</th>
             <th>الفرع</th>
             <th>النقطة</th>
@@ -330,7 +348,7 @@ function ErrorsTable({ items, selected, onToggle, onEmployee, readOnly = false }
           </tr>
         </thead>
         <tbody>
-          {items.length === 0 ? <tr><td colSpan={readOnly ? 9 : 10} className="cash-errors-empty">لا توجد أخطاء مطابقة.</td></tr> : items.map((item) => {
+          {items.length === 0 ? <tr><td colSpan={readOnly ? 10 : 11} className="cash-errors-empty">لا توجد أخطاء مطابقة.</td></tr> : items.map((item) => {
             const chosen = selected.includes(item.itemId);
             return (
               <tr key={item.itemId} className={chosen ? "is-chosen" : isOpen(item) ? undefined : "is-closed"} onClick={readOnly ? undefined : () => onToggle(item)}>
@@ -350,6 +368,7 @@ function ErrorsTable({ items, selected, onToggle, onEmployee, readOnly = false }
                   {day(item.effectiveAt)}
                   {item.deferredTo ? <small className="cash-errors-sub">الأصل {day(item.occurredAt)}</small> : null}
                 </td>
+                <td>{item.employeeNumber ?? "—"}</td>
                 <td>
                   {onEmployee ? (
                     <button type="button" className="cash-errors-link" onClick={(event) => { event.stopPropagation(); onEmployee(item.employeeId); }}>{item.employeeName}</button>
@@ -487,7 +506,7 @@ function EmployeeStatement({ session, user, employeeId, from, to, onBack }: {
           <>
             <div className="cash-errors-statement-head">
               <div>
-                <h2><UserRound aria-hidden="true" />{statement.employee.name}</h2>
+                <h2><UserRound aria-hidden="true" />{statement.employee.name}{statement.employee.number ? <small> — رقم الموظف {statement.employee.number}</small> : null}</h2>
                 <p>الفترة {day(statement.from)} — {day(statement.to)}</p>
               </div>
               <div className="cash-errors-tools">
@@ -548,7 +567,7 @@ function printStatement(statement: CashErrorStatement, user: CurrentUser, layout
   .sign { margin-top: 24px; display: flex; justify-content: space-between; }
 </style></head><body>
   <h1>${escapeHtml(user.businessDisplayName || user.businessName)}</h1>
-  <p>كشف أخطاء الجرار — ${escapeHtml(statement.employee.name)}</p>
+  <p>كشف أخطاء الجرار — ${escapeHtml(statement.employee.name)}${statement.employee.number ? ` — رقم الموظف ${escapeHtml(statement.employee.number)}` : ""}</p>
   <p>${escapeHtml(day(statement.from))} — ${escapeHtml(day(statement.to))}</p>
   <table><thead><tr><th>التاريخ</th><th>النوع</th>${layout === "a4" ? "<th>الفرع/النقطة</th><th>المبرر</th>" : ""}<th>الحالة</th><th class="num">المبلغ</th></tr></thead><tbody>${rows}</tbody></table>
   <table class="totals"><tbody>

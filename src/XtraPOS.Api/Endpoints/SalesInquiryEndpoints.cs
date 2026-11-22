@@ -825,7 +825,7 @@ public static class SalesInquiryEndpoints
         return values.ToArray();
     }
 
-    private static TimeZoneInfo BusinessZone()
+    internal static TimeZoneInfo BusinessZone()
     {
         foreach (var id in new[] { "Asia/Hebron", "Israel Standard Time", "Jordan Standard Time" })
         {
@@ -837,7 +837,7 @@ public static class SalesInquiryEndpoints
         return TimeZoneInfo.Utc;
     }
 
-    private static bool CanSeeEarns(CurrentUserResponse user) =>
+    internal static bool CanSeeEarns(CurrentUserResponse user) =>
         user.Roles.Any(role => role.RoleCode is "Admin" or "Manager" or "Supervisor" || role.RoleName is "مشرف" or "مدير" or "مدير النظام")
         || user.Permissions.Contains(PermissionCodes.SystemAdminister);
 

@@ -32,9 +32,6 @@ public sealed class EmployeeCashErrorService(
     internal const string CentralUnreachableNotice =
         "تعذر الوصول إلى الإدارة المركزية. تظهر أخطاء هذا الفرع فقط، والحفظ يعمل ويُرحَّل تلقائياً عند عودة الاتصال.";
 
-    internal const string CentralNotLinkedNotice =
-        "هذا الفرع غير مربوط بالإدارة المركزية. تظهر أخطاء هذا الفرع فقط.";
-
     public async Task<object> ListAsync(PosDeviceContext actor, bool manageAll, CashErrorFilter filter, CancellationToken cancellationToken)
     {
         var (connection, source, notice) = await OpenReadAsync(cancellationToken);
@@ -53,6 +50,7 @@ public sealed class EmployeeCashErrorService(
             employees = EmployeeCashErrorRules.Balances(items),
             items,
             options = await CashDrawerService.ReviewOptionsAsync(connection, cancellationToken),
+            employeeNumbers = await EmployeeNumbersAsync(connection, cancellationToken),
         };
     }
 
@@ -79,11 +77,12 @@ public sealed class EmployeeCashErrorService(
         var items = await ReadItemsAsync(connection, actor, manageAll, filter, null, cancellationToken);
         var actions = await ReadActionsAsync(connection, employeeId, from, to, cancellationToken);
         var name = items.FirstOrDefault()?.EmployeeName ?? await EmployeeNameAsync(connection, employeeId, cancellationToken);
+        var number = items.FirstOrDefault(item => item.EmployeeNumber is not null)?.EmployeeNumber;
         return new
         {
             source,
             notice,
-            employee = new { employeeId, name },
+            employee = new { employeeId, name, number },
             from = from.Date,
             to = to.Date,
             summary = EmployeeCashErrorRules.Summarize(items),
@@ -293,7 +292,8 @@ public sealed class EmployeeCashErrorService(
         var settings = await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
         if (settings is null)
         {
-            return (await OpenLocalAsync(cancellationToken), "local", CentralNotLinkedNotice);
+            // جهاز منفرد: القاعدة المحلية هي كل البيانات، فلا ملاحظة.
+            return (await OpenLocalAsync(cancellationToken), "local", null);
         }
 
         var central = await OpenCentralAsync(cancellationToken);
@@ -317,6 +317,7 @@ public sealed class EmployeeCashErrorService(
 
         var hasActions = await TableExistsAsync(connection, null, "dbo.EmployeeCashErrorActions", cancellationToken)
             && await TableExistsAsync(connection, null, "dbo.EmployeeCashErrorActionItems", cancellationToken);
+        var hasEmployeeNumber = await ColumnExistsAsync(connection, "dbo.Users", "EmployeeNumber", cancellationToken);
         await using var command = new SqlCommand { Connection = connection };
         var where = new List<string> { "1 = 1" };
         if (filter.From > DateTime.MinValue)
@@ -438,7 +439,8 @@ public sealed class EmployeeCashErrorService(
              SELECT TOP (3000)
                     s.ItemID, s.Kind, s.EmployeeID, COALESCE(u.DisplayName, N'موظف غير معروف'), s.BranchID, b.BranchName,
                     st.StationNumber, st.StationName, s.Amount, s.OccurredAt, s.EffectiveAt, s.Justification, s.DecisionCode,
-                    s.ClosedBy, s.ClosedType, s.ClosedMethod, s.ClosedAt, s.ClosedByName, s.DeferredTo, s.NoteCount
+                    s.ClosedBy, s.ClosedType, s.ClosedMethod, s.ClosedAt, s.ClosedByName, s.DeferredTo, s.NoteCount,
+                    {(hasEmployeeNumber ? "u.EmployeeNumber" : "CAST(NULL AS nvarchar(50))")} AS EmployeeNumber
              FROM s
              LEFT JOIN dbo.Users AS u ON u.UserID = s.EmployeeID
              LEFT JOIN dbo.Branches AS b ON b.BranchID = s.BranchID
@@ -475,7 +477,8 @@ public sealed class EmployeeCashErrorService(
                 reader.IsDBNull(16) ? null : reader.GetDateTime(16),
                 reader.IsDBNull(17) ? null : reader.GetString(17),
                 deferredTo,
-                Convert.ToInt32(reader.GetValue(19), System.Globalization.CultureInfo.InvariantCulture)));
+                Convert.ToInt32(reader.GetValue(19), System.Globalization.CultureInfo.InvariantCulture),
+                reader.IsDBNull(20) ? null : reader.GetString(20)));
         }
 
         return result;
@@ -538,6 +541,23 @@ public sealed class EmployeeCashErrorService(
         return rows
             .Select(row => new CashErrorActionView(row.Id, row.Type, employeeId, row.Amount, row.Method, row.DeferTo, row.Note, row.Actor, row.At, items[row.Id]))
             .ToArray();
+    }
+
+    /// <summary>رقم الموظف (كان «رقم الهوية» في النظام القديم) لكل مستخدم له رقم.</summary>
+    private static async Task<Dictionary<Guid, string>> EmployeeNumbersAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<Guid, string>();
+        if (!await ColumnExistsAsync(connection, "dbo.Users", "EmployeeNumber", cancellationToken)) return result;
+        await using var command = new SqlCommand(
+            "SELECT UserID, EmployeeNumber FROM dbo.Users WHERE EmployeeNumber IS NOT NULL AND LTRIM(RTRIM(EmployeeNumber)) <> N'';",
+            connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result[reader.GetGuid(0)] = reader.GetString(1).Trim();
+        }
+
+        return result;
     }
 
     private static async Task<string?> BranchNameAsync(SqlConnection connection, Guid branchId, CancellationToken cancellationToken)
@@ -653,6 +673,14 @@ public sealed class EmployeeCashErrorService(
     {
         await using var command = new SqlCommand("SELECT OBJECT_ID(@name, N'U');", connection, transaction);
         command.Parameters.Add("@name", SqlDbType.NVarChar, 256).Value = name;
+        return await command.ExecuteScalarAsync(cancellationToken) is not (null or DBNull);
+    }
+
+    private static async Task<bool> ColumnExistsAsync(SqlConnection connection, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT COL_LENGTH(@table, @column);", connection);
+        command.Parameters.Add("@table", SqlDbType.NVarChar, 256).Value = table;
+        command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = column;
         return await command.ExecuteScalarAsync(cancellationToken) is not (null or DBNull);
     }
 

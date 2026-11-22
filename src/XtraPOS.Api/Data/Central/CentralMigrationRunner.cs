@@ -81,6 +81,9 @@ public sealed class CentralMigrationRunner
     // Approved by the owner on 22 November 2026. Back up XtraPOS_Central before publishing the release that adds this migration.
     public const string EmployeeCashErrorActionsMigrationId = "036_CentralEmployeeCashErrorActions";
     public const string EmployeeCashErrorActionsMigrationName = "Central employee cash error offset, settlement and deferral";
+    // Approved by the owner on 22 November 2026. Back up XtraPOS_Central before publishing.
+    public const string CustomerStarThresholdsMigrationId = "037_CentralCustomerStarThresholds";
+    public const string CustomerStarThresholdsMigrationName = "Central customer star thresholds";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -120,6 +123,7 @@ public sealed class CentralMigrationRunner
         (CashDrawerOpenCountMigrationId, CashDrawerOpenCountMigrationName, "XtraPOS.Api.Data.Central.Migrations.034_CashDrawerOpenCount.sql"),
         (PosDeviceSettingsMigrationId, PosDeviceSettingsMigrationName, "XtraPOS.Api.Data.Central.Migrations.035_CentralPosDeviceSettings.sql"),
         (EmployeeCashErrorActionsMigrationId, EmployeeCashErrorActionsMigrationName, "XtraPOS.Api.Data.Central.Migrations.036_CentralEmployeeCashErrorActions.sql"),
+        (CustomerStarThresholdsMigrationId, CustomerStarThresholdsMigrationName, "XtraPOS.Api.Data.Central.Migrations.037_CentralCustomerStarThresholds.sql"),
     ];
 
     private static readonly string ApplicationVersion =

@@ -28,6 +28,7 @@ export interface CashErrorItem {
   closedByName: string | null;
   deferredTo: string | null;
   noteCount: number;
+  employeeNumber?: string | null;
 }
 
 export interface CashErrorSummary {
@@ -44,6 +45,7 @@ export interface CashErrorBalance {
   employeeId: string;
   employeeName: string;
   summary: CashErrorSummary;
+  employeeNumber?: string | null;
 }
 
 export interface CashErrorOptions {
@@ -62,6 +64,7 @@ export interface CashErrorList {
   employees: CashErrorBalance[];
   items: CashErrorItem[];
   options: CashErrorOptions;
+  employeeNumbers?: Record<string, string>;
 }
 
 export interface CashErrorAction {
@@ -80,7 +83,7 @@ export interface CashErrorAction {
 export interface CashErrorStatement {
   source: "central" | "local";
   notice: string | null;
-  employee: { employeeId: string; name: string };
+  employee: { employeeId: string; name: string; number?: string | null };
   from: string;
   to: string;
   summary: CashErrorSummary;

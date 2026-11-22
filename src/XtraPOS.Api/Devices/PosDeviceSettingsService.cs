@@ -98,9 +98,6 @@ public sealed class PosDeviceSettingsService(
     internal const string CentralUnreachableNotice =
         "تعذر الوصول إلى الإدارة المركزية. تظهر القيم المحفوظة على هذا الفرع، والحفظ يعمل ويُرحَّل تلقائيًا عند عودة الاتصال.";
 
-    internal const string CentralNotLinkedNotice =
-        "هذا الفرع غير مربوط بالإدارة المركزية بعد. تظهر القيم المحفوظة على هذا الفرع، والحفظ يعمل ويُرحَّل بعد الربط.";
-
     public async Task<PosPointsList> ListPointsAsync(PosDeviceContext actor, bool canManageAll, CancellationToken cancellationToken)
     {
         await using var branch = await OpenBranchAsync(cancellationToken);
@@ -190,7 +187,8 @@ public sealed class PosDeviceSettingsService(
             var central = await endpoints.ReadSettingsAsync(DatabaseRole.Central, timeout.Token);
             if (central is null)
             {
-                return new CentralSnapshot([], [], CentralNotLinkedNotice);
+                // جهاز منفرد: لا مركز، فلا ملاحظة.
+                return new CentralSnapshot([], [], null);
             }
 
             var builder = new SqlConnectionStringBuilder(central.BuildConnectionString(central.DatabaseName))

@@ -59,6 +59,7 @@ import { savedMembershipIdentity } from "../membership/savedIdentity";
 import { FullKeyboard } from "./FullKeyboard";
 import { buildDisplayState, customerDisplayChannel, isCustomerDisplayOpen, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
 import { Waiting } from "./Waiting";
+import { CustomerPurchasesScreen } from "./CustomerPurchasesScreen";
 import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
 import { cartAfterSuccessfulHold, cartFromHeldSale, claimSingleHold, currentInvoiceNeedsGuard, holdSaveRequest } from "../cart/heldInvoice";
@@ -110,7 +111,7 @@ const QUICK_ACTIONS: { label: string; icon: LucideIcon; title: string }[] = [
   { label: "تأجيل الدفع", icon: Clock3, title: "تأجيل الدفع" },
   { label: "شاشة", icon: Monitor, title: "شاشة الزبون" },
   { label: "فتح", icon: FolderOpen, title: "فتح" },
-  { label: "مبيعات الزبون ؟", icon: UserRoundSearch, title: "مبيعات الزبون" },
+  { label: "مشتريات الزبون", icon: UserRoundSearch, title: "مشتريات الزبون في كل الفروع ونجومه" },
 ];
 
 function placeEntryCaret(field: HTMLInputElement) {
@@ -203,6 +204,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [creditOpen, setCreditOpen] = useState(false);
   const [collectOpen, setCollectOpen] = useState(false);
   const [salesOpen, setSalesOpen] = useState(false);
+  const [purchasesOpen, setPurchasesOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [customerTarget, setCustomerTarget] = useState<"sale" | "collection">("sale");
   const [collectionPick, setCollectionPick] = useState<CustomerListItem | null>(null);
@@ -1486,17 +1488,19 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
               const salesAction = label === "المبيعات";
               const drawerAction = label === "الجرار";
               const displayAction = label === "شاشة";
+              const purchasesAction = label === "مشتريات الزبون";
               const creditAllowed = creditEnabled && (user.permissions.includes("Credit.Create") || user.permissions.includes("System.Administer"));
               const collectionAllowed = collectionEnabled && (user.permissions.includes("Credit.Collect") || user.permissions.includes("System.Administer"));
               return (
                 <span key={label} style={{ display: "contents" }}>
-                  <button type="button" disabled={displayAction ? !displayEnabled : drawerAction || salesAction ? false : !creditAction || !creditAllowed} title={displayAction && !displayEnabled ? "شاشة الزبون غير مفعّلة لهذه النقطة. فعّلها من الإعدادات، القيم الأولية للنقطة الحالية." : title} onClick={() => {
+                  <button type="button" disabled={displayAction ? !displayEnabled : drawerAction || salesAction || purchasesAction ? false : !creditAction || !creditAllowed} title={displayAction && !displayEnabled ? "شاشة الزبون غير مفعّلة لهذه النقطة. فعّلها من الإعدادات، القيم الأولية للنقطة الحالية." : title} onClick={() => {
                     if (drawerAction) { setDrawerOpen(true); return; }
                     if (displayAction) {
                       void openCustomerDisplay().then((opened) => { if (!opened) setMessage("اسمح للمتصفح بفتح النوافذ المنبثقة لهذا الموقع لعرض شاشة الزبون."); });
                       return;
                     }
                     if (salesAction) { setSalesOpen(true); return; }
+                    if (purchasesAction) { setPurchasesOpen(true); return; }
                     if (!creditAction || !creditAllowed) return;
                     if (!creditOperationId) setCreditOperationId(crypto.randomUUID());
                     setCreditOpen(true);
@@ -1585,6 +1589,16 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         />
       ) : null}
       {salesOpen ? <SalesInquiryScreen session={session} onBack={() => setSalesOpen(false)} /> : null}
+      {purchasesOpen ? (
+        <CustomerPurchasesScreen
+          session={session}
+          user={user}
+          initialCustomer={saleCustomer
+            ? { customerId: saleCustomer.customerId, customerNumber: saleCustomer.customerNumber, name: saleCustomer.name }
+            : cart?.customerId ? { customerId: cart.customerId } : null}
+          onBack={() => setPurchasesOpen(false)}
+        />
+      ) : null}
       {drawerOpen ? <CashDrawerScreen session={session} onBack={() => setDrawerOpen(false)} /> : null}
       {collectOpen ? (
         <PosCollectionScreen

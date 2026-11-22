@@ -25,7 +25,8 @@ public sealed record CashErrorItem(
     DateTime? ClosedAt,
     string? ClosedByName,
     DateTime? DeferredTo,
-    int NoteCount);
+    int NoteCount,
+    string? EmployeeNumber = null);
 
 public sealed record CashErrorSummary(
     int Count,
@@ -36,7 +37,7 @@ public sealed record CashErrorSummary(
     decimal Settled,
     decimal OpenNet);
 
-public sealed record CashErrorEmployeeBalance(Guid EmployeeId, string EmployeeName, CashErrorSummary Summary);
+public sealed record CashErrorEmployeeBalance(Guid EmployeeId, string EmployeeName, CashErrorSummary Summary, string? EmployeeNumber = null);
 
 public sealed record CashErrorActionView(
     Guid ActionId,
@@ -130,7 +131,7 @@ public static class EmployeeCashErrorRules
     public static IReadOnlyList<CashErrorEmployeeBalance> Balances(IEnumerable<CashErrorItem> items) =>
         items
             .GroupBy(item => item.EmployeeId)
-            .Select(group => new CashErrorEmployeeBalance(group.Key, group.First().EmployeeName, Summarize(group)))
+            .Select(group => new CashErrorEmployeeBalance(group.Key, group.First().EmployeeName, Summarize(group), group.First().EmployeeNumber))
             .OrderBy(balance => balance.Summary.OpenNet)
             .ThenBy(balance => balance.EmployeeName, StringComparer.CurrentCulture)
             .ToArray();

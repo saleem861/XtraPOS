@@ -65,10 +65,11 @@ public static class EmployeeCashErrorEndpoints
             new CashErrorFilter(start, end, employeeId, branchId, stationId, type, status),
             cancellationToken);
         string Money(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
-        var headers = new[] { "التاريخ", "الموظف", "الفرع", "النقطة", "المبلغ", "النوع", "المبرر", "قرار المشرف", "الحالة", "سُوّي بواسطة", "تاريخ التسوية" };
+        var headers = new[] { "التاريخ", "رقم الموظف", "الموظف", "الفرع", "النقطة", "المبلغ", "النوع", "المبرر", "قرار المشرف", "الحالة", "سُوّي بواسطة", "تاريخ التسوية" };
         var rows = items.Select(item => (IReadOnlyList<string>)new[]
         {
             item.EffectiveAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+            item.EmployeeNumber ?? "",
             item.EmployeeName,
             item.BranchName ?? "",
             item.StationNumber is int number ? $"{number} {item.StationName}" : "",

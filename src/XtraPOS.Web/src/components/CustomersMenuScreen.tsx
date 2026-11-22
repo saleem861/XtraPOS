@@ -7,6 +7,7 @@ import { CustomerSearchScreen } from "./CustomerSearchScreen";
 import { NewCustomerScreen } from "./NewCustomerScreen";
 import { PosCollectionScreen } from "./PosCollectionScreen";
 import { ScreenHeader } from "./ScreenHeader";
+import { CustomerPurchasesScreen } from "./CustomerPurchasesScreen";
 
 interface CustomersMenuScreenProps {
   session: DeviceSession;
@@ -42,7 +43,7 @@ const cards = [
 ] as const;
 
 export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScreenProps) {
-  const [view, setView] = useState<"menu" | "add" | "browse" | "debts">("menu");
+  const [view, setView] = useState<"menu" | "add" | "browse" | "debts" | "purchases">("menu");
   const [notice, setNotice] = useState("");
   const [debtSearch, setDebtSearch] = useState(false);
   const [debtCustomer, setDebtCustomer] = useState<CustomerListItem | null>(null);
@@ -63,6 +64,10 @@ export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScre
         }}
       />
     );
+  }
+
+  if (view === "purchases") {
+    return <CustomerPurchasesScreen session={session} user={user} onBack={() => setView("menu")} />;
   }
 
   if (view === "browse") {
@@ -92,7 +97,8 @@ export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScre
       <div className="customers-menu-grid">
         {cards.map((card) => {
           const Icon = card.icon;
-          const active = card.title === "إضافة زبون جديد" ? canCreate : card.title === "استعراض الزبائن" || card.title === "ديون الزبائن" ? canView : false;
+          const canSell = user.permissions.includes("POS.Sell");
+          const active = card.title === "إضافة زبون جديد" ? canCreate : card.title === "مشتريات الزبون" ? canView || canSell : canView;
           return (
             <button
               key={card.title}
@@ -100,7 +106,7 @@ export function CustomersMenuScreen({ session, user, onBack }: CustomersMenuScre
               className={`customers-menu-card customers-menu-card-${card.tone}`}
               disabled={!active}
               aria-disabled={!active}
-              onClick={active ? () => { setNotice(""); setView(card.title === "إضافة زبون جديد" ? "add" : card.title === "ديون الزبائن" ? "debts" : "browse"); } : undefined}
+              onClick={active ? () => { setNotice(""); setView(card.title === "إضافة زبون جديد" ? "add" : card.title === "ديون الزبائن" ? "debts" : card.title === "مشتريات الزبون" ? "purchases" : "browse"); } : undefined}
             >
               <span className="customers-menu-icon" aria-hidden="true">
                 <Icon />

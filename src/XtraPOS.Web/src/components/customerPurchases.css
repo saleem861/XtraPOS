@@ -1,0 +1,109 @@
+/* شاشة «مشتريات الزبون» */
+.customer-purchases-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.customer-purchases-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; }
+.customer-purchases-who,
+.customer-stars {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #d5e1ee;
+  border-radius: 16px;
+  background: #fff;
+}
+.customer-purchases-who > div { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.customer-purchases-who strong { font-size: 20px; color: #0b3f6b; }
+.customer-purchases-who small { color: #5c6d7c; }
+.customer-purchases-avatar { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; background: #e3eeff; color: #0d63d8; }
+.customer-purchases-who button,
+.customer-purchases-filters button,
+.customer-purchases-more button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #c9d7e8;
+  border-radius: 10px;
+  background: #f4f8fc;
+  color: #14365c;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.customer-purchases-who button svg,
+.customer-purchases-filters button svg { width: 18px; height: 18px; }
+
+.customer-stars {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: linear-gradient(135deg, #0b3f6b, #0e4f86);
+  border-color: transparent;
+  color: #fff;
+}
+.customer-stars-glyphs { font-size: 34px; line-height: 1; letter-spacing: 4px; color: #ffc53d; text-shadow: 0 2px 10px rgba(255, 197, 61, 0.35); }
+.customer-stars-trend { display: inline-flex; align-items: center; gap: 6px; padding: 2px 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.16); font-weight: 800; }
+.customer-stars-trend svg { width: 18px; height: 18px; }
+.customer-stars.is-up .customer-stars-trend { background: rgba(16, 165, 111, 0.35); }
+.customer-stars.is-down .customer-stars-trend { background: rgba(180, 35, 24, 0.45); }
+.customer-stars small { color: rgba(255, 255, 255, 0.85); }
+.customer-stars .customer-stars-default { color: #ffe7a3; }
+
+.customer-purchases-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid #d5e1ee;
+  border-radius: 14px;
+  background: #fff;
+}
+.customer-purchases .customer-purchases-filters label { display: flex; align-items: center; gap: 6px; font-weight: 700; color: #14365c; }
+.customer-purchases-filters input {
+  height: 40px;
+  min-width: 150px;
+  padding: 0 10px;
+  border: 1px solid #c9d7e8;
+  border-radius: 10px;
+  background: #f8fbff;
+  font: inherit;
+}
+.customer-purchases-notice { margin: 0; }
+
+.customer-purchases-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.customer-purchases-cards article {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid #d5e1ee;
+  border-radius: 14px;
+  background: #fff;
+  color: #14365c;
+}
+.customer-purchases-cards span { font-size: 13px; font-weight: 700; color: #5c6d7c; }
+.customer-purchases-cards strong { font-size: 22px; direction: ltr; text-align: right; }
+.customer-purchases-cards .is-earn strong { color: #067647; }
+.customer-purchases-cards small { color: #5c6d7c; }
+
+.customer-purchases-results { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; border-radius: 14px; }
+.customer-purchases-table tbody tr { cursor: pointer; }
+.customer-purchases-more { display: flex; justify-content: center; padding: 12px; color: #5c6d7c; }
+.customer-purchases-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 16px; color: #5c6d7c; }
+.customer-purchases-empty svg { width: 46px; height: 46px; color: #98a2b3; }
+.customer-purchases-order { flex: 1 1 0; min-height: 0; overflow: auto; padding: 10px; }
+
+@media (max-width: 1000px) {
+  .customer-purchases-top { grid-template-columns: 1fr; }
+}
+.customer-stars-settings-glyphs { color: #f5a400; letter-spacing: 2px; font-weight: 400; }

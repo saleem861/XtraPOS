@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, Coins, Link2, Monitor, Package, ReceiptText, RotateCcw, ScrollText, Settings, ShieldCheck, ShoppingCart, TriangleAlert, Users, UsersRound } from "lucide-react";
+import { ClipboardList, Coins, Link2, Monitor, Package, ReceiptText, RotateCcw, ScrollText, Settings, ShieldCheck, ShoppingCart, Star, TriangleAlert, Users, UsersRound } from "lucide-react";
 import { deviceHeaders } from "../api/client";
 import { createItemClient } from "../api/items";
 import { clearPersistedDevice } from "../storage/deviceConfig";
@@ -17,6 +17,7 @@ import { CashDrawerReviewScreen } from "./CashDrawerReviewScreen";
 import { DeviceInitialValuesScreen } from "./DeviceInitialValuesScreen";
 import { EmployeeCashErrorsScreen } from "./EmployeeCashErrorsScreen";
 import { SalesInquiryScreen } from "./SalesInquiryScreen";
+import { CustomerStarsSettingsScreen } from "./CustomerStarsSettingsScreen";
 
 interface HomeScreenProps {
   session: DeviceSession;
@@ -40,6 +41,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const [showAudit, setShowAudit] = useState(false);
   const [showSales, setShowSales] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
+  const [showStars, setShowStars] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteDatabase, setDeleteDatabase] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -50,6 +52,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
   const canViewUsers = isAdmin || user.permissions.includes("Users.View");
   const canReviewDrawer = isAdmin || user.permissions.includes("CashDrawer.Review") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
   const canConfigureDrawer = isAdmin || user.permissions.includes("CashDrawer.Configure") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
+  const canManageStars = isAdmin || user.permissions.includes("Customers.Manage");
   const canConfigureDevice = isAdmin || user.permissions.includes("Devices.ConfigureCurrent") || user.roles.some((role) => role.roleCode === "Supervisor" || role.roleCode === "Admin");
 
   useEffect(() => {
@@ -67,6 +70,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
       setShowAudit(false);
       setShowSales(false);
       setShowErrors(false);
+      setShowStars(false);
       setResetOpen(false);
     };
     window.addEventListener("xtrapos-home", home);
@@ -181,6 +185,10 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
     );
   }
 
+  if (showStars && canManageStars) {
+    return <CustomerStarsSettingsScreen session={session} onBack={() => setShowStars(false)} />;
+  }
+
   if (showDeviceSettings && canConfigureDevice) {
     return <DeviceInitialValuesScreen session={session} user={user} onBack={() => setShowDeviceSettings(false)} />;
   }
@@ -229,6 +237,12 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
               <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowDeviceSettings(true)}>
                 <span className="home-nav-icon" aria-hidden="true"><Monitor /></span>
                 <span><strong>القيم الأولية</strong></span>
+              </button>
+            ) : null}
+            {canManageStars ? (
+              <button className="home-nav-card" type="button" disabled={pending} onClick={() => setShowStars(true)}>
+                <span className="home-nav-icon" aria-hidden="true"><Star /></span>
+                <span><strong>نجوم الزبائن</strong></span>
               </button>
             ) : null}
             {isAdmin ? (
@@ -313,7 +327,7 @@ export function HomeScreen({ session, user, pending, onLogout, onReset }: HomeSc
             <small>إدارة الزبائن والحسابات</small>
           </span>
         </button>
-        {isAdmin || canViewUsers || canConfigureDrawer || canConfigureDevice ? (
+        {isAdmin || canViewUsers || canConfigureDrawer || canConfigureDevice || canManageStars ? (
           <button className="home-nav-card" type="button" onClick={() => setShowSettings((open) => !open)}>
             <span className="home-nav-icon" aria-hidden="true"><Settings /></span>
             <span><strong>الإعدادات</strong></span>
