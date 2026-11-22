@@ -92,15 +92,32 @@ public sealed class PosDeviceSettingsService(
         return ToView(current, row, isCurrent: true);
     }
 
+    /// <summary>مهلة قراءة المركز عند فتح الشاشة؛ بعدها نعرض نسخة الفرع حتى لا يتوقف العمل.</summary>
+    internal static readonly TimeSpan CentralReadTimeout = TimeSpan.FromSeconds(6);
+
+    internal const string CentralUnreachableNotice =
+        "تعذر الوصول إلى الإدارة المركزية. تظهر القيم المحفوظة على هذا الفرع، والحفظ يعمل ويُرحَّل تلقائيًا عند عودة الاتصال.";
+
+    internal const string CentralNotLinkedNotice =
+        "هذا الفرع غير مربوط بالإدارة المركزية بعد. تظهر القيم المحفوظة على هذا الفرع، والحفظ يعمل ويُرحَّل بعد الربط.";
+
     public async Task<PosPointsList> ListPointsAsync(PosDeviceContext actor, bool canManageAll, CancellationToken cancellationToken)
     {
         await using var branch = await OpenBranchAsync(cancellationToken);
         var current = await CurrentPointAsync(branch, null, actor, cancellationToken);
+
+        // المركز أولًا: نقرأ نقاطه وقيمه ونحدّث نسخة الفرع، وعند الفشل نكمل بنسخة الفرع.
+        var snapshot = await TryReadCentralAsync(canManageAll ? null : current.DeviceId, canManageAll, cancellationToken);
+        if (snapshot.Settings.Count > 0)
+        {
+            await RefreshLocalFromCentralAsync(branch, current, snapshot.Settings, cancellationToken);
+        }
+
         var rows = await ReadAllRowsAsync(branch, cancellationToken);
         if (!canManageAll)
         {
             rows.TryGetValue(actor.DeviceId, out var own);
-            return new PosPointsList([ToView(current, own, isCurrent: true)], false, null);
+            return new PosPointsList([ToView(current, own, isCurrent: true)], false, snapshot.Notice);
         }
 
         var points = new Dictionary<Guid, PosPointInfo>
@@ -112,20 +129,11 @@ public sealed class PosDeviceSettingsService(
             points.TryAdd(row.Point.DeviceId, row.Point);
         }
 
-        string? notice = null;
-        try
+        foreach (var registered in snapshot.Points)
         {
-            foreach (var registered in await CentralPointsAsync(cancellationToken))
-            {
-                points[registered.DeviceId] = registered.DeviceId == current.DeviceId
-                    ? current with { BranchName = current.BranchName ?? registered.BranchName }
-                    : registered;
-            }
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException or TimeoutException)
-        {
-            notice = "تعذر الوصول إلى الإدارة المركزية. تظهر النقاط المعروفة على هذا الفرع فقط.";
-            logger.LogInformation(exception, "Central POS list was not reachable for initial values.");
+            points[registered.DeviceId] = registered.DeviceId == current.DeviceId
+                ? current with { BranchName = current.BranchName ?? registered.BranchName }
+                : registered;
         }
 
         var list = points.Values
@@ -135,7 +143,134 @@ public sealed class PosDeviceSettingsService(
             .ThenBy(point => point.PosNumber ?? int.MaxValue)
             .ThenBy(point => point.DeviceName, StringComparer.CurrentCulture)
             .ToArray();
-        return new PosPointsList(list, true, notice);
+        return new PosPointsList(list, true, snapshot.Notice);
+    }
+
+    private sealed record CentralSnapshot(
+        IReadOnlyList<PosPointInfo> Points,
+        IReadOnlyList<CentralPayload> Settings,
+        string? Notice);
+
+    /// <summary>
+    /// يقرأ من المركز بمهلة قصيرة: قائمة النقاط (للمدير) وصفوف CentralPosDeviceSettings
+    /// (كلها للمدير، أو صف هذا الجهاز فقط). لا يرمي عند انقطاع الاتصال بل يعيد ملاحظة.
+    /// </summary>
+    private async Task<CentralSnapshot> TryReadCentralAsync(Guid? onlyDevice, bool includePoints, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(CentralReadTimeout);
+        try
+        {
+            var central = await endpoints.ReadSettingsAsync(DatabaseRole.Central, timeout.Token);
+            if (central is null)
+            {
+                return new CentralSnapshot([], [], CentralNotLinkedNotice);
+            }
+
+            var builder = new SqlConnectionStringBuilder(central.BuildConnectionString(central.DatabaseName))
+            {
+                ConnectTimeout = (int)CentralReadTimeout.TotalSeconds,
+            };
+            await using var remote = new SqlConnection(builder.ConnectionString);
+            await remote.OpenAsync(timeout.Token);
+
+            var points = includePoints
+                ? await CentralPointListAsync(remote, null, timeout.Token)
+                : (IReadOnlyList<PosPointInfo>)[];
+            var settings = await CentralSettingsRowsAsync(remote, onlyDevice, timeout.Token);
+            return new CentralSnapshot(points, settings, null);
+        }
+        catch (Exception exception) when (
+            exception is SqlException or InvalidOperationException or TimeoutException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            logger.LogInformation(exception, "Central initial values were not reachable; using the branch copy.");
+            return new CentralSnapshot([], [], CentralUnreachableNotice);
+        }
+    }
+
+    private static async Task<IReadOnlyList<CentralPayload>> CentralSettingsRowsAsync(SqlConnection remote, Guid? onlyDevice, CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(remote, null, "dbo.CentralPosDeviceSettings", cancellationToken))
+        {
+            return [];
+        }
+
+        var hasBranches = await TableExistsAsync(remote, null, "dbo.Branches", cancellationToken);
+        await using var command = new SqlCommand(
+            $"""
+            SELECT c.DeviceID, c.BranchID, {(hasBranches ? "b.BranchName" : "CAST(NULL AS nvarchar(200))")} AS BranchName,
+                   c.PosNumber, c.DeviceName, c.SettingsJson, c.SettingsVersion
+            FROM dbo.CentralPosDeviceSettings AS c
+            {(hasBranches ? "LEFT JOIN dbo.Branches AS b ON b.BranchID = c.BranchID" : "")}
+            WHERE @device IS NULL OR c.DeviceID = @device;
+            """,
+            remote);
+        command.Parameters.Add("@device", SqlDbType.UniqueIdentifier).Value = (object?)onlyDevice ?? DBNull.Value;
+        var result = new List<CentralPayload>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var point = new PosPointInfo(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4));
+            result.Add(new CentralPayload(point, reader.GetInt64(6), PosDeviceSettingsDocument.Parse(reader.IsDBNull(5) ? null : reader.GetString(5))));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// يدمج قيم المركز في جدول الفرع (الأحدث لكل مفتاح يفوز)، فلا يضيع تعديل محلي
+    /// لم يُرحَّل بعد؛ يبقى الصف «غير مُزامَن» حتى يصل تعديله إلى المركز.
+    /// </summary>
+    private async Task RefreshLocalFromCentralAsync(
+        SqlConnection branch,
+        PosPointInfo current,
+        IReadOnlyList<CentralPayload> payloads,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            foreach (var payload in payloads)
+            {
+                await using var transaction = (SqlTransaction)await branch.BeginTransactionAsync(cancellationToken);
+                var row = await ReadRowAsync(branch, transaction, payload.Point.DeviceId, cancellationToken, lockRow: true);
+                var local = row?.Settings ?? new SortedDictionary<string, PosDeviceSettingEntry>(StringComparer.Ordinal);
+                var merged = PosDeviceSettingsDocument.Merge(local, payload.Settings);
+                var version = Math.Max(row?.CentralVersion ?? 0, payload.Version);
+                var matchesCentral = PosDeviceSettingsDocument.SameContent(merged, payload.Settings);
+                var unchanged = row is not null
+                    && PosDeviceSettingsDocument.SameContent(merged, local)
+                    && row.CentralVersion == version
+                    && (!matchesCentral || row.SyncedAtUtc is not null);
+                if (!unchanged)
+                {
+                    var point = payload.Point.DeviceId == current.DeviceId
+                        ? current with { BranchName = current.BranchName ?? payload.Point.BranchName }
+                        : payload.Point with { BranchName = payload.Point.BranchName ?? row?.Point.BranchName };
+                    await UpsertRowAsync(
+                        branch,
+                        transaction,
+                        point,
+                        merged,
+                        version,
+                        matchesCentral ? PosDeviceSettingSources.Central : PosDeviceSettingSources.Branch,
+                        synced: matchesCentral,
+                        cancellationToken);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+            }
+        }
+        catch (SqlException exception)
+        {
+            // فشل تحديث النسخة المحلية لا يمنع عرض الشاشة.
+            logger.LogWarning(exception, "Could not refresh the branch copy of initial values from central.");
+        }
     }
 
     public async Task<IReadOnlyList<DeviceSettingsLogRow>> HistoryAsync(Guid deviceId, CancellationToken cancellationToken)
@@ -747,19 +882,6 @@ public sealed class PosDeviceSettingsService(
     // ------------------------------------------------------------------
     // قائمة النقاط في المركز
     // ------------------------------------------------------------------
-
-    private async Task<IReadOnlyList<PosPointInfo>> CentralPointsAsync(CancellationToken cancellationToken)
-    {
-        var central = await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken);
-        if (central is null)
-        {
-            return [];
-        }
-
-        await using var remote = new SqlConnection(central.BuildConnectionString(central.DatabaseName));
-        await remote.OpenAsync(cancellationToken);
-        return await CentralPointListAsync(remote, null, cancellationToken);
-    }
 
     /// <summary>
     /// نقاط البيع في كل الفروع كما يعرفها المركز.
