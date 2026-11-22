@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\scripts\pull-test-publish.ps1 -DotnetFilter "FullyQualifiedName~PosDeviceSettings" -WebTests src/components/DeviceInitialValuesScreen.test.tsx
 #
 # -DotnetFilter  dotnet test filter (omit to skip server tests)
-# -WebTests      vitest files under src/XtraPOS.Web (omit to skip web tests)
+# -WebTests      vitest files under src/XtraPOS.Web, space or comma separated (omit to skip web tests)
 # -SkipPublish   stop after the tests
 #
 # Keep this file ASCII: Windows PowerShell 5.1 misreads UTF-8 without a BOM.
@@ -59,6 +59,9 @@ if ($DotnetFilter) {
     dotnet test (Join-Path $root 'tests\XtraPOS.Api.Tests\XtraPOS.Api.Tests.csproj') --filter $DotnetFilter --nologo -v q
   }
 }
+
+# Accept one quoted string with several files ("a.test.tsx b.test.tsx" or "a,b").
+$WebTests = @($WebTests | ForEach-Object { $_ -split '[\s,]+' } | Where-Object { $_ })
 
 if ($WebTests.Count -gt 0) {
   Invoke-Step "Web tests" {
