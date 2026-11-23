@@ -1337,7 +1337,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      {creditOpen || collectOpen || salesOpen || drawerOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
+      {creditOpen || collectOpen || salesOpen || drawerOpen || purchasesOpen || registerOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>

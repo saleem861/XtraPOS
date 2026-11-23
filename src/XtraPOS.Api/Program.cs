@@ -1040,7 +1040,7 @@ app.MapGet("/health", () => Results.Ok(new
     status = "Healthy",
     version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0",
 }));
-app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment environment, CancellationToken cancellationToken) =>
+app.MapPost("/api/local-update", (HttpContext http) =>
 {
     var remote = http.Connection.RemoteIpAddress;
     if (remote is null || !System.Net.IPAddress.IsLoopback(remote))
@@ -1049,36 +1049,28 @@ app.MapPost("/api/local-update", async (HttpContext http, IHostEnvironment envir
     }
 
     // The separate updater task stops, replaces, and restarts this service. The service only asks.
+    // No fallback to the old in-service updater: it can no longer replace a running service.
+    // If the updater has not beaten recently (just booted or woke from sleep), the request is
+    // still written; the task runs every minute and picks it up. The screen waits up to two minutes.
     var folder = UpdaterChannel.DefaultFolder;
-    if (UpdaterChannel.IsAlive(UpdaterChannel.ReadHeartbeat(folder), DateTime.UtcNow))
-    {
-        try
-        {
-            var requestId = UpdaterChannel.Request(folder, DateTime.UtcNow);
-            return Results.Ok(new { mode = "updater", requestId, message = "تم طلب التحديث." });
-        }
-        catch (Exception exception)
-        {
-            app.Logger.LogWarning(exception, "The update request could not be written for the updater task.");
-            return Results.Json(new { message = "تعذر إرسال طلب التحديث إلى برنامج التحديث." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-    }
-
+    var alive = UpdaterChannel.IsAlive(UpdaterChannel.ReadHeartbeat(folder), DateTime.UtcNow);
     try
     {
-        var url = await PublishedRelease.LatestAssetUrlAsync(cancellationToken);
-        if (!PublishedRelease.IsAllowedDownload(url))
+        var requestId = UpdaterChannel.Request(folder, DateTime.UtcNow);
+        return Results.Ok(new
         {
-            return Results.Json(new { message = "لا توجد حزمة منشورة بعد. ينشر المطوّر الحزمة أولاً." }, statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        PublishedRelease.StartUpdater(PublishedRelease.BuildUpdaterScript(environment.ContentRootPath, url!));
-        return Results.Ok(new { mode = "legacy", message = "بدأ تنزيل آخر نشر. ستُعاد تشغيل الخدمة بعد اكتمال النسخ." });
+            mode = "updater",
+            requestId,
+            updaterAlive = alive,
+            message = alive ? "تم طلب التحديث." : "تم طلب التحديث، بانتظار برنامج التحديث.",
+        });
     }
     catch (Exception exception)
     {
-        app.Logger.LogWarning(exception, "Published release update did not start.");
-        return Results.Json(new { message = "برنامج التحديث غير مثبّت على هذا الجهاز، وتعذر بدء التحديث القديم." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        app.Logger.LogWarning(exception, "The update request could not be written for the updater task.");
+        return Results.Json(
+            new { message = "تعذر إرسال طلب التحديث إلى برنامج التحديث. أعد تثبيت برنامج الإعداد من موقع الإعداد." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
 app.MapGet("/api/local-update/status", (HttpContext http, IHostEnvironment environment) =>

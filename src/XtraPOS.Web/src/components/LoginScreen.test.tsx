@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceSession } from "../types/setup";
 import { LoginScreen, updateStageText } from "./LoginScreen";
@@ -94,4 +94,40 @@ describe("login update button", () => {
     expect(screen.getByText("جاري حفظ نسخة احتياطية")).toBeTruthy();
     expect(screen.queryByText("300")).toBeNull();
   }, 10000);
+
+  it("waits for a sleeping updater instead of falling back to the old countdown", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/local-update") {
+        return Promise.resolve({ ok: true, json: async () => ({ mode: "updater", requestId: "r4", updaterAlive: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ installed: "20261122-224755", updaterAlive: false, status: null }) });
+    }));
+
+    render(<LoginScreen session={session} pending={false} error="" onSubmit={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "تحديث التطبيق" }));
+    expect(await screen.findByText("بانتظار برنامج التحديث (يبدأ خلال دقيقة)")).toBeTruthy();
+    expect(screen.getByText("0 من 6")).toBeTruthy();
+    expect(screen.queryByText("90")).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/health")).toBe(false);
+  });
+
+  it("says the updater is not running when it does not pick the request up in two minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", vi.fn((url: string) => {
+        if (url === "/api/local-update") {
+          return Promise.resolve({ ok: true, json: async () => ({ mode: "updater", requestId: "r5", updaterAlive: false }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ installed: "20261122-224755", updaterAlive: false, status: null }) });
+      }));
+
+      render(<LoginScreen session={session} pending={false} error="" onSubmit={() => undefined} />);
+      fireEvent.click(screen.getByRole("button", { name: "تحديث التطبيق" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(124_000); });
+      expect(screen.getByText(/برنامج التحديث لا يعمل على هذا الجهاز/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "تحديث التطبيق" }).hasAttribute("disabled")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

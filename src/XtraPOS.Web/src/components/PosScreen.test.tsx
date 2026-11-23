@@ -128,6 +128,36 @@ describe("POS cashier screen", () => {
     calls.length = 0;
   });
 
+  it("shows a single back button over customer purchases opened from the sale", async () => {
+    installFakeIndexedDb();
+    const cashier = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = String(url);
+      if (path.endsWith("/health")) return new Response("ok");
+      if (path.includes("/api/pos/cash-session/current")) return json({ session: null });
+      return new Response("missing", { status: 404 });
+    }));
+
+    let backs = 0;
+    render(
+      <>
+        <header className="topbar"><h1 className="topbar-title"><span id="app-title-slot" /></h1><div id="app-back-slot" /></header>
+        <PosScreen session={session} user={user} onBack={() => { backs += 1; }} />
+      </>,
+    );
+    await screen.findByLabelText("رقم الصنف");
+    expect(screen.getAllByRole("button", { name: "رجوع" })).toHaveLength(1);
+
+    await cashier.click(screen.getByRole("button", { name: "مشتريات الزبون" }));
+    await screen.findByRole("region", { name: "مشتريات الزبون" });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "رجوع" })).toHaveLength(1));
+
+    await cashier.click(screen.getByRole("button", { name: "رجوع" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "مشتريات الزبون" })).toBeNull());
+    expect(backs).toBe(0);
+    expect(screen.getAllByRole("button", { name: "رجوع" })).toHaveLength(1);
+  });
+
   it("keeps suggestions out of fast entry and preserves the draft", async () => {
     installFakeIndexedDb();
     const cashier = userEvent.setup();

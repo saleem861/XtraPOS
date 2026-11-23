@@ -15,17 +15,17 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
   const [updateMessage, setUpdateMessageState] = useState<{ text: string; ok: boolean } | null>(null);
   const setUpdateMessage = (text: string, ok = false) => setUpdateMessageState(text ? { text, ok } : null);
   const [updating, setUpdating] = useState(false);
-  const [updateLeft, setUpdateLeft] = useState(UPDATE_SECONDS);
   const [updateRequest, setUpdateRequest] = useState<string | null>(null);
   const [updateStage, setUpdateStage] = useState("");
   const [updateStep, setUpdateStep] = useState(0);
-  const ringShare = updateRequest ? updateStep / UPDATE_STAGES.length : (UPDATE_SECONDS - updateLeft) / UPDATE_SECONDS;
+  const ringShare = updateStep / UPDATE_STAGES.length;
 
   // The separate updater task reports each stage in its status file; the screen follows it.
   useEffect(() => {
     if (!updating || !updateRequest) return;
     const started = Date.now();
     let done = false;
+    let picked = false;
     const finish = (message: string, ok = false) => {
       done = true;
       setUpdating(false);
@@ -34,10 +34,14 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
     };
     const timer = window.setInterval(() => {
       if (done) return;
-      const left = Math.max(0, UPDATER_SECONDS - Math.floor((Date.now() - started) / 1000));
-      setUpdateLeft(left);
-      if (left === 0) {
+      const elapsed = Math.floor((Date.now() - started) / 1000);
+      if (elapsed >= UPDATER_SECONDS) {
         finish("لم يكتمل التحديث خلال 5 دقائق. راجع سجل برنامج التحديث على الجهاز.");
+        return;
+      }
+      // برنامج التحديث يعمل كل دقيقة؛ إن لم يلتقط الطلب خلال دقيقتين فهو لا يعمل على هذا الجهاز.
+      if (!picked && elapsed >= PICKUP_SECONDS) {
+        finish("برنامج التحديث لا يعمل على هذا الجهاز. نزّل برنامج الإعداد من موقع الإعداد وشغّله مرة واحدة ليعيد تثبيته، ثم أعد المحاولة.");
         return;
       }
       void fetch("/api/local-update/status", { cache: "no-store" })
@@ -46,9 +50,10 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
           const body = await response.json() as UpdateStatusResponse;
           const status = body.status;
           if (!status || status.requestId !== updateRequest) {
-            setUpdateStage("بانتظار برنامج التحديث");
+            setUpdateStage(body.updaterAlive ? "بانتظار برنامج التحديث" : "بانتظار برنامج التحديث (يبدأ خلال دقيقة)");
             return;
           }
+          picked = true;
           if (status.state === "Succeeded") {
             done = true;
             setUpdateStep(UPDATE_STAGES.length);
@@ -75,38 +80,6 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
     return () => window.clearInterval(timer);
   }, [updating, updateRequest]);
 
-  useEffect(() => {
-    if (!updating || updateRequest) return;
-    const started = Date.now();
-    let sawDown = false;
-    let finished = false;
-    const timer = window.setInterval(() => {
-      const left = Math.max(0, UPDATE_SECONDS - Math.floor((Date.now() - started) / 1000));
-      setUpdateLeft(left);
-      if (left === 0 && !sawDown && !finished) {
-        finished = true;
-        setUpdating(false);
-        setUpdateMessage("لم يبدأ التحديث على هذا الجهاز. ثبّت برنامج التحديث مرة واحدة ثم أعد المحاولة.");
-        return;
-      }
-      void fetch("/health", { cache: "no-store" })
-        .then((response) => {
-          if (!response.ok) {
-            sawDown = true;
-            return;
-          }
-          if (!finished && sawDown && response.ok) {
-            finished = true;
-            window.location.reload();
-          }
-        })
-        .catch(() => {
-          sawDown = true;
-        });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [updating, updateRequest]);
-
   async function updateApp() {
     if (updating) return;
     setUpdateMessage("");
@@ -114,22 +87,20 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
     setUpdateStep(0);
     setUpdateRequest(null);
     setUpdating(true);
-    setUpdateLeft(UPDATE_SECONDS);
+    setUpdateStage("جاري طلب التحديث");
     try {
       const response = await fetch("/api/local-update", { method: "POST" });
-      const body = await response.json().catch(() => ({})) as { message?: string; mode?: string; requestId?: string };
-      if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { message?: string; mode?: string; requestId?: string; updaterAlive?: boolean };
+      if (!response.ok || body.mode !== "updater" || !body.requestId) {
         setUpdating(false);
         setUpdateMessage(body.message ?? "تعذر تحديث التطبيق.");
         return;
       }
-      if (body.mode === "updater" && body.requestId) {
-        setUpdateLeft(UPDATER_SECONDS);
-        setUpdateStage("بانتظار برنامج التحديث");
-        setUpdateRequest(body.requestId);
-      }
+      setUpdateStage(body.updaterAlive === false ? "بانتظار برنامج التحديث (يبدأ خلال دقيقة)" : "بانتظار برنامج التحديث");
+      setUpdateRequest(body.requestId);
     } catch {
-      // إعادة التشغيل تقطع الاتصال، والمؤقت يكمل ثم يحدّث الصفحة.
+      setUpdating(false);
+      setUpdateMessage("تعذر الاتصال بخدمة التطبيق على هذا الجهاز.");
     }
   }
 
@@ -202,18 +173,19 @@ export function LoginScreen({ session, pending, error, onSubmit }: LoginScreenPr
             className="update-ring"
             style={{ background: `conic-gradient(var(--teal) ${ringShare * 360}deg, #e6eef0 0deg)` }}
           >
-            {updateRequest ? <span className="is-steps">{updateStep} من {UPDATE_STAGES.length}</span> : <span>{updateLeft}</span>}
+            <span className="is-steps">{updateStep} من {UPDATE_STAGES.length}</span>
           </div>
-          <p>{updateRequest ? updateStage : updateLeft > 0 ? "جاري تحديث التطبيق" : "جاري تشغيل الخادم"}</p>
+          <p>{updateStage || "جاري تحديث التطبيق"}</p>
         </div>
       ) : null}
     </section>
   );
 }
 
-const UPDATE_SECONDS = 90;
 // The updater may take up to 5 minutes on a slow line; the screen shows stages, not this limit.
 const UPDATER_SECONDS = 300;
+// The updater task starts every minute; a request not picked up in two minutes means it is not running.
+const PICKUP_SECONDS = 120;
 const UPDATE_STAGES = ["Checking", "Downloading", "Backup", "Stopping", "Copying", "Starting"];
 
 interface UpdateStatusResponse {
