@@ -61,7 +61,7 @@ describe("InventoryScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
     await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
     expect(await screen.findByText("رأس أرجيلة")).toBeTruthy();
-    await userEvent.click(screen.getByRole("tab", { name: /تم الجرد/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /^تم الجرد/ }));
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
     expect(within(row).getByText("المعدود: 8")).toBeTruthy();
     expect(within(row).queryByText(/المفترض/)).toBeNull();
@@ -73,7 +73,7 @@ describe("InventoryScreen", () => {
     render(<InventoryScreen session={session} permissions={["Inventory.Count", "Inventory.Review"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
     await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
-    await userEvent.click(await screen.findByRole("tab", { name: /تم الجرد/ }));
+    await userEvent.click(await screen.findByRole("tab", { name: /^تم الجرد/ }));
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
     expect(within(row).getByText("المفترض: 10")).toBeTruthy();
     expect(within(row).getByText("الفارق: −2")).toBeTruthy();
