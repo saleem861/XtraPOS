@@ -59,6 +59,8 @@ import { FullKeyboard } from "./FullKeyboard";
 import { buildDisplayState, customerDisplayChannel, isCustomerDisplayOpen, openCustomerDisplay, type CustomerDisplayState } from "../customerDisplay/customerDisplay";
 import { Waiting } from "./Waiting";
 import { CustomerPurchasesScreen } from "./CustomerPurchasesScreen";
+import { InventoryScreen } from "./InventoryScreen";
+import { canOpenInventory } from "../inventory/inventoryRules";
 import { QuickItemsStrip } from "./QuickItemsStrip";
 import { createDeviceSettingsClient, CUSTOMER_DISPLAY_ENABLED, settingValue } from "../api/deviceSettings";
 import { createPricingClient, PricingClientError } from "../api/pricing";
@@ -204,6 +206,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const [collectOpen, setCollectOpen] = useState(false);
   const [salesOpen, setSalesOpen] = useState(false);
   const [purchasesOpen, setPurchasesOpen] = useState(false);
+  const [inventoryOpen, setInventoryOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [customerTarget, setCustomerTarget] = useState<"sale" | "collection">("sale");
   const [collectionPick, setCollectionPick] = useState<CustomerListItem | null>(null);
@@ -1337,7 +1340,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
       <div className="pos-desktop-shell">
       <div className="pos-main-workspace">
       <div className="pos-top">
-      {creditOpen || collectOpen || salesOpen || drawerOpen || purchasesOpen || registerOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
+      {creditOpen || collectOpen || salesOpen || drawerOpen || purchasesOpen || registerOpen || inventoryOpen ? null : <ScreenHeader title={heldOpen ? "استرجاع المسودات المحفوظة" : "نقطة البيع"} onBack={heldOpen ? () => { setHeldOpen(false); setHeldGuard(null); } : onBack} />}
       <div className="pos-toolbar">
         <form className="pos-fast" onSubmit={(event) => { event.preventDefault(); void submitEntry(); }}>
           <label htmlFor="pos-fast-entry">رقم الصنف</label>
@@ -1513,7 +1516,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
                 </span>
               );
             })}
-            <button type="button" disabled title="الجرد"><PackageSearch aria-hidden="true" /><span>الجرد</span></button>
+            <button type="button" disabled={!canOpenInventory(user.permissions)} title={canOpenInventory(user.permissions) ? "الجرد" : "ليست لديك صلاحية الجرد."} onClick={() => setInventoryOpen(true)}><PackageSearch aria-hidden="true" /><span>الجرد</span></button>
           </div>
         </section>
         <section className="pos-side-card pos-pad-card">
@@ -1589,6 +1592,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
         />
       ) : null}
       {salesOpen ? <SalesInquiryScreen session={session} onBack={() => setSalesOpen(false)} /> : null}
+      {inventoryOpen ? <InventoryScreen session={session} permissions={user.permissions} onBack={() => setInventoryOpen(false)} /> : null}
       {purchasesOpen ? (
         <CustomerPurchasesScreen
           session={session}
