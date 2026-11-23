@@ -39,6 +39,19 @@ public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogg
 
                     try
                     {
+                        var classified = await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Inventory.InventoryCountService>().PullSettingsAsync(stoppingToken);
+                        if (classified > 0)
+                        {
+                            logger.LogInformation("Inventory: copied {Copied} classification row(s) from central.", classified);
+                        }
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning(exception, "Inventory classification was not pulled from central.");
+                    }
+
+                    try
+                    {
                         var copied = await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Catalog.QuickItemsService>().PullAsync(stoppingToken);
                         if (copied > 0)
                         {

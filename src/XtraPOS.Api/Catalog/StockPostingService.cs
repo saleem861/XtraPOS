@@ -72,7 +72,8 @@ public sealed record StockDeltaRequest(
     decimal PhysicalDelta,
     decimal? MovementUnitCost,
     DateTime OccurredAt,
-    Guid? ActorUserId);
+    Guid? ActorUserId,
+    decimal? ObservedQuantity = null);
 
 public sealed record StockAbsoluteRequest(
     Guid BranchId,
@@ -225,7 +226,7 @@ public sealed class StockPostingService(SqlConnectionFactory connections)
             StockPostingModes.Delta,
             balance.IsQuantityInitialized ? balance.OnHandQuantity : null,
             quantityDelta: request.PhysicalDelta,
-            observedQuantity: null,
+            observedQuantity: request.ObservedQuantity,
             resultingQuantity,
             resultingCost,
             movementCost,

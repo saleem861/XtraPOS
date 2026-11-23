@@ -1,0 +1,325 @@
+/* «الجرد» من شاشة البيع */
+.inventory-screen .inventory-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.inventory-message {
+  margin: 0;
+}
+
+.inventory-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.inventory-menu {
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inventory-card {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 18px;
+  border: 1px solid var(--xp-border);
+  border-radius: 14px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+
+.inventory-card strong {
+  font-size: 19px;
+}
+
+.inventory-card small {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.inventory-card:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.inventory-pages {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inventory-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.inventory-page {
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  padding: 10px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+  cursor: pointer;
+}
+
+.inventory-page small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inventory-page.is-selected {
+  border-color: var(--xp-primary);
+  background: #e3efff;
+  box-shadow: inset 0 0 0 1px var(--xp-primary);
+}
+
+.inventory-count {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inventory-count-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.inventory-count-head div {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.inventory-count-head span {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.inventory-progress {
+  font-weight: 700;
+}
+
+.inventory-search {
+  display: flex;
+  gap: 6px;
+}
+
+.inventory-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--xp-action-height);
+  padding: 0 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: var(--xp-radius-control);
+  font: inherit;
+}
+
+.inventory-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.inventory-tabs button {
+  flex: 1 1 0;
+  height: 42px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+  cursor: pointer;
+}
+
+.inventory-tabs button.is-active {
+  border-color: var(--navy);
+  background: var(--navy);
+  color: #fff;
+}
+
+.inventory-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inventory-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+}
+
+.inventory-row.is-saved {
+  border-color: var(--xp-save);
+}
+
+.inventory-row-name {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  flex: 1 1 240px;
+}
+
+.inventory-row-name small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inventory-number {
+  color: var(--muted);
+  font-size: 14px;
+  direction: ltr;
+  text-align: right;
+}
+
+.inventory-qty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inventory-qty > button:not(.primary-button) {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  background: #f4f8fc;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.inventory-qty input {
+  width: 96px;
+  height: 42px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 700;
+  text-align: center;
+}
+
+.inventory-counted {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inventory-saved {
+  color: var(--xp-save);
+  font-weight: 700;
+}
+
+.inventory-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.inventory-actions button {
+  min-width: 150px;
+}
+
+.inventory-done {
+  width: 100%;
+  max-width: 520px;
+  margin: 24px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 16px;
+  background: var(--xp-surface);
+}
+
+.inventory-done dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.inventory-done dl div {
+  display: grid;
+  padding: 8px 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+}
+
+.inventory-done dt {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.inventory-done dd {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.inventory-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgb(12 35 64 / 45%);
+}
+
+.inventory-dialog-card {
+  width: min(460px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border-radius: 16px;
+  background: var(--xp-surface);
+}
+
+.inventory-dialog-card p {
+  margin: 0;
+}
+
+.inventory-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
