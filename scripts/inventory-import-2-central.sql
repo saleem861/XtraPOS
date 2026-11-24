@@ -11,26 +11,34 @@
 -- Classification of items that are not in the legacy export is left as it is.
 -- The schedule becomes the legacy schedule: a day/period missing there is disabled here.
 
+SET NOEXEC OFF;
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
 DECLARE @Apply bit = 0;   -- 0 = preview only, 1 = write
 
-IF DB_NAME() NOT LIKE N'XtraPOS[_]Central%'
+DECLARE @db sysname = DB_NAME();
+DECLARE @settingsTable int = OBJECT_ID(N'dbo.ItemInventorySettings', N'U');
+DECLARE @scheduleTable int = OBJECT_ID(N'dbo.InventorySchedule', N'U');
+SELECT @@SERVERNAME AS ServerName, @db AS CurrentDatabase, @settingsTable AS SettingsTable, @scheduleTable AS ScheduleTable;
+
+IF @db <> N'XtraPOS_Central'
 BEGIN
-    RAISERROR(N'Run this on XtraPOS_Central. Nothing was changed.', 16, 1);
-    SET NOEXEC ON;
+    RAISERROR(N'Wrong database: %s. Run this on XtraPOS_Central. Nothing was changed.', 16, 1, @db);
+    RETURN;
 END;
 
-IF OBJECT_ID(N'dbo.ItemInventorySettings', N'U') IS NULL OR OBJECT_ID(N'dbo.InventorySchedule', N'U') IS NULL
+IF @settingsTable IS NULL OR @scheduleTable IS NULL
 BEGIN
-    RAISERROR(N'Central migration 039_CentralInventorySettings is not applied yet. Update the API first. Nothing was changed.', 16, 1);
-    SET NOEXEC ON;
+    RAISERROR(N'Central migration 039_CentralInventorySettings is not applied on %s. Nothing was changed.', 16, 1, @db);
+    RETURN;
 END;
 
 IF OBJECT_ID(N'tempdb..#legacySettings') IS NOT NULL DROP TABLE #legacySettings;
 IF OBJECT_ID(N'tempdb..#legacyItems') IS NOT NULL DROP TABLE #legacyItems;
 IF OBJECT_ID(N'tempdb..#legacySchedule') IS NOT NULL DROP TABLE #legacySchedule;
+IF OBJECT_ID(N'tempdb..#items') IS NOT NULL DROP TABLE #items;
+IF OBJECT_ID(N'tempdb..#schedule') IS NOT NULL DROP TABLE #schedule;
 CREATE TABLE #legacySettings (PeriodsPerDay int NULL, PeriodicPageCount int NULL);
 CREATE TABLE #legacyItems (ItemNumber nvarchar(200) COLLATE DATABASE_DEFAULT NOT NULL, IsImportant int NULL, InventoryPage decimal(18, 4) NULL, SupplyDays decimal(18, 4) NULL);
 CREATE TABLE #legacySchedule (ScheduleID bigint NULL, DayOfWeek int NULL, PeriodType nvarchar(20) COLLATE DATABASE_DEFAULT NULL, InventoryPage decimal(18, 4) NULL, IsEnabled int NULL);
@@ -44,7 +52,7 @@ CREATE TABLE #legacySchedule (ScheduleID bigint NULL, DayOfWeek int NULL, Period
 IF NOT EXISTS (SELECT 1 FROM #legacyItems)
 BEGIN
     RAISERROR(N'BLOCK 1 is empty. Paste the rows from step 1 first. Nothing was changed.', 16, 1);
-    SET NOEXEC ON;
+    RETURN;
 END;
 
 DECLARE @periods int = COALESCE((SELECT TOP (1) PeriodsPerDay FROM #legacySettings), 2);
@@ -183,4 +191,3 @@ BEGIN
     SELECT N'PREVIEW ONLY: nothing was written. Set @Apply = 1 to import.' AS Result;
 END;
 
-SET NOEXEC OFF;
