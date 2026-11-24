@@ -90,6 +90,9 @@ public sealed class CentralMigrationRunner
     // Approved by the owner on 23 November 2026 (inventory module, phase 1). Back up XtraPOS_Central before publishing.
     public const string InventorySettingsMigrationId = "039_CentralInventorySettings";
     public const string InventorySettingsMigrationName = "Central inventory classification and schedule";
+    // Approved by the owner on 24 November 2026 («نفذ مرحلة 3»). Tables only. Back up XtraPOS_Central before publishing.
+    public const string InventoryRelayMigrationId = "040_CentralInventoryRelay";
+    public const string InventoryRelayMigrationName = "Central copies of branch stock, counts, audits and corrections";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -132,6 +135,7 @@ public sealed class CentralMigrationRunner
         (CustomerStarThresholdsMigrationId, CustomerStarThresholdsMigrationName, "XtraPOS.Api.Data.Central.Migrations.037_CentralCustomerStarThresholds.sql"),
         (QuickItemsMigrationId, QuickItemsMigrationName, "XtraPOS.Api.Data.Central.Migrations.038_CentralQuickItems.sql"),
         (InventorySettingsMigrationId, InventorySettingsMigrationName, "XtraPOS.Api.Data.Central.Migrations.039_CentralInventorySettings.sql"),
+        (InventoryRelayMigrationId, InventoryRelayMigrationName, "XtraPOS.Api.Data.Central.Migrations.040_CentralInventoryRelay.sql"),
     ];
 
     private static readonly string ApplicationVersion =

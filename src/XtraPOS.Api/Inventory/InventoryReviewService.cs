@@ -25,6 +25,7 @@ public sealed class InventoryReviewService(
 
     public async Task<object> ReportAsync(
         PosDeviceContext actor,
+        Guid? branchId,
         DateOnly? from,
         DateOnly? to,
         string? type,
@@ -44,8 +45,9 @@ public sealed class InventoryReviewService(
             _ => throw new InventoryException("حالة الجرد غير صالحة."),
         };
 
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
+        var branch = branchId ?? actor.BranchId;
+        var remote = branch != actor.BranchId;
+        await using var connection = await OpenSourceAsync(remote, cancellationToken);
         var sessions = new List<object>();
         await using (var command = new SqlCommand(
             """
@@ -73,7 +75,7 @@ public sealed class InventoryReviewService(
             """,
             connection))
         {
-            command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+            command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
             command.Parameters.Add("@from", SqlDbType.Date).Value = start.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@to", SqlDbType.Date).Value = end.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@type", SqlDbType.NVarChar, 20).Value = (object?)normalizedType ?? DBNull.Value;
@@ -119,7 +121,7 @@ public sealed class InventoryReviewService(
             """,
             connection))
         {
-            command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+            command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
             command.Parameters.Add("@from", SqlDbType.Date).Value = start.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@to", SqlDbType.Date).Value = end.ToDateTime(TimeOnly.MinValue);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -131,6 +133,8 @@ public sealed class InventoryReviewService(
 
         return new
         {
+            branchId = branch,
+            remote,
             from = start.ToString("yyyy-MM-dd"),
             to = end.ToString("yyyy-MM-dd"),
             sessions,
@@ -138,11 +142,12 @@ public sealed class InventoryReviewService(
         };
     }
 
-    public async Task<object> SessionDetailAsync(PosDeviceContext actor, Guid sessionId, CancellationToken cancellationToken)
+    public async Task<object> SessionDetailAsync(PosDeviceContext actor, Guid sessionId, Guid? branchId, CancellationToken cancellationToken)
     {
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
-        var header = await ReadSessionHeaderAsync(connection, null, actor, sessionId, cancellationToken);
+        var branch = branchId ?? actor.BranchId;
+        var remote = branch != actor.BranchId;
+        await using var connection = await OpenSourceAsync(remote, cancellationToken);
+        var header = await ReadSessionHeaderAsync(connection, null, branch, sessionId, cancellationToken);
 
         var items = new List<object>();
         await using (var command = new SqlCommand(
@@ -181,7 +186,84 @@ public sealed class InventoryReviewService(
         }
 
         var audits = await ReadAuditsAsync(connection, sessionId, cancellationToken);
-        return new { session = header, items, audits };
+        return new { session = header.View, items, audits, remote };
+    }
+
+    /// <summary>فروع التقرير: فرع الجهاز أولاً، ثم باقي فروع المركز مع وقت آخر نسخة وصلت منها.</summary>
+    public async Task<object> BranchesAsync(PosDeviceContext actor, CancellationToken cancellationToken)
+    {
+        var branches = new List<object>();
+        var central = await counting.OpenCentralAsync(cancellationToken);
+        if (central is not null)
+        {
+            await using (central)
+            {
+                var hasStatus = await TableExistsAsync(central, "dbo.BranchSnapshotStatus", cancellationToken);
+                await using var command = new SqlCommand(
+                    hasStatus
+                        ? """
+                          SELECT branch.BranchID, branch.BranchName, status.LastPushAt
+                          FROM dbo.Branches AS branch
+                          LEFT JOIN dbo.BranchSnapshotStatus AS status ON status.BranchID = branch.BranchID
+                          WHERE branch.IsActive = 1 AND branch.BusinessID = @business
+                          ORDER BY branch.BranchName;
+                          """
+                        : """
+                          SELECT branch.BranchID, branch.BranchName, CAST(NULL AS datetime2(0))
+                          FROM dbo.Branches AS branch
+                          WHERE branch.IsActive = 1 AND branch.BusinessID = @business
+                          ORDER BY branch.BranchName;
+                          """,
+                    central);
+                command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = actor.BusinessId;
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                var now = DateTime.UtcNow;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var id = reader.GetGuid(0);
+                    var lastPush = reader.IsDBNull(2) ? (DateTime?)null : Utc(reader.GetDateTime(2));
+                    branches.Add(new
+                    {
+                        branchId = id,
+                        branchName = reader.GetString(1),
+                        current = id == actor.BranchId,
+                        lastPushAt = lastPush,
+                        stale = id != actor.BranchId && InventoryRelayRules.IsStale(lastPush, now),
+                    });
+                }
+            }
+        }
+
+        return new { centralReachable = central is not null, branches };
+    }
+
+    /// <summary>فرع الجهاز من قاعدته، وأي فرع آخر من نسخته على المركز (المرحلة 3).</summary>
+    private async Task<SqlConnection> OpenSourceAsync(bool remote, CancellationToken cancellationToken)
+    {
+        if (!remote)
+        {
+            var local = await counting.OpenLocalAsync(cancellationToken);
+            try
+            {
+                await RequireSchemaAsync(local, cancellationToken);
+                return local;
+            }
+            catch
+            {
+                await local.DisposeAsync();
+                throw;
+            }
+        }
+
+        var central = await counting.OpenCentralAsync(cancellationToken)
+            ?? throw new InventoryException("المركز غير متاح الآن. تقرير الفروع الأخرى يُقرأ من المركز.", StatusCodes.Status503ServiceUnavailable);
+        if (!await TableExistsAsync(central, "dbo.InventorySessionItems", cancellationToken))
+        {
+            await central.DisposeAsync();
+            throw new InventoryException("المركز لم يُحدَّث بعد لجرد الفروع (الترحيل 040).", StatusCodes.Status503ServiceUnavailable);
+        }
+
+        return central;
     }
 
     // ------------------------------------------------------------------
@@ -201,7 +283,7 @@ public sealed class InventoryReviewService(
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         try
         {
-            var header = await ReadSessionHeaderAsync(connection, transaction, actor, sessionId, cancellationToken);
+            var header = await ReadSessionHeaderAsync(connection, transaction, actor.BranchId, sessionId, cancellationToken);
             if (header.Status != InventorySessionStatuses.Completed)
             {
                 throw new InventoryException("يُدقق الجرد بعد تثبيته فقط.", StatusCodes.Status409Conflict);
@@ -572,7 +654,7 @@ public sealed class InventoryReviewService(
     private static async Task<SessionHeader> ReadSessionHeaderAsync(
         SqlConnection connection,
         SqlTransaction? transaction,
-        PosDeviceContext actor,
+        Guid branch,
         Guid sessionId,
         CancellationToken cancellationToken)
     {
@@ -584,7 +666,7 @@ public sealed class InventoryReviewService(
             connection,
             transaction);
         command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-        command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+        command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -878,6 +960,13 @@ public sealed class InventoryReviewService(
     }
 
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
+
+    private static async Task<bool> TableExistsAsync(SqlConnection connection, string table, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT OBJECT_ID(@name, N'U');", connection);
+        command.Parameters.Add("@name", SqlDbType.NVarChar, 256).Value = table;
+        return await command.ExecuteScalarAsync(cancellationToken) is not (null or DBNull);
+    }
 
     private static string? Limit(string? value, int max) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= max ? value.Trim() : value.Trim()[..max];

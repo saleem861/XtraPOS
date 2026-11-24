@@ -227,6 +227,7 @@ builder.Services.AddScoped<XtraPOS.Api.Customers.CustomerPurchasesService>();
 builder.Services.AddScoped<XtraPOS.Api.Catalog.QuickItemsService>();
 builder.Services.AddScoped<XtraPOS.Api.Inventory.InventoryCountService>();
 builder.Services.AddScoped<XtraPOS.Api.Inventory.InventoryReviewService>();
+builder.Services.AddScoped<XtraPOS.Api.Inventory.InventoryRelayService>();
 builder.Services.AddScoped<SalePaymentService>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<HeldSaleService>();

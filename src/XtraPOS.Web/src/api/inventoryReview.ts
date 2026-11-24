@@ -24,7 +24,17 @@ export interface ReportSession {
   pages: number[];
 }
 
+export interface ReportBranch {
+  branchId: string;
+  branchName: string;
+  current: boolean;
+  lastPushAt: string | null;
+  stale: boolean;
+}
+
 export interface InventoryReport {
+  branchId: string;
+  remote: boolean;
   from: string;
   to: string;
   sessions: ReportSession[];
@@ -32,6 +42,8 @@ export interface InventoryReport {
 }
 
 export interface ReportFilter {
+  /** فارغ = فرع الجهاز. فرع آخر يُقرأ من نسخته على المركز. */
+  branchId: string;
   from: string;
   to: string;
   type: InventoryType | "";
@@ -83,6 +95,8 @@ export interface SessionDetail {
   };
   items: ReportLine[];
   audits: AuditSummary[];
+  /** جرد فرع آخر من نسخته على المركز: للقراءة فقط. */
+  remote: boolean;
 }
 
 export interface AuditLine {
@@ -164,8 +178,13 @@ export function createInventoryReviewClient(session: DeviceSession) {
   const headers = deviceHeaders(session);
   const json = { ...headers, "Content-Type": "application/json" };
   return {
+    async branches() {
+      const response = await fetch("/api/inventory/report/branches", { headers });
+      return readJson<{ centralReachable: boolean; branches: ReportBranch[] }>(response, "تعذر تحميل الفروع.");
+    },
     async report(filter: ReportFilter) {
       const params = new URLSearchParams();
+      if (filter.branchId) params.set("branchId", filter.branchId);
       if (filter.from) params.set("from", filter.from);
       if (filter.to) params.set("to", filter.to);
       if (filter.type) params.set("type", filter.type);
@@ -174,8 +193,9 @@ export function createInventoryReviewClient(session: DeviceSession) {
       const response = await fetch(`/api/inventory/report/sessions?${params}`, { headers });
       return readJson<InventoryReport>(response, "تعذر تحميل تقرير الجرد.");
     },
-    async session(sessionId: string) {
-      const response = await fetch(`/api/inventory/report/sessions/${encodeURIComponent(sessionId)}`, { headers });
+    async session(sessionId: string, branchId = "") {
+      const query = branchId ? `?${new URLSearchParams({ branchId })}` : "";
+      const response = await fetch(`/api/inventory/report/sessions/${encodeURIComponent(sessionId)}${query}`, { headers });
       return readJson<SessionDetail>(response, "تعذر تحميل تفاصيل الجرد.");
     },
     async startAudit(sessionId: string, mode: AuditMode, sessionItemIds: string[]) {
