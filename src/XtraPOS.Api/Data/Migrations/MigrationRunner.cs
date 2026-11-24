@@ -115,6 +115,8 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string InventoryCountingMigrationName = "Inventory counting sessions and classification";
     public const string InventoryReviewMigrationId = "055_InventoryReview";
     public const string InventoryReviewMigrationName = "Inventory report, supervisor audit and quantity corrections";
+    public const string InventoryCustomMigrationId = "056_InventoryCustom";
+    public const string InventoryCustomMigrationName = "Custom inventories on the branch";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -345,6 +347,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             InventoryReviewMigrationId,
             InventoryReviewMigrationName,
             "XtraPOS.Api.Data.Migrations.055_InventoryReview.sql"),
+        new(
+            InventoryCustomMigrationId,
+            InventoryCustomMigrationName,
+            "XtraPOS.Api.Data.Migrations.056_InventoryCustom.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

@@ -1,7 +1,7 @@
 import type { DeviceSession } from "../types/setup";
 import { deviceHeaders, SetupClientError } from "./client";
 
-export type InventoryType = "Important" | "Periodic" | "Manual";
+export type InventoryType = "Important" | "Periodic" | "Manual" | "Custom";
 
 export interface InventoryConfiguration {
   businessDate: string;
@@ -11,6 +11,8 @@ export interface InventoryConfiguration {
   defaultPage: number | null;
   importantItems: number;
   pageItems: { page: number; items: number }[];
+  /** الجرد المخصص لهذا الفرع كما نزل من المركز («تحديد جرد»). */
+  customInventories?: { customInventoryId: string; name: string; items: number }[];
 }
 
 export interface InventorySession {
@@ -79,16 +81,17 @@ export function createInventoryClient(session: DeviceSession) {
       const response = await fetch("/api/inventory/configuration", { headers });
       return readJson<InventoryConfiguration>(response, "تعذر تحميل إعدادات الجرد.");
     },
-    async findOpen(type: InventoryType, pages: number[]) {
+    async findOpen(type: InventoryType, pages: number[], customInventoryId = "") {
       const params = new URLSearchParams({ type, pages: pages.join(",") });
+      if (customInventoryId) params.set("customInventoryId", customInventoryId);
       const response = await fetch(`/api/inventory/sessions/open?${params}`, { headers });
       return readJson<{ session: InventorySession | null }>(response, "تعذر التحقق من وجود جرد مفتوح.");
     },
-    async start(type: InventoryType, pages: number[], replaceOpen: boolean) {
+    async start(type: InventoryType, pages: number[], replaceOpen: boolean, customInventoryId = "") {
       const response = await fetch("/api/inventory/sessions", {
         method: "POST",
         headers: json,
-        body: JSON.stringify({ inventoryType: type, pages, replaceOpen }),
+        body: JSON.stringify({ inventoryType: type, pages, replaceOpen, customInventoryId: customInventoryId || null }),
       });
       return readJson<{ session: InventorySession; resumed: boolean }>(response, "تعذر بدء الجرد حالياً. حاول مرة أخرى.");
     },

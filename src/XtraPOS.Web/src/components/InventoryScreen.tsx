@@ -8,6 +8,7 @@ import {
   type InventoryType,
 } from "../api/inventory";
 import { createInventoryReviewClient } from "../api/inventoryReview";
+import { createShortageClient } from "../api/shortages";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import {
   defaultPages,
@@ -26,12 +27,33 @@ import {
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
 import { InventoryReportPanel, ItemProcessingPanel, type BackHandler } from "./InventoryReviewPanels";
+import {
+  AuditRequestsPanel,
+  DefineInventoryPanel,
+  EfficiencyPanel,
+  FollowUpPanel,
+  ShortageProcessingPanel,
+  ShortageReportPanel,
+} from "./ShortagePanels";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { ScreenHeader } from "./ScreenHeader";
 import { Waiting } from "./Waiting";
 import "./inventory.css";
 
-type Step = "menu" | "type" | "pages" | "resume" | "count" | "done" | "report" | "items";
+type Step = "menu" | "type" | "pages" | "resume" | "count" | "done" | "report" | "items"
+  | "define" | "shortages" | "followUp" | "audit" | "efficiency" | "shortageReport";
+
+/** بطاقات تفتح لوحة كاملة، وعنوان كل لوحة. */
+const PANEL_TITLES: Partial<Record<Step, string>> = {
+  report: "تقرير الجرد",
+  items: "معالجة الأصناف",
+  define: "تحديد جرد",
+  shortages: "معالجة النواقص",
+  followUp: "متابعة النواقص",
+  audit: "التدقيق",
+  efficiency: "تقرير الكفاءة",
+  shortageReport: "تقرير معالجة النواقص",
+};
 
 interface Confirmation {
   title: string;
@@ -47,11 +69,13 @@ export function InventoryScreen({ session, permissions, onBack }: {
 }) {
   const client = useMemo(() => createInventoryClient(session), [session]);
   const reviewClient = useMemo(() => createInventoryReviewClient(session), [session]);
+  const shortageClient = useMemo(() => createShortageClient(session), [session]);
   const panelBack = useRef<BackHandler | null>(null);
   const registerBack = useCallback((handler: BackHandler | null) => { panelBack.current = handler; }, []);
   const canReview = hasPermission(permissions, "Inventory.Review");
   const [step, setStep] = useState<Step>("menu");
   const [type, setType] = useState<InventoryType | null>(null);
+  const [customId, setCustomId] = useState("");
   const [config, setConfig] = useState<InventoryConfiguration | null>(null);
   const [pages, setPages] = useState<number[]>([]);
   const [openSession, setOpenSession] = useState<InventorySession | null>(null);
@@ -72,12 +96,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
   function back() {
     setMessage("");
     if (step === "menu" || step === "done") { onBack(); return; }
-    if (step === "report" || step === "items") {
+    if (PANEL_TITLES[step]) {
       if (panelBack.current?.()) return;
       setStep("menu");
       return;
     }
-    if (step === "type") { setStep("menu"); return; }
+    if (step === "type") { setStep("menu"); setCustomId(""); return; }
     if (step === "pages") { setStep("type"); return; }
     if (step === "resume") { setStep(type === "Periodic" ? "pages" : "type"); return; }
     if (step === "count") {
@@ -101,15 +125,22 @@ export function InventoryScreen({ session, permissions, onBack }: {
     await checkOpen(next, []);
   }
 
-  async function checkOpen(next: InventoryType, chosen: number[]) {
+  async function chooseCustom(id: string) {
+    setType("Custom");
+    setCustomId(id);
+    setMessage("");
+    await checkOpen("Custom", [], id);
+  }
+
+  async function checkOpen(next: InventoryType, chosen: number[], custom = "") {
     setBusy("جاري التحقق من وجود جرد مفتوح...");
     try {
-      const result = await client.findOpen(next, chosen);
+      const result = await client.findOpen(next, chosen, custom);
       if (result.session) {
         setOpenSession(result.session);
         setStep("resume");
       } else {
-        await start(next, chosen, false);
+        await start(next, chosen, false, custom);
       }
     } catch (error) {
       setMessage((error as Error).message);
@@ -118,11 +149,11 @@ export function InventoryScreen({ session, permissions, onBack }: {
     }
   }
 
-  async function start(next: InventoryType, chosen: number[], replaceOpen: boolean) {
+  async function start(next: InventoryType, chosen: number[], replaceOpen: boolean, custom = customId) {
     setBusy("جاري بدء الجرد...");
     setMessage("");
     try {
-      const result = await client.start(next, chosen, replaceOpen);
+      const result = await client.start(next, chosen, replaceOpen, next === "Custom" ? custom : "");
       setActive(result.session);
       setOpenSession(null);
       setStep("count");
@@ -135,7 +166,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   function confirmNew() {
     if (!type) return;
-    const label = type === "Important" ? "جرد أصناف مهمة" : type === "Periodic" ? "جرد دوري" : "جرد يدوي";
+    const label = type === "Important" ? "جرد أصناف مهمة" : type === "Periodic" ? "جرد دوري" : type === "Custom" ? "جرد مخصص" : "جرد يدوي";
     setConfirmation({
       title: "جرد جديد",
       message: `يوجد ${label} سابق غير مثبت${type === "Periodic" ? " لهذه الصفحات" : ""}. بدء جرد جديد سيؤدي إلى مسح بيانات الجرد غير المثبتة السابقة. هل تريد المتابعة؟`,
@@ -146,9 +177,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   const title = step === "menu" ? "الجرد"
     : step === "done" ? "تم تثبيت الجرد"
-      : step === "report" ? "تقرير الجرد"
-      : step === "items" ? "معالجة الأصناف"
-      : type ? inventoryTypeLabel(type) : "الجرد";
+      : PANEL_TITLES[step] ?? (type ? inventoryTypeLabel(type) : "الجرد");
 
   return (
     <section className="new-customer sales-review inventory-screen" dir="rtl" aria-label="الجرد">
@@ -167,8 +196,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                 onClick={() => {
                   setMessage("");
                   if (card.id === "count") setStep("type");
-                  if (card.id === "report") setStep("report");
-                  if (card.id === "items") setStep("items");
+                  else if (card.id in PANEL_TITLES) setStep(card.id as Step);
                 }}
               >
                 <strong>{card.label}</strong>
@@ -185,6 +213,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
               <button key={option.value} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void chooseType(option.value)}>
                 <strong>{option.label}</strong>
                 {option.value === "Important" && config ? <small>{config.importantItems} صنف</small> : null}
+              </button>
+            ))}
+            {(config?.customInventories ?? []).map((custom) => (
+              <button key={custom.customInventoryId} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void chooseCustom(custom.customInventoryId)}>
+                <strong>جرد مخصص: {custom.name}</strong>
+                <small>{custom.items} صنف</small>
               </button>
             ))}
           </div>
@@ -269,6 +303,36 @@ export function InventoryScreen({ session, permissions, onBack }: {
             onBusy={setBusy}
             onConfirm={setConfirmation}
           />
+        ) : null}
+
+        {step === "define" ? (
+          <DefineInventoryPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
+        ) : null}
+
+        {step === "shortages" ? (
+          <ShortageProcessingPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} onRegisterBack={registerBack} />
+        ) : null}
+
+        {step === "followUp" ? (
+          <FollowUpPanel
+            client={shortageClient}
+            canApprove={hasPermission(permissions, "Shortages.Approve")}
+            onMessage={setMessage}
+            onBusy={setBusy}
+            onConfirm={setConfirmation}
+          />
+        ) : null}
+
+        {step === "audit" ? (
+          <AuditRequestsPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
+        ) : null}
+
+        {step === "efficiency" ? (
+          <EfficiencyPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
+        ) : null}
+
+        {step === "shortageReport" ? (
+          <ShortageReportPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
         ) : null}
 
         {step === "done" && finished ? (

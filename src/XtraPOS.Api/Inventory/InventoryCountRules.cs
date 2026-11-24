@@ -10,6 +10,7 @@ public static class InventoryTypes
     public const string Important = "Important";
     public const string Periodic = "Periodic";
     public const string Manual = "Manual";
+    public const string Custom = "Custom";
 
     public static string? Normalize(string? value)
     {
@@ -17,6 +18,7 @@ public static class InventoryTypes
         if (text.Equals(Important, StringComparison.OrdinalIgnoreCase)) return Important;
         if (text.Equals(Periodic, StringComparison.OrdinalIgnoreCase)) return Periodic;
         if (text.Equals(Manual, StringComparison.OrdinalIgnoreCase)) return Manual;
+        if (text.Equals(Custom, StringComparison.OrdinalIgnoreCase)) return Custom;
         return null;
     }
 
@@ -24,6 +26,7 @@ public static class InventoryTypes
     {
         Important => "جرد الأصناف المهمة",
         Periodic => "الجرد الدوري",
+        Custom => "جرد مخصص",
         _ => "جرد يدوي",
     };
 }
@@ -132,6 +135,10 @@ public static class InventoryCalendar
         TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utcNow ?? DateTime.UtcNow, DateTimeKind.Utc), Zone);
 
     public static DateOnly Today(DateTime? utcNow = null) => DateOnly.FromDateTime(LocalNow(utcNow));
+
+    /// <summary>بداية اليوم المحلي بتوقيت UTC، لفلاتر «من تاريخ / إلى تاريخ».</summary>
+    public static DateTime StartOfDayUtc(DateOnly day) =>
+        TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(day.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified), Zone);
 
     private static TimeZoneInfo ResolveZone()
     {

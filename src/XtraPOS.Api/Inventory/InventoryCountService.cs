@@ -72,8 +72,28 @@ public sealed class InventoryCountService(
             }
         }
 
+        var customInventories = new List<object>();
+        await using (var custom = new SqlCommand(
+            """
+            IF OBJECT_ID(N'dbo.CustomInventories', N'U') IS NOT NULL
+                SELECT inventory.CustomInventoryID, inventory.InventoryName,
+                       (SELECT COUNT(*) FROM dbo.CustomInventoryItems AS item WHERE item.CustomInventoryID = inventory.CustomInventoryID)
+                FROM dbo.CustomInventories AS inventory
+                WHERE inventory.IsActive = 1
+                ORDER BY inventory.InventoryName;
+            """,
+            connection))
+        {
+            await using var reader = await custom.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                customInventories.Add(new { customInventoryId = reader.GetGuid(0), name = reader.GetString(1), items = reader.GetInt32(2) });
+            }
+        }
+
         return new
         {
+            customInventories,
             businessDate = DateOnly.FromDateTime(local).ToString("yyyy-MM-dd"),
             periodType = period,
             cutoff = InventoryCountRules.PeriodCutoff.ToString("HH:mm"),
@@ -91,20 +111,22 @@ public sealed class InventoryCountService(
     // ------------------------------------------------------------------
 
     /// <summary>جرد اليوم غير المثبت لنفس الموظف ونفس النوع ونفس مجموعة الصفحات، إن وُجد.</summary>
-    public async Task<object> FindOpenAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, CancellationToken cancellationToken)
+    public async Task<object> FindOpenAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, Guid? customInventoryId, CancellationToken cancellationToken)
     {
         var normalized = RequireType(type);
         var wanted = InventoryCountRules.NormalizePages(normalized, pages);
+        var custom = RequireCustom(normalized, customInventoryId);
         await using var connection = await OpenLocalAsync(cancellationToken);
         await RequireSchemaAsync(connection, cancellationToken);
-        var open = await FindOpenSessionAsync(connection, null, actor, normalized, wanted, InventoryCalendar.Today(), cancellationToken);
+        var open = await FindOpenSessionAsync(connection, null, actor, normalized, wanted, custom, InventoryCalendar.Today(), cancellationToken);
         return new { session = open is null ? null : await SessionSummaryAsync(connection, null, open.Value, cancellationToken) };
     }
 
-    public async Task<object> StartAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, bool replaceOpen, CancellationToken cancellationToken)
+    public async Task<object> StartAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, Guid? customInventoryId, bool replaceOpen, CancellationToken cancellationToken)
     {
         var normalized = RequireType(type);
         var wanted = InventoryCountRules.NormalizePages(normalized, pages);
+        var custom = RequireCustom(normalized, customInventoryId);
         var today = InventoryCalendar.Today();
         await using var connection = await OpenLocalAsync(cancellationToken);
         await RequireSchemaAsync(connection, cancellationToken);
@@ -129,7 +151,7 @@ public sealed class InventoryCountService(
                 await stale.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            var open = await FindOpenSessionAsync(connection, transaction, actor, normalized, wanted, today, cancellationToken);
+            var open = await FindOpenSessionAsync(connection, transaction, actor, normalized, wanted, custom, today, cancellationToken);
             if (open is Guid existing)
             {
                 if (!replaceOpen)
@@ -151,8 +173,8 @@ public sealed class InventoryCountService(
             await using (var insert = new SqlCommand(
                 """
                 INSERT INTO dbo.InventorySessions
-                    (SessionID, BusinessID, BranchID, StationID, DeviceID, UserID, UserName, InventoryType, BusinessDate, Status)
-                VALUES (@id, @business, @branch, @station, @device, @user, @userName, @type, @today, N'Open');
+                    (SessionID, BusinessID, BranchID, StationID, DeviceID, UserID, UserName, InventoryType, BusinessDate, Status, CustomInventoryID)
+                VALUES (@id, @business, @branch, @station, @device, @user, @userName, @type, @today, N'Open', @custom);
                 """,
                 connection,
                 transaction))
@@ -166,6 +188,7 @@ public sealed class InventoryCountService(
                 insert.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
                 insert.Parameters.Add("@type", SqlDbType.NVarChar, 20).Value = normalized;
                 insert.Parameters.Add("@today", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+                insert.Parameters.Add("@custom", SqlDbType.UniqueIdentifier).Value = (object?)custom ?? DBNull.Value;
                 await insert.ExecuteNonQueryAsync(cancellationToken);
             }
 
@@ -180,15 +203,21 @@ public sealed class InventoryCountService(
                 await pageInsert.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            var total = normalized == InventoryTypes.Manual
-                ? 0
-                : await SnapshotItemsAsync(connection, transaction, actor.BranchId, sessionId, normalized, wanted, cancellationToken);
+            var total = normalized switch
+            {
+                InventoryTypes.Manual => 0,
+                InventoryTypes.Custom => await SnapshotCustomItemsAsync(connection, transaction, actor.BranchId, sessionId, custom!.Value, cancellationToken),
+                _ => await SnapshotItemsAsync(connection, transaction, actor.BranchId, sessionId, normalized, wanted, cancellationToken),
+            };
             if (normalized != InventoryTypes.Manual && total == 0)
             {
                 throw new InventoryException(
-                    normalized == InventoryTypes.Important
-                        ? "لا توجد أصناف مهمة مصنفة لهذا الفرع. لم يتم إنشاء الجرد."
-                        : "لا توجد أصناف مصنفة على هذه الصفحات. لم يتم إنشاء الجرد.",
+                    normalized switch
+                    {
+                        InventoryTypes.Important => "لا توجد أصناف مهمة مصنفة لهذا الفرع. لم يتم إنشاء الجرد.",
+                        InventoryTypes.Custom => "هذا الجرد المخصص غير موجود لهذا الفرع أو لا أصناف فيه. لم يتم إنشاء الجرد.",
+                        _ => "لا توجد أصناف مصنفة على هذه الصفحات. لم يتم إنشاء الجرد.",
+                    },
                     StatusCodes.Status409Conflict);
             }
 
@@ -612,6 +641,43 @@ public sealed class InventoryCountService(
     private static string RequireType(string? type) =>
         InventoryTypes.Normalize(type) ?? throw new InventoryException("نوع الجرد غير صالح.");
 
+    private static Guid? RequireCustom(string type, Guid? customInventoryId)
+    {
+        if (type != InventoryTypes.Custom) return null;
+        return customInventoryId is Guid id && id != Guid.Empty
+            ? id
+            : throw new InventoryException("يرجى اختيار الجرد المخصص.");
+    }
+
+    /// <summary>أصناف الجرد المخصص كما نزلت من المركز لهذا الفرع، مالكو المخزون النشطون فقط.</summary>
+    private static async Task<int> SnapshotCustomItemsAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        Guid branchId,
+        Guid sessionId,
+        Guid customInventoryId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            $"""
+             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays)
+             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays
+             FROM dbo.CustomInventoryItems AS custom
+             INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = custom.CustomInventoryID AND inventory.IsActive = 1
+             INNER JOIN dbo.Items AS item ON item.ItemID = custom.ItemID AND item.IsActive = 1
+             LEFT JOIN dbo.ItemInventorySettings AS setting ON setting.ItemNumber = item.ItemNumber
+             LEFT JOIN dbo.ItemBranchInventory AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
+             WHERE custom.CustomInventoryID = @custom
+               AND {StockOwnerFilter};
+             """,
+            connection,
+            transaction);
+        command.Parameters.Add("@session", SqlDbType.UniqueIdentifier).Value = sessionId;
+        command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
+        command.Parameters.Add("@custom", SqlDbType.UniqueIdentifier).Value = customInventoryId;
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static async Task<int> SnapshotItemsAsync(
         SqlConnection connection,
         SqlTransaction transaction,
@@ -755,6 +821,7 @@ public sealed class InventoryCountService(
         PosDeviceContext actor,
         string type,
         IReadOnlyList<int> pages,
+        Guid? custom,
         DateOnly today,
         CancellationToken cancellationToken)
     {
@@ -764,6 +831,7 @@ public sealed class InventoryCountService(
             SELECT SessionID FROM dbo.InventorySessions WITH (UPDLOCK, HOLDLOCK)
             WHERE BranchID = @branch AND UserID = @user AND InventoryType = @type
               AND Status = N'Open' AND BusinessDate = @today
+              AND ((@custom IS NULL AND CustomInventoryID IS NULL) OR CustomInventoryID = @custom)
             ORDER BY StartedAt DESC;
             """,
             connection,
@@ -773,6 +841,7 @@ public sealed class InventoryCountService(
             command.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
             command.Parameters.Add("@type", SqlDbType.NVarChar, 20).Value = type;
             command.Parameters.Add("@today", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+            command.Parameters.Add("@custom", SqlDbType.UniqueIdentifier).Value = (object?)custom ?? DBNull.Value;
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken)) candidates.Add(reader.GetGuid(0));
         }

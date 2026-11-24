@@ -17,6 +17,7 @@ namespace XtraPOS.Api.Inventory;
 public sealed class InventoryRelayService(
     SqlConnectionFactory connections,
     InventoryCountService counting,
+    StockPostingService stock,
     ILogger<InventoryRelayService> logger)
 {
     public const string SalesRateSettingKey = "InventorySalesRateDate";
@@ -52,6 +53,14 @@ public sealed class InventoryRelayService(
         var balances = await PushBalancesAsync(local, central, branch, today, rates > 0, cancellationToken);
         var sessions = await PushSessionsAsync(local, central, branch, cancellationToken);
         var audits = await PushAuditsAsync(local, central, branch, cancellationToken);
+        // المرحلة 6 و4: الجرد المخصص لهذا الفرع، وطلبات تصحيح الكمية التي أرسلها المركز لهذا الفرع.
+        if (await ExistsAsync(central, "dbo.CustomInventories", cancellationToken)
+            && await ExistsAsync(local, "dbo.CustomInventories", cancellationToken))
+        {
+            await PullCustomInventoriesAsync(local, central, branch, cancellationToken);
+            await ApplyCorrectionRequestsAsync(local, central, branch, cancellationToken);
+        }
+
         var corrections = await PushCorrectionsAsync(local, central, branch, cancellationToken);
         return new RelayResult(rates, balances, sessions, audits, corrections);
     }
@@ -338,7 +347,7 @@ public sealed class InventoryRelayService(
     private static readonly string[] SessionColumns =
     [
         "SessionID", "BusinessID", "BranchID", "StationID", "DeviceID", "UserID", "UserName", "InventoryType", "BusinessDate", "Status",
-        "StartedAt", "LastSavedAt", "CompletedAt", "DiscardedAt", "TotalItems", "CountedItems", "PostedItems",
+        "StartedAt", "LastSavedAt", "CompletedAt", "DiscardedAt", "TotalItems", "CountedItems", "PostedItems", "CustomInventoryID",
     ];
 
     private static readonly string[] SessionItemColumns =
@@ -432,6 +441,217 @@ public sealed class InventoryRelayService(
         }
 
         return pending.Count;
+    }
+
+    // ------------------------------------------------------------------
+    // من المركز إلى الفرع: الجرد المخصص وطلبات التصحيح
+    // ------------------------------------------------------------------
+
+    private static async Task PullCustomInventoriesAsync(SqlConnection local, SqlConnection central, Guid branch, CancellationToken cancellationToken)
+    {
+        var remote = new List<(Guid Id, string Name, bool Active, DateTime UpdatedAt)>();
+        await using (var read = new SqlCommand(
+            """
+            SELECT inventory.CustomInventoryID, inventory.InventoryName, inventory.IsActive, inventory.UpdatedAt
+            FROM dbo.CustomInventories AS inventory
+            INNER JOIN dbo.CustomInventoryBranches AS target ON target.CustomInventoryID = inventory.CustomInventoryID
+            WHERE target.BranchID = @branch;
+            """,
+            central))
+        {
+            read.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                remote.Add((reader.GetGuid(0), reader.GetString(1), reader.GetBoolean(2), reader.GetDateTime(3)));
+            }
+        }
+
+        var mine = new Dictionary<Guid, DateTime>();
+        await using (var read = new SqlCommand("SELECT CustomInventoryID, UpdatedAt FROM dbo.CustomInventories;", local))
+        {
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) mine[reader.GetGuid(0)] = reader.GetDateTime(1);
+        }
+
+        foreach (var inventory in remote)
+        {
+            if (mine.TryGetValue(inventory.Id, out var updated) && updated == inventory.UpdatedAt) continue;
+            var items = new List<(Guid ItemId, string Number, string? Name)>();
+            await using (var read = new SqlCommand(
+                "SELECT ItemID, ItemNumber, ItemName FROM dbo.CustomInventoryItems WHERE CustomInventoryID = @id;",
+                central))
+            {
+                read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = inventory.Id;
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    items.Add((reader.GetGuid(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
+                }
+            }
+
+            await using var transaction = (SqlTransaction)await local.BeginTransactionAsync(cancellationToken);
+            await using (var header = new SqlCommand(
+                """
+                UPDATE dbo.CustomInventories SET InventoryName = @name, IsActive = @active, UpdatedAt = @updated WHERE CustomInventoryID = @id;
+                IF @@ROWCOUNT = 0
+                    INSERT INTO dbo.CustomInventories (CustomInventoryID, InventoryName, IsActive, UpdatedAt) VALUES (@id, @name, @active, @updated);
+                DELETE FROM dbo.CustomInventoryItems WHERE CustomInventoryID = @id;
+                """,
+                local,
+                transaction))
+            {
+                header.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = inventory.Id;
+                header.Parameters.Add("@name", SqlDbType.NVarChar, 200).Value = inventory.Name;
+                header.Parameters.Add("@active", SqlDbType.Bit).Value = inventory.Active;
+                header.Parameters.Add("@updated", SqlDbType.DateTime2).Value = inventory.UpdatedAt;
+                await header.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            foreach (var item in items)
+            {
+                await using var insert = new SqlCommand(
+                    "INSERT INTO dbo.CustomInventoryItems (CustomInventoryID, ItemID, ItemNumber, ItemName) VALUES (@id, @item, @number, @name);",
+                    local,
+                    transaction);
+                insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = inventory.Id;
+                insert.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = item.ItemId;
+                insert.Parameters.Add("@number", SqlDbType.NVarChar, 100).Value = item.Number;
+                insert.Parameters.Add("@name", SqlDbType.NVarChar, 500).Value = (object?)item.Name ?? DBNull.Value;
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        // جرد مخصص أُزيل هذا الفرع منه: يتوقف هنا ولا يُحذف، حتى تبقى الجلسات القديمة مقروءة.
+        var assigned = remote.Select(entry => entry.Id).ToHashSet();
+        foreach (var id in mine.Keys.Where(id => !assigned.Contains(id)))
+        {
+            await using var stop = new SqlCommand("UPDATE dbo.CustomInventories SET IsActive = 0 WHERE CustomInventoryID = @id AND IsActive = 1;", local);
+            stop.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
+            await stop.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// تصحيح كمية طلبه المركز لهذا الفرع (من «معالجة النواقص» على جهاز فرع آخر). الفرع يرحّله بنفسه:
+    /// حركة InventoryReconciliation واحدة، ومعرّف الطلب هو سطر المصدر ومعرّف التصحيح، فلا يتكرر.
+    /// </summary>
+    private async Task ApplyCorrectionRequestsAsync(SqlConnection local, SqlConnection central, Guid branch, CancellationToken cancellationToken)
+    {
+        var pending = new List<(Guid Id, Guid ItemId, decimal Quantity, string Reason, Guid UserId, string? UserName)>();
+        await using (var read = new SqlCommand(
+            """
+            SELECT TOP (20) RequestID, ItemID, NewQuantity, Reason, RequestedByUserID, RequestedByName
+            FROM dbo.InventoryCorrectionRequests
+            WHERE BranchID = @branch AND Status = N'Pending'
+            ORDER BY RequestedAt;
+            """,
+            central))
+        {
+            read.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                pending.Add((reader.GetGuid(0), reader.GetGuid(1), reader.GetDecimal(2), reader.GetString(3), reader.GetGuid(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
+            }
+        }
+
+        foreach (var request in pending)
+        {
+            string status;
+            string? message = null;
+            decimal? previous = null;
+            await using (var check = new SqlCommand(
+                $"SELECT COUNT(*) FROM dbo.Items AS item WHERE item.ItemID = @item AND item.IsActive = 1 AND {InventoryRelayRules.StockOwnerSql("item")};",
+                local))
+            {
+                check.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = request.ItemId;
+                if ((int)(await check.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
+                {
+                    status = "Failed";
+                    message = "الصنف غير موجود في هذا الفرع أو لا يُجرد مباشرة.";
+                    await MarkRequestAsync(central, request.Id, status, previous, message, cancellationToken);
+                    continue;
+                }
+            }
+
+            try
+            {
+                previous = await stock.InTransactionAsync(async (session, token) =>
+                {
+                    await using (var existing = new SqlCommand(
+                        "SELECT PreviousQuantity FROM dbo.InventoryQuantityCorrections WHERE CorrectionID = @id;",
+                        session.Connection,
+                        session.Transaction))
+                    {
+                        existing.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = request.Id;
+                        var found = await existing.ExecuteScalarAsync(token);
+                        if (found is not null) return found as decimal?;
+                    }
+
+                    var result = await stock.SetAbsoluteQuantityAsync(
+                        new StockAbsoluteRequest(branch, request.ItemId, StockSourceTypes.InventoryReconciliation, request.Id, request.Id, request.Quantity, null, DateTime.UtcNow, request.UserId),
+                        session,
+                        token);
+                    await using var insert = new SqlCommand(
+                        """
+                        INSERT INTO dbo.InventoryQuantityCorrections
+                            (CorrectionID, BranchID, ItemID, ItemNumber, ItemName, PreviousQuantity, NewQuantity, Reason, UserID, UserName, StockMovementID)
+                        SELECT @id, @branch, item.ItemID, item.ItemNumber, item.ItemName, @previous, @new, @reason, @user, @userName, @movement
+                        FROM dbo.Items AS item WHERE item.ItemID = @item;
+                        """,
+                        session.Connection,
+                        session.Transaction);
+                    insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = request.Id;
+                    insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+                    insert.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = request.ItemId;
+                    var previousParameter = insert.Parameters.Add("@previous", SqlDbType.Decimal);
+                    previousParameter.Precision = 18;
+                    previousParameter.Scale = 4;
+                    previousParameter.Value = (object?)result.PreviousQuantity ?? DBNull.Value;
+                    var newParameter = insert.Parameters.Add("@new", SqlDbType.Decimal);
+                    newParameter.Precision = 18;
+                    newParameter.Scale = 4;
+                    newParameter.Value = request.Quantity;
+                    insert.Parameters.Add("@reason", SqlDbType.NVarChar, 500).Value = request.Reason;
+                    insert.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = request.UserId;
+                    insert.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = $"{request.UserName ?? "المركز"} (من المركز)";
+                    insert.Parameters.Add("@movement", SqlDbType.UniqueIdentifier).Value = result.StockMovementId;
+                    await insert.ExecuteNonQueryAsync(token);
+                    return result.PreviousQuantity;
+                }, cancellationToken);
+                status = "Applied";
+            }
+            catch (StockPostingException exception)
+            {
+                status = "Failed";
+                message = exception.Message;
+            }
+
+            await MarkRequestAsync(central, request.Id, status, previous, message, cancellationToken);
+            logger.LogInformation("Inventory: central correction {Request} {Status}.", request.Id, status);
+        }
+    }
+
+    private static async Task MarkRequestAsync(SqlConnection central, Guid id, string status, decimal? previous, string? message, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.InventoryCorrectionRequests
+            SET Status = @status, AppliedAt = SYSUTCDATETIME(), PreviousQuantity = @previous, Message = @message
+            WHERE RequestID = @id AND Status = N'Pending';
+            """,
+            central);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
+        command.Parameters.Add("@status", SqlDbType.NVarChar, 20).Value = status;
+        var parameter = command.Parameters.Add("@previous", SqlDbType.Decimal);
+        parameter.Precision = 18;
+        parameter.Scale = 4;
+        parameter.Value = (object?)previous ?? DBNull.Value;
+        command.Parameters.Add("@message", SqlDbType.NVarChar, 500).Value = (object?)message ?? DBNull.Value;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<List<Guid>> PendingAsync(SqlConnection local, string sql, Guid branch, CancellationToken cancellationToken)
