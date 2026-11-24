@@ -110,7 +110,7 @@ public sealed class BranchAgentWorker(
                 {
                     await ExecuteAsync(http, job, cancellationToken);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     var message = exception is BranchAgentRejectedException rejected
                         ? rejected.Message
@@ -125,8 +125,9 @@ public sealed class BranchAgentWorker(
                     }
                 }
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
+                // انتهاء مهلة HttpClient يظهر كـ TaskCanceledException دون طلب إيقاف: خطأ عابر، نعيد المحاولة ولا نوقف الخدمة.
                 logger?.LogWarning(exception, "Branch agent poll cycle failed.");
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
             }

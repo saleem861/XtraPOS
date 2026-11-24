@@ -105,7 +105,8 @@ public static class BranchAgentHostCommand
         builder.Services.AddHostedService(services => new BranchAgentHostedService(
             services.GetRequiredService<BranchAgentWorker>(),
             server,
-            pairingCode));
+            pairingCode,
+            services.GetService<ILogger<BranchAgentHostedService>>()));
 
         return builder.Build();
     }
@@ -126,9 +127,34 @@ public static class BranchAgentHostCommand
     public sealed class BranchAgentHostedService(
         BranchAgentWorker worker,
         string server,
-        string? pairingCode) : BackgroundService
+        string? pairingCode,
+        ILogger<BranchAgentHostedService>? logger = null) : BackgroundService
     {
-        protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
-            worker.RunAsync(server, pairingCode, stoppingToken);
+        /// <summary>
+        /// أي خطأ غير متوقع في العامل لا يوقف الخدمة (السلوك الافتراضي StopHost)، بل يُسجَّل ويُعاد التشغيل بعد مهلة.
+        /// </summary>
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await worker.RunAsync(server, pairingCode, stoppingToken);
+                }
+                catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+                {
+                    logger?.LogError(exception, "Branch agent worker failed; restarting in 10 seconds.");
+                }
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
     }
 }
