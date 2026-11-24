@@ -26,6 +26,7 @@ import {
   type ReportLineTab,
 } from "../inventory/inventoryRules";
 import { FullKeyboard } from "./FullKeyboard";
+import { Pager, usePaging } from "./Pager";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { Waiting } from "./Waiting";
@@ -40,6 +41,9 @@ export interface PanelConfirmation {
 
 /** «رجوع» في رأس الشاشة يسأل اللوحة أولاً: true = عادت خطوة داخلها. */
 export type BackHandler = () => boolean;
+
+/** مرجع ثابت لقائمة فارغة، فلا تتغير الصفحات بلا سبب. */
+const EMPTY: never[] = [];
 
 function DesktopKeyboard() {
   const desktop = usesDesktopCustomerKeyboard();
@@ -71,6 +75,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
   const [report, setReport] = useState<InventoryReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [branches, setBranches] = useState<ReportBranch[]>([]);
+  const sessionsPaging = usePaging(report?.sessions ?? EMPTY, `${filter.branchId}|${filter.type}|${filter.userId}|${filter.status}|${filter.from}|${filter.to}`);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,7 +188,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
       <div className="inventory-list">
         {loading ? <Waiting compact label="جاري تحميل التقرير..." /> : null}
         {!loading && report && report.sessions.length === 0 ? <p className="inventory-hint">لا يوجد جرد في هذه الفترة.</p> : null}
-        {!loading && report ? report.sessions.map((entry) => (
+        {!loading && report ? sessionsPaging.visible.map((entry) => (
           <button key={entry.sessionId} type="button" className="inventory-report-row" onClick={() => setView({ kind: "session", sessionId: entry.sessionId, branchId: report.remote ? report.branchId : "" })}>
             <span className="inventory-report-title">
               <strong>{entry.inventoryTypeLabel}</strong>
@@ -195,6 +200,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
             <span className="inventory-badge">{sessionStatusLabel(entry.status)}{entry.audits > 0 ? ` · مُدقق ${entry.audits}` : ""}</span>
           </button>
         )) : null}
+        {!loading && report ? <Pager {...sessionsPaging} label="جرد" /> : null}
       </div>
     </div>
   );
@@ -224,6 +230,7 @@ function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onO
   }, [client, sessionId, branchId]);
 
   const lines = useMemo(() => filterReportLines(detail?.items ?? [], picking ? "counted" : tab), [detail, tab, picking]);
+  const linesPaging = usePaging(lines, `${tab}|${picking}`);
 
   async function startAudit(mode: AuditMode) {
     if (mode === "Manual" && !picking) { setPicking(true); setPicked([]); return; }
@@ -302,8 +309,8 @@ function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onO
 
       <div className="inventory-list">
         {lines.length === 0 ? <p className="inventory-hint">لا توجد أصناف في هذا التبويب.</p> : null}
-        {lines.map((line) => (
-          <article key={line.sessionItemId} className="inventory-row">
+        {linesPaging.visible.map((line) => (
+          <article key={line.sessionItemId} className={picking && picked.includes(line.sessionItemId) ? "inventory-row is-selected" : "inventory-row"}>
             <div className="inventory-row-name">
               <span className="inventory-number">{line.itemNumber}</span>
               <strong>{line.itemName || "صنف بدون اسم"}</strong>
@@ -311,7 +318,7 @@ function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onO
             </div>
             <div className="inventory-counted">
               {picking ? (
-                <label className="inventory-pick">
+                <label className={picked.includes(line.sessionItemId) ? "inventory-pick is-selected" : "inventory-pick"}>
                   <input
                     type="checkbox"
                     checked={picked.includes(line.sessionItemId)}
@@ -329,6 +336,7 @@ function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onO
             </div>
           </article>
         ))}
+        <Pager {...linesPaging} />
       </div>
     </div>
   );
@@ -361,6 +369,7 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
     const lines = view?.lines ?? [];
     return text ? lines.filter((line) => line.itemNumber.toLowerCase().includes(text) || (line.itemName ?? "").toLowerCase().includes(text)) : lines;
   }, [view, query]);
+  const auditPaging = usePaging(visible, query);
 
   if (!view) return <Waiting compact label="جاري تحميل التدقيق..." />;
   const { audit } = view;
@@ -427,7 +436,7 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
       </form>
 
       <div className="inventory-list">
-        {visible.map((line) => (
+        {auditPaging.visible.map((line) => (
           <article key={line.auditItemId} className={line.matched === false ? "inventory-row is-mismatch" : "inventory-row"}>
             <div className="inventory-row-name">
               <span className="inventory-number">{line.itemNumber}</span>
@@ -461,6 +470,7 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
             )}
           </article>
         ))}
+        <Pager {...auditPaging} />
       </div>
 
       {editable ? (

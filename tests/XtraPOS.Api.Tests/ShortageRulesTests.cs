@@ -99,4 +99,13 @@ public sealed class ShortageRulesTests
         Assert.Equal("جرد مخصص", InventoryTypes.Label(InventoryTypes.Custom));
         Assert.Empty(InventoryCountRules.NormalizePages(InventoryTypes.Custom, [1, 2]));
     }
+
+    [Fact]
+    public void A_substitute_goes_only_with_a_delete_request()
+    {
+        var delete = ShortageRules.ValidateDecision(new ShortageDecision(null, null, null, true, false, null, " 650 "));
+        Assert.Equal("650", delete.Substitute);
+        Assert.Throws<InventoryException>(() => ShortageRules.ValidateDecision(new ShortageDecision(5m, null, null, false, false, null, "650")));
+        Assert.Null(ShortageRules.ValidateDecision(new ShortageDecision(null, null, null, true, false, null, "  ")).Substitute);
+    }
 }

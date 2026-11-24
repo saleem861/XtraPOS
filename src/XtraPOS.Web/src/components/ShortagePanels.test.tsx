@@ -176,3 +176,49 @@ describe("remote correction by difference", () => {
     expect(correctionDifference(7, null)).toBeNull();
   });
 });
+
+describe("define inventory", () => {
+  it("searches by name or number, selects all or none, highlights picks, and saves the chosen items", async () => {
+    const calls: { method: string; url: string; body?: unknown }[] = [];
+    const used = { customInventoryId: "c1", name: "أراجيل العرض", isActive: true, createdByName: "المدير", createdAt: "2026-11-24T06:00:00Z", branchIds: ["br"], branchNames: ["فرع نابلس"], used: true, items: [] };
+    const view = { customInventories: [used], branches: [{ branchId: "br", branchName: "فرع نابلس", current: true }] };
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push({ method: init?.method ?? "GET", url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url.startsWith("/api/shortages/custom-inventories/items")) {
+        return reply({ truncated: false, items: Array.from({ length: 12 }, (_, index) => ({ itemId: `i${index}`, itemNumber: `65${index}`, itemName: `فحم ${index}` })) });
+      }
+      if (url === "/api/shortages/custom-inventories/c1/delete") return reply({ deleted: false, stopped: true, view: { ...view, customInventories: [] } });
+      if (url === "/api/shortages/custom-inventories") return reply(view);
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.Define"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^تحديد جرد/ }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "اكتب اسم أو رقم الصنف" }), "فحم");
+    await userEvent.click(screen.getByRole("button", { name: "بحث" }));
+    expect(await screen.findByText(/صفحة 1 من 2/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "تحديد الكل (12)" }));
+    expect(screen.getByText("أصناف الجرد (12)")).toBeTruthy();
+    const first = screen.getByRole("checkbox", { name: "تحديد 650" });
+    expect((first as HTMLInputElement).checked).toBe(true);
+    expect(first.closest("label")?.className).toContain("is-selected");
+    await userEvent.click(screen.getByRole("button", { name: "إلغاء الكل" }));
+    expect(screen.getByText("أصناف الجرد (0)")).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: "تحديد 651" }));
+    expect(screen.getByRole("checkbox", { name: "تحديد 651" }).closest("label")?.className).toContain("is-selected");
+
+    await userEvent.type(screen.getByRole("textbox", { name: "اسم الجرد المخصص" }), "جرد الفحم");
+    await userEvent.click(screen.getByRole("checkbox", { name: "فرع نابلس" }));
+    await userEvent.click(screen.getByRole("button", { name: "حفظ" }));
+    await vi.waitFor(() => expect(calls.find((call) => call.method === "POST" && call.url === "/api/shortages/custom-inventories")?.body)
+      .toMatchObject({ name: "جرد الفحم", branchIds: ["br"], itemCodes: ["651"] }));
+
+    const table = screen.getByRole("table", { name: "الجرود المخصصة" });
+    await userEvent.click(within(table).getByRole("button", { name: "حذف" }));
+    const dialog = await screen.findByRole("dialog", { name: "حذف الجرد المخصص" });
+    expect(within(dialog).getByText(/سيُوقف ويختفي/)).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "حذف" }));
+    await vi.waitFor(() => expect(calls.some((call) => call.url === "/api/shortages/custom-inventories/c1/delete")).toBe(true));
+  });
+});

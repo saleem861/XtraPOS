@@ -63,8 +63,14 @@ public sealed class ShortageAdminService(ShortageService shortages)
         var rows = new List<object>();
         await using (var command = new SqlCommand(
             """
-            SELECT CustomInventoryID, InventoryName, IsActive, CreatedByName, CreatedAt
-            FROM dbo.CustomInventories WHERE BusinessID = @business ORDER BY IsActive DESC, InventoryName;
+            SELECT inventory.CustomInventoryID, inventory.InventoryName, inventory.IsActive, inventory.CreatedByName, inventory.CreatedAt,
+                   CASE WHEN EXISTS (SELECT 1 FROM dbo.InventorySessions AS used WHERE used.CustomInventoryID = inventory.CustomInventoryID)
+                        THEN 1 ELSE 0 END
+            FROM dbo.CustomInventories AS inventory
+            WHERE inventory.BusinessID = @business
+              -- «حذف» جرد مستعمل = إيقافه وفك فروعه، فيختفي من القائمة وتبقى تقاريره.
+              AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS target WHERE target.CustomInventoryID = inventory.CustomInventoryID)
+            ORDER BY inventory.IsActive DESC, inventory.InventoryName;
             """,
             central))
         {
@@ -81,6 +87,7 @@ public sealed class ShortageAdminService(ShortageService shortages)
                     isActive = reader.GetBoolean(2),
                     createdByName = Str(reader, 3),
                     createdAt = Utc(reader.GetDateTime(4)),
+                    used = reader.GetInt32(5) == 1,
                     branchIds = branches,
                     branchNames = branches.Select(branch => branchNames.GetValueOrDefault(branch) ?? "—").ToArray(),
                     items = items.GetValueOrDefault(id) ?? new List<object>(),
@@ -90,6 +97,98 @@ public sealed class ShortageAdminService(ShortageService shortages)
 
         var options = (await BranchesAsync(central, actor, cancellationToken)).Select(branch => new { branchId = branch.BranchId, branchName = branch.BranchName, current = branch.Current });
         return new { customInventories = rows, branches = options };
+    }
+
+    /// <summary>«تحديد جرد»: بحث في أصناف المركز باسم أو رقم الصنف (مالكو المخزون فقط).</summary>
+    public async Task<object> SearchItemsAsync(PosDeviceContext actor, string? query, CancellationToken cancellationToken)
+    {
+        var text = (query ?? "").Trim();
+        if (text.Length == 0) return new { items = Array.Empty<object>(), truncated = false };
+        if (text.Length > 100) text = text[..100];
+        const int limit = 500;
+        await using var central = await shortages.CentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            $"""
+            SELECT TOP ({limit + 1}) item.ItemID, item.ItemNumber, item.ItemName
+            FROM dbo.Items AS item
+            WHERE item.IsActive = 1
+              AND (item.ItemNumber LIKE @prefix ESCAPE N'' OR item.ItemName LIKE @contains ESCAPE N'')
+              AND {InventoryRelayRules.StockOwnerSql("item")}
+            ORDER BY CASE WHEN item.ItemNumber = @exact THEN 0 WHEN item.ItemNumber LIKE @prefix ESCAPE N'' THEN 1 ELSE 2 END,
+                     item.ItemNumber;
+            """,
+            central);
+        var escaped = text.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
+        Text(command, "@exact", text, 100);
+        Text(command, "@prefix", escaped + "%", 202);
+        Text(command, "@contains", "%" + escaped + "%", 204);
+        var rows = new List<object>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (rows.Count == limit) return new { items = rows, truncated = true };
+            rows.Add(new { itemId = reader.GetGuid(0), itemNumber = reader.GetString(1), itemName = Str(reader, 2) });
+        }
+
+        return new { items = rows, truncated = false };
+    }
+
+    /// <summary>تفعيل أو توقيف جرد مخصص. الفروع تسحب الحالة خلال دقيقة.</summary>
+    public async Task<object> SetCustomInventoryActiveAsync(PosDeviceContext actor, Guid id, bool active, CancellationToken cancellationToken)
+    {
+        await using var central = await shortages.CentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            UPDATE dbo.CustomInventories SET IsActive = @active, UpdatedAt = SYSUTCDATETIME()
+            WHERE CustomInventoryID = @id AND BusinessID = @business;
+            SELECT @@ROWCOUNT;
+            """,
+            central);
+        Id(command, "@id", id);
+        Id(command, "@business", actor.BusinessId);
+        command.Parameters.Add("@active", SqlDbType.Bit).Value = active;
+        if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 0)
+        {
+            throw new InventoryException("الجرد المخصص غير موجود.", StatusCodes.Status404NotFound);
+        }
+
+        return await CustomInventoriesAsync(actor, cancellationToken);
+    }
+
+    /// <summary>
+    /// قرار المالك: جرد استُعمل في جلسات سابقة يُوقف وتُفك فروعه فيختفي من القائمة وتبقى تقاريره؛
+    /// غير المستعمل يُحذف نهائياً. في الحالتين لا يعود مخصصاً لأي فرع، فيوقفه الفرع في السحب التالي.
+    /// </summary>
+    public async Task<object> DeleteCustomInventoryAsync(PosDeviceContext actor, Guid id, CancellationToken cancellationToken)
+    {
+        await using var central = await shortages.CentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            IF NOT EXISTS (SELECT 1 FROM dbo.CustomInventories WHERE CustomInventoryID = @id AND BusinessID = @business)
+            BEGIN
+                SELECT N'Missing';
+                RETURN;
+            END;
+            DELETE FROM dbo.CustomInventoryBranches WHERE CustomInventoryID = @id;
+            IF EXISTS (SELECT 1 FROM dbo.InventorySessions WHERE CustomInventoryID = @id)
+            BEGIN
+                UPDATE dbo.CustomInventories SET IsActive = 0, UpdatedAt = SYSUTCDATETIME() WHERE CustomInventoryID = @id;
+                SELECT N'Stopped';
+            END
+            ELSE
+            BEGIN
+                DELETE FROM dbo.CustomInventoryItems WHERE CustomInventoryID = @id;
+                DELETE FROM dbo.CustomInventories WHERE CustomInventoryID = @id;
+                SELECT N'Deleted';
+            END;
+            """,
+            central);
+        Id(command, "@id", id);
+        Id(command, "@business", actor.BusinessId);
+        var outcome = await command.ExecuteScalarAsync(cancellationToken) as string;
+        if (outcome == "Missing") throw new InventoryException("الجرد المخصص غير موجود.", StatusCodes.Status404NotFound);
+        var view = await CustomInventoriesAsync(actor, cancellationToken);
+        return new { deleted = outcome == "Deleted", stopped = outcome == "Stopped", view };
     }
 
     public sealed class CustomInventoryRequest

@@ -15,6 +15,7 @@ public static class InventoryEndpoints
     public static void MapInventoryEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/inventory");
+        group.MapGet("/branches", BranchesAsync);
         group.MapGet("/configuration", ConfigurationAsync);
         group.MapGet("/sessions/open", OpenAsync);
         group.MapPost("/sessions", StartAsync);
@@ -24,18 +25,26 @@ public static class InventoryEndpoints
         group.MapPost("/sessions/{sessionId:guid}/finalize", FinalizeAsync);
     }
 
-    private static async Task<IResult> ConfigurationAsync(HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    /// <summary>ملاحظة المالك: الجرد لا يُقيَّد بالفرع الحالي. فرع الجهاز أولاً، ثم فروع المركز.</summary>
+    private static async Task<IResult> BranchesAsync(HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.ConfigurationAsync(cancellationToken));
+        return await RunAsync(() => inventory.BranchesAsync(caller.Context!, cancellationToken));
     }
 
-    private static async Task<IResult> OpenAsync(string? type, string? pages, Guid? customInventoryId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> ConfigurationAsync(Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.FindOpenAsync(caller.Context!, type, ParsePages(pages), customInventoryId, cancellationToken));
+        return await RunAsync(() => inventory.ConfigurationAsync(cancellationToken, caller.Context, branchId));
+    }
+
+    private static async Task<IResult> OpenAsync(string? type, string? pages, Guid? customInventoryId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    {
+        var caller = await CallerAsync(http, auth, permissions, cancellationToken);
+        if (caller.Result is not null) return caller.Result;
+        return await RunAsync(() => inventory.FindOpenAsync(caller.Context!, type, ParsePages(pages), customInventoryId, cancellationToken, branchId));
     }
 
     private static async Task<IResult> StartAsync(StartBody? body, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
@@ -43,21 +52,21 @@ public static class InventoryEndpoints
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
         if (body is null) return Results.Json(new { message = "الطلب فارغ." }, statusCode: StatusCodes.Status400BadRequest);
-        return await RunAsync(() => inventory.StartAsync(caller.Context!, body.InventoryType, body.Pages, body.CustomInventoryId, body.ReplaceOpen, cancellationToken));
+        return await RunAsync(() => inventory.StartAsync(caller.Context!, body.InventoryType, body.Pages, body.CustomInventoryId, body.ReplaceOpen, cancellationToken, body.BranchId));
     }
 
-    private static async Task<IResult> ItemsAsync(Guid sessionId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> ItemsAsync(Guid sessionId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.ItemsAsync(caller.Context!, sessionId, caller.CanReview, cancellationToken));
+        return await RunAsync(() => inventory.ItemsAsync(caller.Context!, sessionId, caller.CanReview, cancellationToken, branchId));
     }
 
-    private static async Task<IResult> LookupAsync(Guid sessionId, string? code, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> LookupAsync(Guid sessionId, string? code, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.LookupAsync(caller.Context!, sessionId, code, cancellationToken));
+        return await RunAsync(() => inventory.LookupAsync(caller.Context!, sessionId, code, cancellationToken, branchId));
     }
 
     private static async Task<IResult> CountAsync(Guid sessionId, CountBody? body, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
@@ -65,14 +74,14 @@ public static class InventoryEndpoints
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
         if (body?.ItemId is not Guid itemId) return Results.Json(new { message = "يرجى اختيار الصنف." }, statusCode: StatusCodes.Status400BadRequest);
-        return await RunAsync(() => inventory.SaveCountAsync(caller.Context!, sessionId, itemId, body.Quantity, caller.CanReview, cancellationToken));
+        return await RunAsync(() => inventory.SaveCountAsync(caller.Context!, sessionId, itemId, body.Quantity, caller.CanReview, cancellationToken, body.BranchId));
     }
 
-    private static async Task<IResult> FinalizeAsync(Guid sessionId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> FinalizeAsync(Guid sessionId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.FinalizeAsync(caller.Context!, sessionId, cancellationToken));
+        return await RunAsync(() => inventory.FinalizeAsync(caller.Context!, sessionId, cancellationToken, branchId));
     }
 
     public static IReadOnlyList<int> ParsePages(string? pages) =>
@@ -123,11 +132,13 @@ public static class InventoryEndpoints
         public List<int>? Pages { get; set; }
         public Guid? CustomInventoryId { get; set; }
         public bool ReplaceOpen { get; set; }
+        public Guid? BranchId { get; set; }
     }
 
     private sealed class CountBody
     {
         public Guid? ItemId { get; set; }
         public decimal? Quantity { get; set; }
+        public Guid? BranchId { get; set; }
     }
 }

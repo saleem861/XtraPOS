@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import type { InventoryType } from "../api/inventory";
 import { newRequestId } from "../api/inventoryReview";
 import {
@@ -27,7 +27,6 @@ import {
   formatQuantity,
   normalizeDigits,
   parseCountInput,
-  parseItemCodes,
   parseOptionalInteger,
   parseOptionalQuantity,
   SHORTAGE_TYPES,
@@ -36,6 +35,10 @@ import {
 import type { BackHandler, PanelConfirmation } from "./InventoryReviewPanels";
 import { Waiting } from "./Waiting";
 import { distinctBy } from "../distinct";
+import { Pager, usePaging } from "./Pager";
+
+/** مرجع ثابت لقائمة فارغة. */
+const EMPTY: never[] = [];
 
 interface PanelProps {
   client: ShortageClient;
@@ -208,7 +211,7 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
       <section className="inventory-section" aria-label="نوع النواقص">
         <strong>النوع</strong>
         {SHORTAGE_TYPES.map((option) => (
-          <label key={option.value} className="inventory-pick">
+          <label key={option.value} className={type === option.value ? "inventory-pick is-selected" : "inventory-pick"}>
             <input type="radio" name="shortage-type" checked={type === option.value} onChange={() => setType(option.value)} />
             {option.label}
           </label>
@@ -218,7 +221,7 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
       <section className="inventory-section" aria-label="الفروع">
         <strong>الفروع</strong>
         {options.branches.map((branch) => (
-          <label key={branch.branchId} className="inventory-pick">
+          <label key={branch.branchId} className={branchIds.includes(branch.branchId) ? "inventory-pick is-selected" : "inventory-pick"}>
             <input
               type="checkbox"
               checked={branchIds.includes(branch.branchId)}
@@ -261,7 +264,7 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
           <label>إلى تاريخ<input type="date" value={manualTo} onChange={(event) => setManualTo(event.target.value)} /></label>
           <div className="inventory-checklist">
             {options.users.map((user) => (
-              <label key={user.userId} className="inventory-pick">
+              <label key={user.userId} className={userIds.includes(user.userId) ? "inventory-pick is-selected" : "inventory-pick"}>
                 <input
                   type="checkbox"
                   checked={userIds.includes(user.userId)}
@@ -319,6 +322,7 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
       (filter === "all" || (filter === "open" ? !item.isProcessed : item.isProcessed))
       && (!text || item.itemNumber.toLowerCase().includes(text) || (item.itemName ?? "").toLowerCase().includes(text)));
   }, [data, filter, query]);
+  const runPaging = usePaging(visible, `${filter}|${query}`);
 
   if (!data) return <Waiting compact label="جاري التحميل..." />;
   const header = data.run;
@@ -351,7 +355,7 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
 
       <div className="inventory-list">
         {data.items.length === 0 ? <p className="inventory-hint">لا توجد نواقص في هذا النطاق. يمكنك التثبيت مباشرة.</p> : null}
-        {visible.map((item) => (
+        {runPaging.visible.map((item) => (
           <ShortageItemRow
             key={item.itemId}
             client={client}
@@ -366,6 +370,7 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
             onConfirm={onConfirm}
           />
         ))}
+        <Pager {...runPaging} />
       </div>
 
       {editable ? (
@@ -418,6 +423,7 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
   const [warehouse, setWarehouse] = useState(() => String(item.warehouseQuantity ?? ""));
   const [balance, setBalance] = useState(() => String(item.balanceDecision ?? (item.isProcessed ? "" : item.balanceQuantity || "")));
   const [note, setNote] = useState(item.note ?? "");
+  const [substitute, setSubstitute] = useState(item.substituteItemNumber ?? "");
 
   async function save(kind: "quantities" | "delete" | "supplied" | "clear") {
     let body: ShortageDecisionBody;
@@ -429,13 +435,16 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
       const [p, w, b] = values as (number | null)[];
       body = { purchaseQuantity: p, warehouseQuantity: w, balanceQuantity: b, delete: false, alreadySupplied: false, note: note || null };
     } else {
-      body = { purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: kind === "delete", alreadySupplied: kind === "supplied", note: note || null };
+      body = {
+        purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: kind === "delete", alreadySupplied: kind === "supplied", note: note || null,
+        substituteItemNumber: kind === "delete" ? normalizeDigits(substitute.trim()) || null : null,
+      };
     }
 
     const saved = await run("جاري الحفظ...", () => client.decide(runId, item.itemId, body));
     if (!saved) return;
     onSaved(kind === "clear"
-      ? { isProcessed: false, purchaseQuantity: null, warehouseQuantity: null, balanceDecision: null, deleteRequested: false, alreadySupplied: false, note: null }
+      ? { isProcessed: false, purchaseQuantity: null, warehouseQuantity: null, balanceDecision: null, deleteRequested: false, alreadySupplied: false, note: null, substituteItemNumber: null }
       : {
           isProcessed: true,
           purchaseQuantity: body.purchaseQuantity,
@@ -444,10 +453,11 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
           deleteRequested: body.delete,
           alreadySupplied: body.alreadySupplied,
           note: body.note,
+          substituteItemNumber: saved.substituteItemNumber ?? null,
         });
   }
 
-  const decision = item.deleteRequested ? "طلب حذف"
+  const decision = item.deleteRequested ? `طلب حذف${item.substituteItemNumber ? ` · البديل ${item.substituteItemNumber}` : ""}`
     : item.alreadySupplied ? "تم التزويد"
       : [item.purchaseQuantity ? `شراء ${formatQuantity(item.purchaseQuantity)}` : "", item.warehouseQuantity ? `مخزن ${formatQuantity(item.warehouseQuantity)}` : "", item.balanceDecision ? `موازنة ${formatQuantity(item.balanceDecision)}` : ""].filter(Boolean).join(" · ");
 
@@ -490,6 +500,7 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
               <label>المخزن<input inputMode="decimal" value={warehouse} onChange={(event) => setWarehouse(event.target.value)} aria-label={`المخزن ${item.itemNumber}`} /></label>
               <label>موازنة<input inputMode="decimal" value={balance} onChange={(event) => setBalance(event.target.value)} aria-label={`موازنة ${item.itemNumber}`} /></label>
               <label>ملاحظة<input value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} aria-label={`ملاحظة ${item.itemNumber}`} /></label>
+              <label>الصنف البديل (مع الحذف)<input value={substitute} maxLength={100} onChange={(event) => setSubstitute(event.target.value)} placeholder="رقم الصنف" aria-label={`الصنف البديل ${item.itemNumber}`} /></label>
               <button type="button" className="primary-button" onClick={() => void save("quantities")}>حفظ</button>
               <button type="button" className="ghost-button" onClick={() => void save("supplied")}>تم التزويد</button>
               <button type="button" className="ghost-button" onClick={() => void save("delete")}>حذف</button>
@@ -608,6 +619,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [requests, setRequests] = useState<SupplyRequest[]>([]);
   const [requestStatus, setRequestStatus] = useState("Open");
+  const rowsPaging = usePaging(view?.rows ?? EMPTY, `${tab}|${from}|${to}`);
 
   const loadSuppliers = useCallback(async () => {
     const value = await run("جاري تحميل التجار...", () => client.suppliers());
@@ -690,7 +702,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
       {tab !== "Requests" && tab !== "Suppliers" ? (
         <div className="inventory-list">
           {view && view.rows.length === 0 ? <p className="inventory-hint">لا توجد أصناف في هذا التبويب للفترة المختارة.</p> : null}
-          {view?.rows.map((row) => isPurchaseRow(row) ? (
+          {rowsPaging.visible.map((row) => isPurchaseRow(row) ? (
             <PurchaseRowView key={`${row.itemId}-${row.supplyRequestId ?? ""}`} row={row} suppliers={suppliers.filter((supplier) => supplier.isActive)} onAct={act} onMessage={onMessage} />
           ) : (
             <article key={row.taskId} className="inventory-row">
@@ -701,6 +713,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
                   {row.quantity !== null ? `الكمية ${formatQuantity(row.quantity)} · ` : ""}{formatDateTime(row.assignedAt)} · {row.assignedByName ?? "—"}
                   {row.note ? ` · ${row.note}` : ""}
                 </small>
+                {row.substituteItemNumber ? <small className="inventory-saved">البديل: {row.substituteItemNumber} {row.substituteItemName ?? ""}</small> : null}
                 {tab === "Done" ? (
                   <small>{taskTypeLabel(row.taskType)} · {row.status === "Cancelled" ? "أُلغي" : "تم"} · {row.completedByName ?? "—"} · {formatDateTime(row.completedAt)}
                     {row.approvalStatus === "Approved" ? " · اعتُمد الحذف" : row.approvalStatus === "Rejected" ? " · رُفض الحذف" : ""}</small>
@@ -733,6 +746,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
               </div>
             </article>
           ))}
+          <Pager {...rowsPaging} />
         </div>
       ) : null}
     </div>
@@ -804,6 +818,7 @@ function SupplyRequestsView({ requests, suppliers, status, onStatus, onAction }:
   onAction: (requestId: string, action: "purchased" | "revert" | "reassign", supplierId?: string) => void;
 }) {
   const [reassign, setReassign] = useState<Record<string, string>>({});
+  const paging = usePaging(requests, status);
   return (
     <div className="inventory-list">
       <div className="inventory-filter">
@@ -816,7 +831,7 @@ function SupplyRequestsView({ requests, suppliers, status, onStatus, onAction }:
         </label>
       </div>
       {requests.length === 0 ? <p className="inventory-hint">لا توجد طلبات تزويد.</p> : null}
-      {requests.map((request) => (
+      {paging.visible.map((request) => (
         <article key={request.requestId} className="inventory-row">
           <div className="inventory-row-name">
             <strong>طلب تزويد #{request.requestNumber} · {request.supplierName}</strong>
@@ -850,6 +865,7 @@ function SupplyRequestsView({ requests, suppliers, status, onStatus, onAction }:
           </div>
         </article>
       ))}
+      <Pager {...paging} label="طلب" />
     </div>
   );
 }
@@ -907,39 +923,119 @@ function SuppliersView({ suppliers, onSave }: { suppliers: Supplier[]; onSave: (
 // تحديد جرد (الجرد المخصص)
 // ======================================================================
 
-export function DefineInventoryPanel({ client, onMessage, onBusy }: PanelProps) {
+type PickedItem = { itemId: string; itemNumber: string; itemName: string | null };
+type DefineDraft = { id: string | null; name: string; isActive: boolean; branchIds: string[]; items: PickedItem[] };
+const EMPTY_DRAFT: DefineDraft = { id: null, name: "", isActive: true, branchIds: [], items: [] };
+
+/**
+ * «تحديد جرد» (ملاحظة المالك): خانة «اكتب اسم أو رقم الصنف» وزر «بحث»، كل الأصناف المطابقة بمربع تحديد،
+ * و«تحديد الكل» / «إلغاء الكل». المحدد يُضاف إلى أصناف الجرد ويبقى عبر عمليات البحث.
+ * جدول الجرود: «تفعيل/توقيف» و«حذف» (المستعمل يُوقف ويختفي، وغير المستعمل يُحذف).
+ */
+export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: PanelProps) {
   const run = useAction(onMessage, onBusy);
   const [list, setList] = useState<CustomInventory[]>([]);
   const [branches, setBranches] = useState<{ branchId: string; branchName: string; current: boolean }[]>([]);
-  const [editing, setEditing] = useState<{ id: string | null; name: string; isActive: boolean; branchIds: string[]; codes: string }>({ id: null, name: "", isActive: true, branchIds: [], codes: "" });
+  const [editing, setEditing] = useState<DefineDraft>(EMPTY_DRAFT);
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState("");
+  const [results, setResults] = useState<PickedItem[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [notice, setNotice] = useState("");
+  const resultsPaging = usePaging(results ?? EMPTY, searched);
+  const pickedPaging = usePaging(editing.items, editing.id ?? "");
+  const listPaging = usePaging(list);
+  const chosen = useMemo(() => new Set(editing.items.map((item) => item.itemId)), [editing.items]);
+
+  function apply(value: { customInventories: CustomInventory[]; branches: { branchId: string; branchName: string; current: boolean }[] }) {
+    setList(distinctBy(value.customInventories, (entry) => entry.name));
+    setBranches(distinctBy(value.branches, (branch) => branch.branchName));
+  }
 
   useEffect(() => {
-    void run("جاري التحميل...", () => client.customInventories()).then((value) => {
-      if (!value) return;
-      setList(value.customInventories);
-      setBranches(distinctBy(value.branches, (branch) => branch.branchName));
-    });
+    void run("جاري التحميل...", () => client.customInventories()).then((value) => { if (value) apply(value); });
   }, [client, run]);
 
+  async function search(event?: FormEvent) {
+    event?.preventDefault();
+    const text = normalizeDigits(query.trim());
+    if (!text) { onMessage("اكتب اسم أو رقم الصنف."); return; }
+    const value = await run("جاري البحث...", () => client.searchItems(text));
+    if (!value) return;
+    setSearched(text);
+    setResults(distinctBy(value.items, (item) => item.itemNumber));
+    setTruncated(value.truncated);
+  }
+
+  function toggle(item: PickedItem) {
+    setEditing((current) => ({
+      ...current,
+      items: current.items.some((entry) => entry.itemId === item.itemId)
+        ? current.items.filter((entry) => entry.itemId !== item.itemId)
+        : [...current.items, item],
+    }));
+  }
+
+  /** «تحديد الكل» و«إلغاء الكل» على كل نتائج البحث الحالية (كل الصفحات). */
+  function selectAll(selected: boolean) {
+    const found = results ?? [];
+    setEditing((current) => {
+      if (!selected) {
+        const drop = new Set(found.map((item) => item.itemId));
+        return { ...current, items: current.items.filter((entry) => !drop.has(entry.itemId)) };
+      }
+      const have = new Set(current.items.map((entry) => entry.itemId));
+      return { ...current, items: [...current.items, ...found.filter((item) => !have.has(item.itemId))] };
+    });
+  }
+
   async function save() {
-    const codes = parseItemCodes(editing.codes);
     if (!editing.name.trim()) { onMessage("اسم الجرد المخصص مطلوب."); return; }
     if (editing.branchIds.length === 0) { onMessage("يرجى اختيار فرع واحد على الأقل."); return; }
-    if (codes.length === 0) { onMessage("يرجى إضافة صنف واحد على الأقل."); return; }
+    if (editing.items.length === 0) { onMessage("يرجى إضافة صنف واحد على الأقل."); return; }
     setNotice("");
     const value = await run("جاري الحفظ...", () => client.saveCustomInventory({
       customInventoryId: editing.id,
       name: editing.name.trim(),
       isActive: editing.isActive,
       branchIds: editing.branchIds,
-      itemCodes: codes,
+      itemCodes: editing.items.map((item) => item.itemNumber),
     }));
     if (!value) return;
-    setList(value.customInventories);
-    setEditing({ id: null, name: "", isActive: true, branchIds: [], codes: "" });
+    apply(value);
+    setEditing(EMPTY_DRAFT);
+    setResults(null);
+    setQuery("");
     setNotice("تم الحفظ. يظهر في «الجرد» على أجهزة الفروع المختارة خلال دقيقة.");
   }
+
+  async function setActive(entry: CustomInventory, active: boolean) {
+    const value = await run(active ? "جاري التفعيل..." : "جاري التوقيف...", () => client.setCustomInventoryActive(entry.customInventoryId, active));
+    if (!value) return;
+    apply(value);
+    if (editing.id === entry.customInventoryId) setEditing((current) => ({ ...current, isActive: active }));
+    setNotice(active ? `تم تفعيل «${entry.name}».` : `تم توقيف «${entry.name}». يختفي من «الجرد» في الفروع خلال دقيقة.`);
+  }
+
+  function remove(entry: CustomInventory) {
+    onConfirm({
+      title: "حذف الجرد المخصص",
+      message: entry.used
+        ? `«${entry.name}» استُعمل في جرد سابق، فسيُوقف ويختفي من القائمة وتبقى تقارير جلساته. هل تريد المتابعة؟`
+        : `سيُحذف «${entry.name}» نهائياً. هل تريد المتابعة؟`,
+      accept: "حذف",
+      onAccept: () => {
+        void run("جاري الحذف...", () => client.deleteCustomInventory(entry.customInventoryId)).then((value) => {
+          if (!value) return;
+          apply(value.view);
+          if (editing.id === entry.customInventoryId) setEditing(EMPTY_DRAFT);
+          setNotice(value.stopped ? `أُوقف «${entry.name}» وأُخفي، وبقيت تقارير جلساته.` : `حُذف «${entry.name}».`);
+        });
+      },
+    });
+  }
+
+  const allFound = (results ?? []).length > 0 && (results ?? []).every((item) => chosen.has(item.itemId));
 
   return (
     <div className="inventory-report">
@@ -947,43 +1043,103 @@ export function DefineInventoryPanel({ client, onMessage, onBusy }: PanelProps) 
       <section className="inventory-section" aria-label="جرد مخصص">
         <strong>{editing.id ? "تعديل جرد مخصص" : "جرد مخصص جديد"}</strong>
         <label>الاسم<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} aria-label="اسم الجرد المخصص" /></label>
-        <label className="inventory-pick"><input type="checkbox" checked={editing.isActive} onChange={(event) => setEditing({ ...editing, isActive: event.target.checked })} />نشط</label>
-        <div className="inventory-checklist">
-          {branches.map((branch) => (
-            <label key={branch.branchId} className="inventory-pick">
-              <input
-                type="checkbox"
-                checked={editing.branchIds.includes(branch.branchId)}
-                onChange={() => setEditing((current) => ({
-                  ...current,
-                  branchIds: current.branchIds.includes(branch.branchId) ? current.branchIds.filter((id) => id !== branch.branchId) : [...current.branchIds, branch.branchId],
-                }))}
-              />
-              {branch.branchName}
-            </label>
-          ))}
-        </div>
-        <label className="inventory-wide">أرقام الأصناف (سطر أو فاصلة لكل صنف)
-          <textarea rows={5} value={editing.codes} onChange={(event) => setEditing({ ...editing, codes: event.target.value })} aria-label="أرقام الأصناف" />
+        <label className={editing.isActive ? "inventory-pick is-selected" : "inventory-pick"}>
+          <input type="checkbox" checked={editing.isActive} onChange={(event) => setEditing({ ...editing, isActive: event.target.checked })} />نشط
         </label>
-        <small className="inventory-hint">{parseItemCodes(editing.codes).length} صنف. العبوة تتحول لصنف الوحدة الأساسية.</small>
-        <button type="button" className="primary-button" onClick={() => void save()}>حفظ</button>
-        {editing.id ? <button type="button" className="ghost-button" onClick={() => setEditing({ id: null, name: "", isActive: true, branchIds: [], codes: "" })}>جديد</button> : null}
+        <div className="inventory-checklist">
+          {branches.map((branch) => {
+            const picked = editing.branchIds.includes(branch.branchId);
+            return (
+              <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
+                <input
+                  type="checkbox"
+                  checked={picked}
+                  onChange={() => setEditing((current) => ({
+                    ...current,
+                    branchIds: current.branchIds.includes(branch.branchId) ? current.branchIds.filter((id) => id !== branch.branchId) : [...current.branchIds, branch.branchId],
+                  }))}
+                />
+                {branch.branchName}
+              </label>
+            );
+          })}
+        </div>
+
+        <form className="inventory-search" onSubmit={(event) => void search(event)}>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب اسم أو رقم الصنف" aria-label="اكتب اسم أو رقم الصنف" />
+          <button type="submit" className="primary-button">بحث</button>
+        </form>
+        {results ? (
+          <div className="inventory-list" aria-label="نتائج البحث">
+            {results.length === 0 ? <p className="inventory-hint">لا توجد أصناف مطابقة لـ «{searched}».</p> : (
+              <div className="inventory-row-actions">
+                <button type="button" className="ghost-button" disabled={allFound} onClick={() => selectAll(true)}>تحديد الكل ({results.length})</button>
+                <button type="button" className="ghost-button" onClick={() => selectAll(false)}>إلغاء الكل</button>
+                {truncated ? <small className="inventory-hint">تظهر أول {results.length} نتيجة. ضيّق البحث لرؤية المزيد.</small> : null}
+              </div>
+            )}
+            {resultsPaging.visible.map((item) => {
+              const picked = chosen.has(item.itemId);
+              return (
+                <label key={item.itemId} className={picked ? "inventory-select-row is-selected" : "inventory-select-row"}>
+                  <input type="checkbox" checked={picked} onChange={() => toggle(item)} aria-label={`تحديد ${item.itemNumber}`} />
+                  <span className="inventory-number">{item.itemNumber}</span>
+                  <span>{item.itemName || "صنف بدون اسم"}</span>
+                </label>
+              );
+            })}
+            <Pager {...resultsPaging} />
+          </div>
+        ) : null}
+
+        <strong>أصناف الجرد ({editing.items.length})</strong>
+        {editing.items.length === 0 ? <p className="inventory-hint">ابحث عن الأصناف وحدّدها لإضافتها. العبوة تتحول لصنف الوحدة الأساسية.</p> : null}
+        <div className="inventory-list" aria-label="أصناف الجرد">
+          {pickedPaging.visible.map((item) => (
+            <div key={item.itemId} className="inventory-select-row is-selected">
+              <span className="inventory-number">{item.itemNumber}</span>
+              <span>{item.itemName || "صنف بدون اسم"}</span>
+              <button type="button" className="ghost-button" aria-label={`إزالة ${item.itemNumber}`} onClick={() => toggle(item)}>إزالة</button>
+            </div>
+          ))}
+          <Pager {...pickedPaging} />
+        </div>
+
+        <div className="inventory-row-actions">
+          <button type="button" className="primary-button" onClick={() => void save()}>حفظ</button>
+          {editing.id ? <button type="button" className="ghost-button" onClick={() => { setEditing(EMPTY_DRAFT); setResults(null); }}>جديد</button> : null}
+        </div>
       </section>
-      <div className="inventory-list">
-        {list.map((entry) => (
-          <button
-            key={entry.customInventoryId}
-            type="button"
-            className="inventory-report-row"
-            onClick={() => setEditing({ id: entry.customInventoryId, name: entry.name, isActive: entry.isActive, branchIds: entry.branchIds, codes: entry.items.map((item) => item.itemNumber).join("\n") })}
-          >
-            <strong>{entry.name}</strong>
-            <span>{entry.items.length} صنف · {entry.branchNames.join("، ")}</span>
-            {!entry.isActive ? <span className="inventory-badge">موقوف</span> : null}
-          </button>
-        ))}
-      </div>
+
+      <table className="inventory-table" aria-label="الجرود المخصصة">
+        <thead><tr><th>الاسم</th><th>الأصناف</th><th>الفروع</th><th>الحالة</th><th>إجراءات</th></tr></thead>
+        <tbody>
+          {list.length === 0 ? <tr><td colSpan={5}>لا يوجد جرد مخصص بعد.</td></tr> : null}
+          {listPaging.visible.map((entry) => (
+            <tr key={entry.customInventoryId} className={editing.id === entry.customInventoryId ? "is-selected" : undefined}>
+              <td>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => { setEditing({ id: entry.customInventoryId, name: entry.name, isActive: entry.isActive, branchIds: entry.branchIds, items: entry.items }); setResults(null); setNotice(""); }}
+                >
+                  {entry.name}
+                </button>
+              </td>
+              <td>{entry.items.length}</td>
+              <td>{entry.branchNames.join("، ")}</td>
+              <td>{entry.isActive ? "نشط" : <span className="inventory-badge">موقوف</span>}</td>
+              <td>
+                <div className="inventory-row-actions">
+                  <button type="button" className="ghost-button" onClick={() => void setActive(entry, !entry.isActive)}>{entry.isActive ? "توقيف" : "تفعيل"}</button>
+                  <button type="button" className="ghost-button" onClick={() => remove(entry)}>حذف</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <Pager {...listPaging} label="جرد" />
     </div>
   );
 }
@@ -1003,6 +1159,7 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
   const [requests, setRequests] = useState<AuditRequest[]>([]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const requestsPaging = usePaging(requests, `${from}|${to}`);
 
   const loadRequests = useCallback(async () => {
     const value = await run("جاري التحميل...", () => client.audits(from, to));
@@ -1066,7 +1223,7 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
 
       <DateRange from={from} to={to} onChange={(nextFrom, nextTo) => { setFrom(nextFrom); setTo(nextTo); }} onSubmit={() => void loadRequests()} />
       <div className="inventory-list">
-        {requests.map((request) => (
+        {requestsPaging.visible.map((request) => (
           <AuditRequestView
             key={request.requestId}
             request={request}
@@ -1078,6 +1235,7 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
             }) : undefined}
           />
         ))}
+        <Pager {...requestsPaging} label="طلب" />
       </div>
     </div>
   );
@@ -1124,6 +1282,7 @@ export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
   const [ownOnly, setOwnOnly] = useState(true);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const rowsPaging = usePaging(rows, `${from}|${to}`);
 
   const load = useCallback(async () => {
     const mine = await run("جاري التحميل...", () => client.myAudits(from, to));
@@ -1178,7 +1337,7 @@ export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
         <thead><tr><th>الموظف</th><th>الطلبات</th><th>تم الرد</th><th>بانتظار الرد</th><th>الدرجة من 10</th></tr></thead>
         <tbody>
           {rows.length === 0 ? <tr><td colSpan={5}>لا توجد طلبات تدقيق في هذه الفترة.</td></tr> : null}
-          {rows.map((row) => (
+          {rowsPaging.visible.map((row) => (
             <tr key={row.userId}>
               <td>{row.userName ?? "—"}</td>
               <td>{row.requests}</td>
@@ -1189,6 +1348,7 @@ export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
           ))}
         </tbody>
       </table>
+      <Pager {...rowsPaging} label="موظف" />
     </div>
   );
 }
@@ -1202,6 +1362,8 @@ export function ShortageReportPanel({ client, onMessage, onBusy }: PanelProps) {
   const [report, setReport] = useState<ProcessingReport | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const runsPaging = usePaging(report?.runs ?? EMPTY, `${from}|${to}`);
+  const overduePaging = usePaging(report?.overduePurchases ?? EMPTY, `${from}|${to}`);
 
   const load = useCallback(async () => {
     const value = await run("جاري التحميل...", () => client.report(from, to));
@@ -1222,7 +1384,7 @@ export function ShortageReportPanel({ client, onMessage, onBusy }: PanelProps) {
           <thead><tr><th>النوع</th><th>الفروع</th><th>المعالج</th><th>الحالة</th><th>الأصناف</th><th>المهام</th><th>التاريخ</th></tr></thead>
           <tbody>
             {(report?.runs ?? []).length === 0 ? <tr><td colSpan={7}>لا توجد معالجات في هذه الفترة.</td></tr> : null}
-            {report?.runs.map((entry) => (
+            {runsPaging.visible.map((entry) => (
               <tr key={entry.runId}>
                 <td>{entry.shortageTypeLabel} ({entry.supplyDays} يوم)</td>
                 <td>{entry.branches ?? "—"}</td>
@@ -1235,6 +1397,7 @@ export function ShortageReportPanel({ client, onMessage, onBusy }: PanelProps) {
             ))}
           </tbody>
         </table>
+        <Pager {...runsPaging} label="معالجة" />
       </section>
       <section className="inventory-section" aria-label="مسؤول الشراء المتأخر">
         <strong>مسؤول الشراء المتأخر (أكثر من {report?.overdueDays ?? 3} أيام)</strong>
@@ -1242,7 +1405,7 @@ export function ShortageReportPanel({ client, onMessage, onBusy }: PanelProps) {
           <thead><tr><th>الصنف</th><th>الكمية</th><th>منذ</th><th>التاجر</th></tr></thead>
           <tbody>
             {(report?.overduePurchases ?? []).length === 0 ? <tr><td colSpan={4}>لا يوجد شراء متأخر.</td></tr> : null}
-            {report?.overduePurchases.map((entry, index) => (
+            {overduePaging.visible.map((entry, index) => (
               <tr key={`${entry.itemNumber}-${index}`}>
                 <td>{entry.itemNumber} {entry.itemName ?? ""}</td>
                 <td>{formatQuantity(entry.quantity)}</td>
@@ -1252,6 +1415,7 @@ export function ShortageReportPanel({ client, onMessage, onBusy }: PanelProps) {
             ))}
           </tbody>
         </table>
+        <Pager {...overduePaging} />
       </section>
     </div>
   );

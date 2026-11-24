@@ -39,7 +39,8 @@ public sealed record ShortageItemResult(
 }
 
 /// <summary>قرار المعالج لصنف واحد: كميات للشراء والمخزن والموازنة، أو حذف، أو «تم التزويد».</summary>
-public sealed record ShortageDecision(decimal? Purchase, decimal? Warehouse, decimal? Balance, bool Delete, bool AlreadySupplied, string? Note);
+/// <param name="Substitute">رقم الصنف البديل، مع طلب الحذف فقط (اختياري).</param>
+public sealed record ShortageDecision(decimal? Purchase, decimal? Warehouse, decimal? Balance, bool Delete, bool AlreadySupplied, string? Note, string? Substitute = null);
 
 /// <summary>
 /// معادلات معالجة النواقص كما في XtraPOS Inventory، لكل فرع أولاً:
@@ -112,7 +113,10 @@ public static class ShortageRules
             throw new InventoryException("اختر إجراءً للصنف: شراء أو مخزن أو موازنة أو حذف أو «تم التزويد».");
         }
 
-        return new ShortageDecision(purchase, warehouse, balance, decision.Delete, decision.AlreadySupplied && !decision.Delete, note);
+        var substitute = string.IsNullOrWhiteSpace(decision.Substitute) ? null : decision.Substitute.Trim();
+        if (substitute is not null && !decision.Delete) throw new InventoryException("الصنف البديل يُحدَّد مع طلب الحذف فقط.");
+        if (substitute?.Length > 100) throw new InventoryException("رقم الصنف البديل أطول من المسموح.");
+        return new ShortageDecision(purchase, warehouse, balance, decision.Delete, decision.AlreadySupplied && !decision.Delete, note, substitute);
     }
 
     /// <summary>المهام التي يولّدها التثبيت النهائي من قرار صنف واحد.</summary>

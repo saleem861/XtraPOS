@@ -99,6 +99,9 @@ public sealed class CentralMigrationRunner
     // Owner decisions, 24 November 2026 («ادمج ونفذ»). One table and columns. Back up first.
     public const string StockMovementsMigrationId = "042_CentralStockMovements";
     public const string StockMovementsMigrationName = "Branch stock movements in real time and corrections by difference";
+    // Deferred item executed on 24 November 2026 («ابحث عن كل ما أجلناه، نفذ»). Columns only.
+    public const string ShortageSubstituteMigrationId = "043_CentralShortageSubstitute";
+    public const string ShortageSubstituteMigrationName = "Substitute item on a shortage delete request";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -144,6 +147,7 @@ public sealed class CentralMigrationRunner
         (InventoryRelayMigrationId, InventoryRelayMigrationName, "XtraPOS.Api.Data.Central.Migrations.040_CentralInventoryRelay.sql"),
         (ShortagesMigrationId, ShortagesMigrationName, "XtraPOS.Api.Data.Central.Migrations.041_CentralShortages.sql"),
         (StockMovementsMigrationId, StockMovementsMigrationName, "XtraPOS.Api.Data.Central.Migrations.042_CentralStockMovements.sql"),
+        (ShortageSubstituteMigrationId, ShortageSubstituteMigrationName, "XtraPOS.Api.Data.Central.Migrations.043_CentralShortageSubstitute.sql"),
     ];
 
     private static readonly string ApplicationVersion =

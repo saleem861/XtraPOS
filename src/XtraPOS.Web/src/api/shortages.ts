@@ -84,6 +84,7 @@ export interface RunItem {
   alreadySupplied: boolean;
   note: string | null;
   processedByName: string | null;
+  substituteItemNumber?: string | null;
   branches: RunItemBranch[];
 }
 
@@ -94,6 +95,8 @@ export interface ShortageDecisionBody {
   delete: boolean;
   alreadySupplied: boolean;
   note: string | null;
+  /** رقم الصنف البديل، مع الحذف فقط. */
+  substituteItemNumber?: string | null;
   clear?: boolean;
 }
 
@@ -142,6 +145,9 @@ export interface TaskRow {
   decidedByName: string | null;
   completedAt: string | null;
   completedByName: string | null;
+  /** البديل في طلب الحذف. */
+  substituteItemNumber?: string | null;
+  substituteItemName?: string | null;
 }
 
 export interface FollowUpView {
@@ -174,6 +180,12 @@ export interface SupplyRequest {
   items: { itemId: string; itemNumber: string; itemName: string | null; quantity: number | null }[];
 }
 
+export interface SearchItem {
+  itemId: string;
+  itemNumber: string;
+  itemName: string | null;
+}
+
 export interface CustomInventory {
   customInventoryId: string;
   name: string;
@@ -182,6 +194,8 @@ export interface CustomInventory {
   createdAt: string;
   branchIds: string[];
   branchNames: string[];
+  /** استُعمل في جلسات جرد: «حذف» يوقفه ويخفيه بدل محوه. */
+  used?: boolean;
   items: { itemId: string; itemNumber: string; itemName: string | null }[];
 }
 
@@ -264,7 +278,7 @@ export function createShortageClient(session: DeviceSession) {
       send<{ resumed: boolean; draft: RunHeader | null }>("/api/shortages/runs", request, "تعذر حساب النواقص."),
     run: (runId: string) => get<{ run: RunHeader; items: RunItem[] }>(`/api/shortages/runs/${encodeURIComponent(runId)}`, "تعذر تحميل المعالجة."),
     decide: (runId: string, itemId: string, body: ShortageDecisionBody) =>
-      send<{ saved: boolean }>(`/api/shortages/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}`, body, "تعذر حفظ قرار الصنف.", "PUT"),
+      send<{ saved: boolean; substituteItemNumber?: string | null; substituteItemName?: string | null }>(`/api/shortages/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}`, body, "تعذر حفظ قرار الصنف.", "PUT"),
     finalize: (runId: string) =>
       send<{ completed: boolean; tasks: number; items: number }>(`/api/shortages/runs/${encodeURIComponent(runId)}/finalize`, {}, "تعذر التثبيت النهائي."),
     discard: (runId: string) => send<{ discarded: boolean }>(`/api/shortages/runs/${encodeURIComponent(runId)}/discard`, {}, "تعذر إلغاء المعالجة."),
@@ -287,6 +301,14 @@ export function createShortageClient(session: DeviceSession) {
       get<{ customInventories: CustomInventory[]; branches: { branchId: string; branchName: string; current: boolean }[] }>("/api/shortages/custom-inventories", "تعذر تحميل الجرد المخصص."),
     saveCustomInventory: (body: { customInventoryId: string | null; name: string; isActive: boolean; branchIds: string[]; itemCodes: string[] }) =>
       send<{ customInventories: CustomInventory[]; branches: { branchId: string; branchName: string; current: boolean }[] }>("/api/shortages/custom-inventories", body, "تعذر حفظ الجرد المخصص."),
+    searchItems: (query: string) =>
+      get<{ items: SearchItem[]; truncated: boolean }>(`/api/shortages/custom-inventories/items?q=${encodeURIComponent(query)}`, "تعذر البحث عن الأصناف."),
+    setCustomInventoryActive: (customInventoryId: string, isActive: boolean) =>
+      send<{ customInventories: CustomInventory[]; branches: { branchId: string; branchName: string; current: boolean }[] }>(
+        `/api/shortages/custom-inventories/${encodeURIComponent(customInventoryId)}/active`, { isActive }, "تعذر تغيير حالة الجرد المخصص."),
+    deleteCustomInventory: (customInventoryId: string) =>
+      send<{ deleted: boolean; stopped: boolean; view: { customInventories: CustomInventory[]; branches: { branchId: string; branchName: string; current: boolean }[] } }>(
+        `/api/shortages/custom-inventories/${encodeURIComponent(customInventoryId)}/delete`, {}, "تعذر حذف الجرد المخصص."),
     auditOptions: (branchId: string) =>
       get<{ branches: { branchId: string; branchName: string; current: boolean }[]; users: UserOption[] }>(
         `/api/shortages/audits/options${branchId ? `?branchId=${encodeURIComponent(branchId)}` : ""}`, "تعذر تحميل خيارات التدقيق."),
