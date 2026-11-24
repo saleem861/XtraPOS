@@ -73,51 +73,75 @@ async function readJson<T>(response: Response, fallback: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function createInventoryClient(session: DeviceSession) {
+export interface InventoryBranch {
+  branchId: string;
+  branchName: string;
+  current: boolean;
+  lastPushAt: string | null;
+  stale: boolean;
+}
+
+/**
+ * عميل الجرد. بلا branchId (أو بفرع الجهاز) يعمل على قاعدة الفرع المحلية كما كان.
+ * بفرع آخر (ملاحظة المالك: لا يُقيَّد الجرد بالفرع الحالي) يجري الجرد على المركز، والتثبيت يرسل طلبات تصحيح بالفارق.
+ */
+export function createInventoryClient(session: DeviceSession, branchId = "") {
   const headers = deviceHeaders(session);
   const json = { ...headers, "Content-Type": "application/json" };
+  const remote = branchId && branchId !== session.branchId ? branchId : "";
+  const query = (params?: URLSearchParams) => {
+    const all = params ?? new URLSearchParams();
+    if (remote) all.set("branchId", remote);
+    const text = all.toString();
+    return text ? `?${text}` : "";
+  };
   return {
+    remote: Boolean(remote),
+    async branches() {
+      const response = await fetch("/api/inventory/branches", { headers });
+      return readJson<{ branches: InventoryBranch[]; notice: string | null }>(response, "تعذر تحميل الفروع.");
+    },
     async configuration() {
-      const response = await fetch("/api/inventory/configuration", { headers });
+      const response = await fetch(`/api/inventory/configuration${query()}`, { headers });
       return readJson<InventoryConfiguration>(response, "تعذر تحميل إعدادات الجرد.");
     },
     async findOpen(type: InventoryType, pages: number[], customInventoryId = "") {
       const params = new URLSearchParams({ type, pages: pages.join(",") });
       if (customInventoryId) params.set("customInventoryId", customInventoryId);
-      const response = await fetch(`/api/inventory/sessions/open?${params}`, { headers });
+      const response = await fetch(`/api/inventory/sessions/open${query(params)}`, { headers });
       return readJson<{ session: InventorySession | null }>(response, "تعذر التحقق من وجود جرد مفتوح.");
     },
     async start(type: InventoryType, pages: number[], replaceOpen: boolean, customInventoryId = "") {
       const response = await fetch("/api/inventory/sessions", {
         method: "POST",
         headers: json,
-        body: JSON.stringify({ inventoryType: type, pages, replaceOpen, customInventoryId: customInventoryId || null }),
+        body: JSON.stringify({ inventoryType: type, pages, replaceOpen, customInventoryId: customInventoryId || null, ...(remote ? { branchId: remote } : {}) }),
       });
       return readJson<{ session: InventorySession; resumed: boolean }>(response, "تعذر بدء الجرد حالياً. حاول مرة أخرى.");
     },
     async items(sessionId: string) {
-      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/items`, { headers });
+      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/items${query()}`, { headers });
       return readJson<{ session: InventorySession; items: InventoryItem[] }>(response, "تعذر تحميل أصناف الجرد. حاول مرة أخرى.");
     },
     async lookup(sessionId: string, code: string) {
       const params = new URLSearchParams({ code });
-      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/lookup?${params}`, { headers });
+      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/lookup${query(params)}`, { headers });
       return readJson<InventoryLookup>(response, "الصنف غير موجود.");
     },
     async count(sessionId: string, itemId: string, quantity: number) {
       const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/count`, {
         method: "PUT",
         headers: json,
-        body: JSON.stringify({ itemId, quantity }),
+        body: JSON.stringify({ itemId, quantity, ...(remote ? { branchId: remote } : {}) }),
       });
       return readJson<{ session: InventorySession; item: InventoryItem | null }>(response, "تعذر حفظ العد. حاول مرة أخرى.");
     },
     async finalize(sessionId: string) {
-      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/finalize`, {
+      const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/finalize${query()}`, {
         method: "POST",
         headers: json,
       });
-      return readJson<{ session: InventorySession; posted: number }>(response, "تعذر تثبيت الجرد. حاول مرة أخرى.");
+      return readJson<{ session: InventorySession; posted: number; remote?: boolean }>(response, "تعذر تثبيت الجرد. حاول مرة أخرى.");
     },
   };
 }

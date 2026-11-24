@@ -35,7 +35,7 @@ public static class ShortageEndpoints
                 caller.Context,
                 runId,
                 itemId,
-                body is null || body.Clear ? null : new ShortageDecision(body.PurchaseQuantity, body.WarehouseQuantity, body.BalanceQuantity, body.Delete, body.AlreadySupplied, body.Note),
+                body is null || body.Clear ? null : new ShortageDecision(body.PurchaseQuantity, body.WarehouseQuantity, body.BalanceQuantity, body.Delete, body.AlreadySupplied, body.Note, body.SubstituteItemNumber),
                 token)));
         group.MapPost("/runs/{runId:guid}/finalize", (Guid runId, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [Process], token, caller => service.FinalizeAsync(caller.Context, runId, token)));
@@ -64,6 +64,12 @@ public static class ShortageEndpoints
             Run(http, auth, permissions, [Define], token, caller => service.CustomInventoriesAsync(caller.Context, token)));
         group.MapPost("/custom-inventories", (ShortageAdminService.CustomInventoryRequest? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Define], token, caller => service.SaveCustomInventoryAsync(caller.Context, body ?? new(), token)));
+        group.MapGet("/custom-inventories/items", (string? q, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
+            Run(http, auth, permissions, [Define], token, caller => service.SearchItemsAsync(caller.Context, q, token)));
+        group.MapPost("/custom-inventories/{customInventoryId:guid}/active", (Guid customInventoryId, ActiveBody? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
+            Run(http, auth, permissions, [Define], token, caller => service.SetCustomInventoryActiveAsync(caller.Context, customInventoryId, body?.IsActive ?? false, token)));
+        group.MapPost("/custom-inventories/{customInventoryId:guid}/delete", (Guid customInventoryId, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
+            Run(http, auth, permissions, [Define], token, caller => service.DeleteCustomInventoryAsync(caller.Context, customInventoryId, token)));
 
         group.MapGet("/audits/options", (Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Audit], token, caller => service.AuditOptionsAsync(caller.Context, branchId, token)));
@@ -132,7 +138,13 @@ public static class ShortageEndpoints
         public bool Delete { get; set; }
         public bool AlreadySupplied { get; set; }
         public string? Note { get; set; }
+        public string? SubstituteItemNumber { get; set; }
         public bool Clear { get; set; }
+    }
+
+    private sealed class ActiveBody
+    {
+        public bool IsActive { get; set; }
     }
 
     private sealed class CorrectionBody

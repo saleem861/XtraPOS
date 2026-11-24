@@ -557,7 +557,7 @@ public sealed class InventoryRelayService(
         var pending = new List<(Guid Id, Guid ItemId, decimal Quantity, string Reason, Guid UserId, string? UserName, decimal? Expected, decimal? Delta)>();
         await using (var read = new SqlCommand(
             """
-            SELECT TOP (20) RequestID, ItemID, NewQuantity, Reason, RequestedByUserID, RequestedByName, ExpectedQuantity, DeltaQuantity
+            SELECT TOP (200) RequestID, ItemID, NewQuantity, Reason, RequestedByUserID, RequestedByName, ExpectedQuantity, DeltaQuantity
             FROM dbo.InventoryCorrectionRequests
             WHERE BranchID = @branch AND Status = N'Pending'
             ORDER BY RequestedAt;

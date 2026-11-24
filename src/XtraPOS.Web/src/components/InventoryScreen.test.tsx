@@ -181,3 +181,45 @@ describe("inventory rules", () => {
     expect(formatDifference(null)).toBe("—");
   });
 });
+
+describe("counting another branch", () => {
+  it("lists every branch, highlights the chosen one, and sends the branch with each call", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url} ${typeof init?.body === "string" ? init.body : ""}`);
+      if (url === "/api/inventory/branches") {
+        return reply({
+          notice: null,
+          branches: [
+            { branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: null, stale: false },
+            { branchId: "b2", branchName: "فرع رام الله", current: false, lastPushAt: "2026-11-24T05:00:00Z", stale: true },
+          ],
+        });
+      }
+      if (url.startsWith("/api/inventory/configuration")) {
+        return reply({ businessDate: "2026-11-24", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: null, importantItems: 2, pageItems: [] });
+      }
+      if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: null });
+      if (url === "/api/inventory/sessions") return reply({ session: openSession, resumed: false });
+      if (url.includes("/items")) return reply({ session: openSession, items: [] });
+      return reply({});
+    }));
+    render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
+    const other = await screen.findByRole("button", { name: /فرع رام الله/ });
+    expect(other.textContent).toContain("أقدم من 30 دقيقة");
+    await userEvent.click(other);
+    const dialog = await screen.findByRole("dialog", { name: "تأكيد الفرع" });
+    expect(within(dialog).getByText(/فرع رام الله.*المركز/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /فرع رام الله/ }).className).toContain("is-selected");
+    expect(screen.getByRole("button", { name: /فرع نابلس/ }).className).not.toContain("is-selected");
+    await userEvent.click(within(dialog).getByRole("button", { name: "نعم، متابعة" }));
+
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("GET /api/inventory/configuration?branchId=b2"))).toBe(true));
+    await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("GET /api/inventory/sessions/open?") && call.includes("branchId=b2"))).toBe(true));
+    await userEvent.click(await screen.findByRole("button", { name: /^جديد/ }));
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("POST /api/inventory/sessions ") && call.includes('"branchId":"b2"'))).toBe(true));
+    await vi.waitFor(() => expect(calls.some((call) => call.includes("/items?branchId=b2"))).toBe(true));
+  });
+});

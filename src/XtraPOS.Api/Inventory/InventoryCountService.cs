@@ -27,9 +27,12 @@ public sealed class InventoryCountService(
     // الإعدادات
     // ------------------------------------------------------------------
 
-    public async Task<object> ConfigurationAsync(CancellationToken cancellationToken)
+    public async Task<object> ConfigurationAsync(CancellationToken cancellationToken, PosDeviceContext? actor = null, Guid? branchId = null)
     {
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = actor is null
+            ? new Target(await OpenLocalAsync(cancellationToken), null, false)
+            : await OpenTargetAsync(actor, branchId, cancellationToken);
+        var connection = target.Connection;
         await RequireSchemaAsync(connection, cancellationToken);
         var local = InventoryCalendar.LocalNow();
         var period = InventoryCountRules.PeriodType(TimeOnly.FromDateTime(local));
@@ -74,16 +77,17 @@ public sealed class InventoryCountService(
 
         var customInventories = new List<object>();
         await using (var custom = new SqlCommand(
-            """
+            $"""
             IF OBJECT_ID(N'dbo.CustomInventories', N'U') IS NOT NULL
                 SELECT inventory.CustomInventoryID, inventory.InventoryName,
                        (SELECT COUNT(*) FROM dbo.CustomInventoryItems AS item WHERE item.CustomInventoryID = inventory.CustomInventoryID)
                 FROM dbo.CustomInventories AS inventory
-                WHERE inventory.IsActive = 1
+                WHERE inventory.IsActive = 1 {CustomForBranch(target.Remote)}
                 ORDER BY inventory.InventoryName;
             """,
             connection))
         {
+            custom.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = (object?)target.Actor?.BranchId ?? DBNull.Value;
             await using var reader = await custom.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -93,6 +97,8 @@ public sealed class InventoryCountService(
 
         return new
         {
+            branchId = target.Actor?.BranchId,
+            remote = target.Remote,
             customInventories,
             businessDate = DateOnly.FromDateTime(local).ToString("yyyy-MM-dd"),
             periodType = period,
@@ -111,24 +117,28 @@ public sealed class InventoryCountService(
     // ------------------------------------------------------------------
 
     /// <summary>جرد اليوم غير المثبت لنفس الموظف ونفس النوع ونفس مجموعة الصفحات، إن وُجد.</summary>
-    public async Task<object> FindOpenAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, Guid? customInventoryId, CancellationToken cancellationToken)
+    public async Task<object> FindOpenAsync(PosDeviceContext device, string? type, IEnumerable<int>? pages, Guid? customInventoryId, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var normalized = RequireType(type);
         var wanted = InventoryCountRules.NormalizePages(normalized, pages);
         var custom = RequireCustom(normalized, customInventoryId);
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
         await RequireSchemaAsync(connection, cancellationToken);
         var open = await FindOpenSessionAsync(connection, null, actor, normalized, wanted, custom, InventoryCalendar.Today(), cancellationToken);
         return new { session = open is null ? null : await SessionSummaryAsync(connection, null, open.Value, cancellationToken) };
     }
 
-    public async Task<object> StartAsync(PosDeviceContext actor, string? type, IEnumerable<int>? pages, Guid? customInventoryId, bool replaceOpen, CancellationToken cancellationToken)
+    public async Task<object> StartAsync(PosDeviceContext device, string? type, IEnumerable<int>? pages, Guid? customInventoryId, bool replaceOpen, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var normalized = RequireType(type);
         var wanted = InventoryCountRules.NormalizePages(normalized, pages);
         var custom = RequireCustom(normalized, customInventoryId);
         var today = InventoryCalendar.Today();
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
         await RequireSchemaAsync(connection, cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         try
@@ -173,8 +183,10 @@ public sealed class InventoryCountService(
             await using (var insert = new SqlCommand(
                 """
                 INSERT INTO dbo.InventorySessions
-                    (SessionID, BusinessID, BranchID, StationID, DeviceID, UserID, UserName, InventoryType, BusinessDate, Status, CustomInventoryID)
-                VALUES (@id, @business, @branch, @station, @device, @user, @userName, @type, @today, N'Open', @custom);
+                    (SessionID, BusinessID, BranchID, StationID, DeviceID, UserID, UserName, InventoryType, BusinessDate, Status, CustomInventoryID,
+                     StartedAt, LastSavedAt, TotalItems, CountedItems, PostedItems)
+                VALUES (@id, @business, @branch, @station, @device, @user, @userName, @type, @today, N'Open', @custom,
+                        SYSUTCDATETIME(), SYSUTCDATETIME(), 0, 0, 0);
                 """,
                 connection,
                 transaction))
@@ -206,8 +218,8 @@ public sealed class InventoryCountService(
             var total = normalized switch
             {
                 InventoryTypes.Manual => 0,
-                InventoryTypes.Custom => await SnapshotCustomItemsAsync(connection, transaction, actor.BranchId, sessionId, custom!.Value, cancellationToken),
-                _ => await SnapshotItemsAsync(connection, transaction, actor.BranchId, sessionId, normalized, wanted, cancellationToken),
+                InventoryTypes.Custom => await SnapshotCustomItemsAsync(connection, transaction, actor.BranchId, sessionId, custom!.Value, target.Remote, cancellationToken),
+                _ => await SnapshotItemsAsync(connection, transaction, actor.BranchId, sessionId, normalized, wanted, target.Remote, cancellationToken),
             };
             if (normalized != InventoryTypes.Manual && total == 0)
             {
@@ -233,9 +245,11 @@ public sealed class InventoryCountService(
         }
     }
 
-    public async Task<object> ItemsAsync(PosDeviceContext actor, Guid sessionId, bool canReview, CancellationToken cancellationToken)
+    public async Task<object> ItemsAsync(PosDeviceContext device, Guid sessionId, bool canReview, CancellationToken cancellationToken, Guid? branchId = null)
     {
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
         await RequireSchemaAsync(connection, cancellationToken);
         await RequireOwnedAsync(connection, null, actor, sessionId, requireOpen: false, cancellationToken);
         var summary = await SessionSummaryAsync(connection, null, sessionId, cancellationToken);
@@ -260,11 +274,13 @@ public sealed class InventoryCountService(
     }
 
     /// <summary>بحث برقم الصنف أو الباركود. العبوة تُحوَّل إلى صنف مالك المخزون.</summary>
-    public async Task<object> LookupAsync(PosDeviceContext actor, Guid sessionId, string? code, CancellationToken cancellationToken)
+    public async Task<object> LookupAsync(PosDeviceContext device, Guid sessionId, string? code, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var text = code?.Trim() ?? "";
         if (text.Length == 0) throw new InventoryException("يرجى إدخال رقم الصنف.");
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
         await RequireSchemaAsync(connection, cancellationToken);
         var session = await RequireOwnedAsync(connection, null, actor, sessionId, requireOpen: true, cancellationToken);
         var resolved = await ResolveOwnerAsync(connection, null, text, cancellationToken)
@@ -304,10 +320,12 @@ public sealed class InventoryCountService(
         };
     }
 
-    public async Task<object> SaveCountAsync(PosDeviceContext actor, Guid sessionId, Guid itemId, decimal? quantity, bool canReview, CancellationToken cancellationToken)
+    public async Task<object> SaveCountAsync(PosDeviceContext device, Guid sessionId, Guid itemId, decimal? quantity, bool canReview, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var counted = InventoryCountRules.ValidateCountedQuantity(quantity);
-        await using var connection = await OpenLocalAsync(cancellationToken);
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
         await RequireSchemaAsync(connection, cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         try
@@ -331,10 +349,10 @@ public sealed class InventoryCountService(
                     throw new InventoryException("هذا الصنف ليس ضمن هذا الجرد.", StatusCodes.Status404NotFound);
                 }
 
-                await InsertManualItemAsync(connection, transaction, actor.BranchId, sessionId, itemId, cancellationToken);
+                await InsertManualItemAsync(connection, transaction, actor.BranchId, sessionId, itemId, target.Remote, cancellationToken);
             }
 
-            var balance = await ReadBalanceAsync(connection, transaction, actor.BranchId, itemId, cancellationToken);
+            var balance = await ReadBalanceAsync(connection, transaction, actor.BranchId, itemId, target.Remote, cancellationToken);
             await using (var update = new SqlCommand(
                 """
                 UPDATE dbo.InventorySessionItems
@@ -392,8 +410,14 @@ public sealed class InventoryCountService(
     /// «تثبيت الجرد»: يرحّل الأصناف المعدودة فقط، حركة InventoryCount لكل صنف، في معاملة واحدة.
     /// إعادة التثبيت لا تكرر الحركة (SourceLineID = سطر الجرد).
     /// </summary>
-    public async Task<object> FinalizeAsync(PosDeviceContext actor, Guid sessionId, CancellationToken cancellationToken)
+    public async Task<object> FinalizeAsync(PosDeviceContext device, Guid sessionId, CancellationToken cancellationToken, Guid? branchId = null)
     {
+        if (branchId is Guid other && other != Guid.Empty && other != device.BranchId)
+        {
+            return await FinalizeRemoteAsync(device, other, sessionId, cancellationToken);
+        }
+
+        var actor = device;
         await using (var check = await OpenLocalAsync(cancellationToken))
         {
             await RequireSchemaAsync(check, cancellationToken);
@@ -656,18 +680,19 @@ public sealed class InventoryCountService(
         Guid branchId,
         Guid sessionId,
         Guid customInventoryId,
+        bool remote,
         CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             $"""
-             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays)
-             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays
+             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays, IsCounted, SystemQuantityKnown)
+             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays, 0, 0
              FROM dbo.CustomInventoryItems AS custom
              INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = custom.CustomInventoryID AND inventory.IsActive = 1
              INNER JOIN dbo.Items AS item ON item.ItemID = custom.ItemID AND item.IsActive = 1
              LEFT JOIN dbo.ItemInventorySettings AS setting ON setting.ItemNumber = item.ItemNumber
-             LEFT JOIN dbo.ItemBranchInventory AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
-             WHERE custom.CustomInventoryID = @custom
+             LEFT JOIN {Card(remote)} AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
+             WHERE custom.CustomInventoryID = @custom {CustomForBranch(remote)}
                AND {StockOwnerFilter};
              """,
             connection,
@@ -685,6 +710,7 @@ public sealed class InventoryCountService(
         Guid sessionId,
         string type,
         IReadOnlyList<int> pages,
+        bool remote,
         CancellationToken cancellationToken)
     {
         var scope = type == InventoryTypes.Important
@@ -692,11 +718,11 @@ public sealed class InventoryCountService(
             : $"setting.InventoryPage IN ({string.Join(", ", pages.Select((_, index) => $"@page{index}"))})";
         await using var command = new SqlCommand(
             $"""
-             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays)
-             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays
+             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays, IsCounted, SystemQuantityKnown)
+             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays, 0, 0
              FROM dbo.ItemInventorySettings AS setting
              INNER JOIN dbo.Items AS item ON item.ItemNumber = setting.ItemNumber AND item.IsActive = 1
-             LEFT JOIN dbo.ItemBranchInventory AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
+             LEFT JOIN {Card(remote)} AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
              WHERE {scope}
                AND {StockOwnerFilter};
              """,
@@ -718,14 +744,15 @@ public sealed class InventoryCountService(
         Guid branchId,
         Guid sessionId,
         Guid itemId,
+        bool remote,
         CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             $"""
-             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays)
-             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays
+             INSERT INTO dbo.InventorySessionItems (SessionItemID, SessionID, ItemID, ItemNumber, ItemName, DailySalesRate, SupplyDays, IsCounted, SystemQuantityKnown)
+             SELECT NEWID(), @session, item.ItemID, item.ItemNumber, item.ItemName, branchItem.DailySalesRate, setting.SupplyDays, 0, 0
              FROM dbo.Items AS item
-             LEFT JOIN dbo.ItemBranchInventory AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
+             LEFT JOIN {Card(remote)} AS branchItem ON branchItem.BranchID = @branch AND branchItem.ItemID = item.ItemID
              LEFT JOIN dbo.ItemInventorySettings AS setting ON setting.ItemNumber = item.ItemNumber
              WHERE item.ItemID = @item AND item.IsActive = 1 AND {StockOwnerFilter};
              """,
@@ -801,10 +828,12 @@ public sealed class InventoryCountService(
         SqlTransaction transaction,
         Guid branchId,
         Guid itemId,
+        bool remote,
         CancellationToken cancellationToken)
     {
+        // جرد فرع آخر: كمية النظام = رصيد ذلك الفرع كما وصل المركز (لحظياً منذ الترحيل الفوري للحركات).
         await using var command = new SqlCommand(
-            "SELECT OnHandQuantity, IsQuantityInitialized FROM dbo.BranchStockBalances WHERE BranchID = @branch AND ItemID = @item;",
+            $"SELECT OnHandQuantity, IsQuantityInitialized FROM {Balance(remote)} WHERE BranchID = @branch AND ItemID = @item;",
             connection,
             transaction);
         command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branchId;
@@ -981,6 +1010,216 @@ public sealed class InventoryCountService(
             difference,
             quantityAfterPosting = canReview && !reader.IsDBNull(11) ? reader.GetDecimal(11) : (decimal?)null,
         };
+    }
+
+    // ------------------------------------------------------------------
+    // جرد فرع آخر (ملاحظة المالك: لا يُقيَّد الجرد بالفرع الحالي)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// القاعدة التي يجري عليها الجرد: فرع الجهاز على قاعدته المحلية، وأي فرع آخر على المركز
+    /// (نفس الجداول، والرصيد من BranchStockSnapshots). التثبيت على فرع آخر يرسل طلبات تصحيح بالفارق ينفّذها ذلك الفرع.
+    /// </summary>
+    private sealed record Target(SqlConnection Connection, PosDeviceContext? Actor, bool Remote) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => Connection.DisposeAsync();
+    }
+
+    private const string CentralRequired = "جرد فرع آخر يحتاج الاتصال بالمركز، والمركز غير متاح الآن.";
+
+    private async Task<Target> OpenTargetAsync(PosDeviceContext device, Guid? branchId, CancellationToken cancellationToken)
+    {
+        if (branchId is not Guid wanted || wanted == Guid.Empty || wanted == device.BranchId)
+        {
+            return new Target(await OpenLocalAsync(cancellationToken), device, false);
+        }
+
+        var central = await OpenCentralAsync(cancellationToken)
+            ?? throw new InventoryException(CentralRequired, StatusCodes.Status503ServiceUnavailable);
+        try
+        {
+            await using (var check = new SqlCommand(
+                """
+                SELECT CASE
+                    WHEN OBJECT_ID(N'dbo.InventorySessionItems', N'U') IS NULL
+                      OR OBJECT_ID(N'dbo.BranchStockSnapshots', N'U') IS NULL
+                      OR COL_LENGTH(N'dbo.InventorySessions', N'CustomInventoryID') IS NULL
+                      OR COL_LENGTH(N'dbo.InventoryCorrectionRequests', N'DeltaQuantity') IS NULL THEN -1
+                    WHEN EXISTS (SELECT 1 FROM dbo.Branches WHERE BranchID = @branch AND BusinessID = @business AND IsActive = 1) THEN 1
+                    ELSE 0 END;
+                """,
+                central))
+            {
+                check.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = wanted;
+                check.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = device.BusinessId;
+                var state = Convert.ToInt32(await check.ExecuteScalarAsync(cancellationToken));
+                if (state == -1) throw new InventoryException("المركز لم يُحدَّث بعد لجرد فرع آخر (الترحيلات 040–042).", StatusCodes.Status503ServiceUnavailable);
+                if (state == 0) throw new InventoryException("الفرع غير موجود أو غير نشط.", StatusCodes.Status404NotFound);
+            }
+
+            return new Target(central, device with { BranchId = wanted }, true);
+        }
+        catch
+        {
+            await central.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>بطاقة الصنف في الفرع (السرعة): المحلية، أو نسخة الفرع على المركز.</summary>
+    private static string Card(bool remote) => remote ? "dbo.BranchStockSnapshots" : "dbo.ItemBranchInventory";
+
+    /// <summary>رصيد الصنف في الفرع: المحلي، أو نسخة الفرع على المركز.</summary>
+    private static string Balance(bool remote) => remote ? "dbo.BranchStockSnapshots" : "dbo.BranchStockBalances";
+
+    /// <summary>على المركز: الجرد المخصص المخصص لذلك الفرع فقط.</summary>
+    private static string CustomForBranch(bool remote) => remote
+        ? "AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS assigned WHERE assigned.CustomInventoryID = inventory.CustomInventoryID AND assigned.BranchID = @branch)"
+        : "";
+
+    /// <summary>الفروع التي يمكن جردها: فرع الجهاز دائماً، وفروع المركز النشطة (غير المخازن) إن كان متاحاً.</summary>
+    public async Task<object> BranchesAsync(PosDeviceContext device, CancellationToken cancellationToken)
+    {
+        var rows = new List<object>();
+        var seen = new HashSet<Guid>();
+        string? notice = null;
+        var central = await OpenCentralAsync(cancellationToken);
+        if (central is not null)
+        {
+            await using var lease = central;
+            try
+            {
+                await using var command = new SqlCommand(
+                    """
+                    SELECT branch.BranchID, branch.BranchName, status.LastPushAt
+                    FROM dbo.Branches AS branch
+                    LEFT JOIN dbo.BranchSnapshotStatus AS status ON status.BranchID = branch.BranchID
+                    WHERE branch.BusinessID = @business AND branch.IsActive = 1
+                      AND ISNULL(branch.BranchType, N'') <> N'Warehouse'
+                    ORDER BY CASE WHEN branch.BranchID = @current THEN 0 ELSE 1 END, branch.BranchName;
+                    """,
+                    central);
+                command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = device.BusinessId;
+                command.Parameters.Add("@current", SqlDbType.UniqueIdentifier).Value = device.BranchId;
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                var now = DateTime.UtcNow;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var id = reader.GetGuid(0);
+                    if (!seen.Add(id)) continue;
+                    var last = reader.IsDBNull(2) ? (DateTime?)null : Utc(reader.GetDateTime(2));
+                    var current = id == device.BranchId;
+                    rows.Add(new { branchId = id, branchName = reader.GetString(1), current, lastPushAt = last, stale = !current && InventoryRelayRules.IsStale(last, now) });
+                }
+            }
+            catch (SqlException exception)
+            {
+                logger.LogWarning(exception, "Inventory: central branch list was not read.");
+                notice = "تعذر قراءة فروع المركز. يظهر فرع هذا الجهاز فقط.";
+            }
+        }
+        else
+        {
+            notice = "المركز غير متاح الآن. يظهر فرع هذا الجهاز فقط.";
+        }
+
+        if (seen.Add(device.BranchId))
+        {
+            var name = "هذا الفرع";
+            await using var local = await OpenLocalAsync(cancellationToken);
+            await using var read = new SqlCommand("SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", local);
+            read.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = device.BranchId;
+            if (await read.ExecuteScalarAsync(cancellationToken) is string found && found.Length > 0) name = found;
+            rows.Insert(0, new { branchId = device.BranchId, branchName = name, current = true, lastPushAt = (DateTime?)null, stale = false });
+        }
+
+        return new { branches = rows, notice };
+    }
+
+    /// <summary>
+    /// تثبيت جرد فرع آخر (قرار المالك: التصحيح عن بُعد بالفارق): لكل صنف معدود طلب تصحيح يحمل المفترضة
+    /// (رصيد الفرع لحظة العد) والمعدودة والفارق، ينفّذه ذلك الفرع بإضافة الفارق إلى رصيده الحالي.
+    /// معرّف الطلب = سطر الجرد، فإعادة التثبيت لا تكرر الطلب.
+    /// </summary>
+    private async Task<object> FinalizeRemoteAsync(PosDeviceContext device, Guid branchId, Guid sessionId, CancellationToken cancellationToken)
+    {
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        try
+        {
+            await using (var lockSession = new SqlCommand(
+                "SELECT Status FROM dbo.InventorySessions WITH (UPDLOCK, HOLDLOCK) WHERE SessionID = @id;",
+                connection,
+                transaction))
+            {
+                lockSession.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                await lockSession.ExecuteScalarAsync(cancellationToken);
+            }
+
+            var session = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
+            var from = "فرع آخر";
+            await using (var origin = new SqlCommand("SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", connection, transaction))
+            {
+                origin.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = device.BranchId;
+                if (await origin.ExecuteScalarAsync(cancellationToken) is string name && name.Length > 0) from = name;
+            }
+
+            await using (var send = new SqlCommand(
+                """
+                INSERT INTO dbo.InventoryCorrectionRequests
+                    (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, ExpectedQuantity, DeltaQuantity,
+                     Reason, RequestedByUserID, RequestedByName)
+                SELECT line.SessionItemID, @branch, line.ItemID, line.ItemNumber, line.ItemName, line.CountedQuantity,
+                       CASE WHEN line.SystemQuantityKnown = 1 THEN line.SystemQuantityAtCount END,
+                       CASE WHEN line.SystemQuantityKnown = 1 THEN line.CountedQuantity - line.SystemQuantityAtCount END,
+                       @reason, @user, @userName
+                FROM dbo.InventorySessionItems AS line
+                WHERE line.SessionID = @id AND line.IsCounted = 1 AND line.CountedQuantity IS NOT NULL AND line.PostedAt IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests AS existing WHERE existing.RequestID = line.SessionItemID);
+
+                UPDATE dbo.InventorySessionItems
+                SET PostedAt = SYSUTCDATETIME(),
+                    QuantityBeforePosting = CASE WHEN SystemQuantityKnown = 1 THEN SystemQuantityAtCount END
+                WHERE SessionID = @id AND IsCounted = 1 AND CountedQuantity IS NOT NULL AND PostedAt IS NULL;
+                SELECT @@ROWCOUNT;
+                """,
+                connection,
+                transaction))
+            {
+                send.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                send.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+                send.Parameters.Add("@reason", SqlDbType.NVarChar, 500).Value = Limit($"{InventoryTypes.Label(session.Type)} من جهاز في {from}", 500)!;
+                send.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
+                send.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
+                var posted = Convert.ToInt32(await send.ExecuteScalarAsync(cancellationToken));
+
+                await using (var complete = new SqlCommand(
+                    """
+                    UPDATE dbo.InventorySessions
+                    SET Status = N'Completed', CompletedAt = SYSUTCDATETIME(), LastSavedAt = SYSUTCDATETIME(),
+                        PostedItems = (SELECT COUNT(*) FROM dbo.InventorySessionItems WHERE SessionID = @id AND PostedAt IS NOT NULL)
+                    WHERE SessionID = @id;
+                    """,
+                    connection,
+                    transaction))
+                {
+                    complete.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                    await complete.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await UpdateCountersAsync(connection, transaction, sessionId, cancellationToken);
+                var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new { session = summary, posted, remote = true };
+            }
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
     }
 
     internal async Task<SqlConnection> OpenLocalAsync(CancellationToken cancellationToken)

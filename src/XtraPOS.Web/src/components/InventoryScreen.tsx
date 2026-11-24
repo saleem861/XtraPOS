@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createInventoryClient,
+  type InventoryBranch,
   type InventoryConfiguration,
   type InventoryItem,
   type InventoryLookup,
@@ -26,6 +27,7 @@ import {
 } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
+import { Pager, usePaging } from "./Pager";
 import { distinctBy } from "../distinct";
 import { InventoryReportPanel, ItemProcessingPanel, type BackHandler } from "./InventoryReviewPanels";
 import {
@@ -68,7 +70,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
   permissions: readonly string[];
   onBack: () => void;
 }) {
-  const client = useMemo(() => createInventoryClient(session), [session]);
+  const [branch, setBranch] = useState<InventoryBranch | null>(null);
+  const [branches, setBranches] = useState<InventoryBranch[] | null>(null);
+  const [branchNotice, setBranchNotice] = useState("");
+  const [pendingBranch, setPendingBranch] = useState("");
+  const baseClient = useMemo(() => createInventoryClient(session), [session]);
+  const client = useMemo(() => createInventoryClient(session, branch?.branchId ?? ""), [session, branch]);
   const reviewClient = useMemo(() => createInventoryReviewClient(session), [session]);
   const shortageClient = useMemo(() => createShortageClient(session), [session]);
   const panelBack = useRef<BackHandler | null>(null);
@@ -81,7 +88,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [pages, setPages] = useState<number[]>([]);
   const [openSession, setOpenSession] = useState<InventorySession | null>(null);
   const [active, setActive] = useState<InventorySession | null>(null);
-  const [finished, setFinished] = useState<{ session: InventorySession; posted: number } | null>(null);
+  const [finished, setFinished] = useState<{ session: InventorySession; posted: number; remote?: boolean } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -94,6 +101,20 @@ export function InventoryScreen({ session, permissions, onBack }: {
       .catch((error: Error) => { if (!cancelled) setMessage(error.message); });
     return () => { cancelled = true; };
   }, [client]);
+
+  /** الفروع للجرد: فرع الجهاز أولاً، ثم فروع المركز. بلا مركز يبقى فرع الجهاز وحده. */
+  function openBranches() {
+    setMessage("");
+    setStep("branch");
+    const fallback: InventoryBranch[] = [{ branchId: session.branchId, branchName: session.branchName, current: true, lastPushAt: null, stale: false }];
+    void baseClient.branches()
+      .then((value) => {
+        const list = distinctBy(value?.branches?.length ? value.branches : fallback, (entry) => entry.branchName);
+        setBranches(list);
+        setBranchNotice(value?.notice ?? "");
+      })
+      .catch(() => { setBranches(fallback); setBranchNotice("تعذر تحميل الفروع. يظهر فرع هذا الجهاز فقط."); });
+  }
 
   function back() {
     setMessage("");
@@ -119,14 +140,23 @@ export function InventoryScreen({ session, permissions, onBack }: {
     }
   }
 
-  /** المسار: الجرد ← الفرع ← تأكيد اسم الفرع ← نوع الجرد. */
-  function confirmBranch() {
+  /** المسار: الجرد ← الفرع ← تأكيد اسم الفرع ← نوع الجرد. الفرع المختار يُظلَّل ويبقى ظاهراً أثناء التأكيد. */
+  function confirmBranch(chosen: InventoryBranch) {
     setMessage("");
+    setPendingBranch(chosen.branchId);
+    const remote = chosen.branchId !== session.branchId;
     setConfirmation({
       title: "تأكيد الفرع",
-      message: `سيتم الجرد على فرع «${session.branchName}». هل هذا هو الفرع الصحيح؟`,
+      message: `سيتم الجرد على فرع «${chosen.branchName}». هل هذا هو الفرع الصحيح؟`
+        + (remote ? " الجرد على فرع آخر يجري على المركز برصيد ذلك الفرع، وعند التثبيت يُرسل الفارق للفرع فيضيفه إلى رصيده الحالي." : "")
+        + (chosen.stale ? " تنبيه: نسخة هذا الفرع على المركز أقدم من 30 دقيقة." : ""),
       accept: "نعم، متابعة",
-      onAccept: () => setStep("type"),
+      onAccept: () => {
+        setPendingBranch("");
+        if (branch?.branchId !== chosen.branchId) setConfig(null);
+        setBranch(chosen);
+        setStep("type");
+      },
     });
   }
 
@@ -201,7 +231,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   return (
     <section className="new-customer sales-review inventory-screen" dir="rtl" aria-label="الجرد">
-      <ScreenHeader title={title} context={session.branchName} onBack={back} />
+      <ScreenHeader title={title} context={branch && step !== "menu" && !PANEL_TITLES[step] ? branch.branchName : session.branchName} onBack={back} />
       <div className="inventory-body">
         {message ? <p className="form-error inventory-message" role="alert">{message}</p> : null}
         {step === "menu" ? (
@@ -215,7 +245,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                 disabled={!card.available}
                 onClick={() => {
                   setMessage("");
-                  if (card.id === "count") setStep("branch");
+                  if (card.id === "count") openBranches();
                   else if (card.id in PANEL_TITLES) setStep(card.id as Step);
                 }}
               >
@@ -229,16 +259,29 @@ export function InventoryScreen({ session, permissions, onBack }: {
         {step === "branch" ? (
           <div className="inventory-menu">
             <p className="inventory-hint">اختر الفرع</p>
-            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={confirmBranch}>
-              <strong>{session.branchName}</strong>
-              <small>فرع هذا الجهاز</small>
-            </button>
+            {branchNotice ? <p className="inventory-hint is-warning">{branchNotice}</p> : null}
+            {branches === null ? <Waiting compact label="جاري تحميل الفروع..." /> : branches.map((entry) => {
+              const selected = (confirmation?.title === "تأكيد الفرع" && pendingBranch === entry.branchId) || (!confirmation && branch?.branchId === entry.branchId);
+              return (
+                <button
+                  key={entry.branchId}
+                  type="button"
+                  className={selected ? "inventory-card is-selected" : "inventory-card"}
+                  aria-pressed={selected}
+                  disabled={Boolean(busy)}
+                  onClick={() => confirmBranch(entry)}
+                >
+                  <strong>{entry.branchName}</strong>
+                  <small>{entry.current ? "فرع هذا الجهاز" : entry.stale ? "على المركز · النسخة أقدم من 30 دقيقة" : "على المركز"}</small>
+                </button>
+              );
+            })}
           </div>
         ) : null}
 
         {step === "type" ? (
           <div className="inventory-menu">
-            <p className="inventory-hint">الفرع: {session.branchName} · اختر نوع الجرد</p>
+            <p className="inventory-hint">الفرع: {branch?.branchName ?? session.branchName} · اختر نوع الجرد</p>
             {INVENTORY_TYPES.map((option) => (
               <button key={option.value} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => chooseType(option.value)}>
                 <strong>{option.label}</strong>
@@ -389,14 +432,18 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
         {step === "done" && finished ? (
           <div className="inventory-done">
-            <strong>تم تثبيت الجرد وتحديث المخزون بنجاح.</strong>
+            <strong>{finished.remote ? `تم تثبيت جرد ${branch?.branchName ?? "الفرع"} وإرسال الفروقات إليه.` : "تم تثبيت الجرد وتحديث المخزون بنجاح."}</strong>
             <dl>
               <div><dt>إجمالي الأصناف</dt><dd>{finished.session.totalItems}</dd></div>
               <div><dt>تم جردها</dt><dd>{finished.session.countedItems}</dd></div>
               <div><dt>غير مجرودة</dt><dd>{finished.session.uncountedItems}</dd></div>
-              <div><dt>تم ترحيلها</dt><dd>{finished.posted}</dd></div>
+              <div><dt>{finished.remote ? "أُرسلت للفرع" : "تم ترحيلها"}</dt><dd>{finished.posted}</dd></div>
             </dl>
-            <p className="inventory-hint">تم تحديث كميات الأصناف المجرودة فقط. الأصناف غير المجرودة لم تُغيَّر كمياتها.</p>
+            <p className="inventory-hint">
+              {finished.remote
+                ? "ينفّذ الفرع كل فارق بإضافته إلى رصيده الحالي خلال دقيقة إذا كان متصلاً، فلا يضيع بيع حدث أثناء الجرد. الأصناف غير المجرودة لم تُغيَّر."
+                : "تم تحديث كميات الأصناف المجرودة فقط. الأصناف غير المجرودة لم تُغيَّر كمياتها."}
+            </p>
             <button type="button" className="primary-button" onClick={() => { setFinished(null); setStep("type"); }}>جرد آخر</button>
             <button type="button" className="ghost-button" onClick={onBack}>العودة إلى البيع</button>
           </div>
@@ -428,7 +475,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
   onMessage: (message: string) => void;
   onConfirm: (confirmation: Confirmation) => void;
   onSaveAndExit: () => void;
-  onFinished: (result: { session: InventorySession; posted: number }) => void;
+  onFinished: (result: { session: InventorySession; posted: number; remote?: boolean }) => void;
 }) {
   const manual = session.inventoryType === "Manual";
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -461,6 +508,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
   useEffect(() => { void load(); }, [load]);
 
   const visible = useMemo(() => filterItems(items, tab, manual && tab === "current" ? "" : query), [items, tab, query, manual]);
+  const paging = usePaging(visible, `${tab}|${query}`);
 
   async function save(itemId: string) {
     const quantity = parseCountInput(drafts[itemId] ?? "");
@@ -607,7 +655,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
             </article>
           ) : <p className="inventory-hint">اكتب رقم الصنف أو امسح الباركود ثم اضغط «إضافة».</p>
         ) : null}
-        {!loading && !(manual && tab === "current") ? visible.map((item) => (
+        {!loading && !(manual && tab === "current") ? paging.visible.map((item) => (
           <article key={item.itemId} className={savedId === item.itemId ? "inventory-row is-saved" : "inventory-row"}>
             <div className="inventory-row-name">
               <span className="inventory-number">{item.itemNumber}</span>
@@ -632,6 +680,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
         {!loading && !(manual && tab === "current") && visible.length === 0 ? (
           <p className="inventory-hint">{tab === "counted" ? "لم يتم جرد أي صنف بعد." : "لا توجد أصناف مطابقة للبحث في الجرد الحالي."}</p>
         ) : null}
+        {!loading && !(manual && tab === "current") ? <Pager {...paging} /> : null}
       </div>
 
       <footer className="inventory-actions">

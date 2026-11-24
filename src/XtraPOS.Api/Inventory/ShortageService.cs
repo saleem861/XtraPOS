@@ -340,7 +340,8 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         await using (var command = new SqlCommand(
             """
             SELECT ItemID, ItemNumber, ItemName, TotalNeed, TotalSurplus, RequiredQuantity, BalanceQuantity, MissingRate, MissingQuantity,
-                   IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note, ProcessedByName
+                   IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note, ProcessedByName,
+                   SubstituteItemNumber
             FROM dbo.ShortageRunItems WHERE RunID = @run ORDER BY IsProcessed, ItemNumber;
             """,
             central))
@@ -369,6 +370,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                     alreadySupplied = reader.GetBoolean(14),
                     note = Str(reader, 15),
                     processedByName = Str(reader, 16),
+                    substituteItemNumber = Str(reader, 17),
                     branches = branchRows.GetValueOrDefault(itemId) ?? new List<object>(),
                 });
             }
@@ -382,11 +384,21 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         var clean = decision is null ? null : ShortageRules.ValidateDecision(decision);
         await using var central = await CentralAsync(cancellationToken);
         await RequireOwnDraftAsync(central, null, actor, runId, cancellationToken);
+        // البديل في طلب الحذف: يُربط بصنف مالك المخزون الفعلي، ولا يكون نفس الصنف.
+        InventoryCountService.OwnerResolution? substitute = null;
+        if (clean?.Substitute is string code)
+        {
+            substitute = await InventoryCountService.ResolveOwnerAsync(central, null, code, cancellationToken)
+                ?? throw new InventoryException($"الصنف البديل {code} غير موجود.", StatusCodes.Status404NotFound);
+            if (substitute.OwnerItemId == itemId) throw new InventoryException("الصنف البديل لا يكون نفس الصنف المطلوب حذفه.");
+        }
+
         await using var command = new SqlCommand(
             """
             UPDATE dbo.ShortageRunItems
             SET IsProcessed = @processed, PurchaseQuantity = @purchase, WarehouseQuantity = @warehouse, BalanceDecision = @balance,
                 DeleteRequested = @delete, AlreadySupplied = @supplied, Note = @note,
+                SubstituteItemID = @substitute, SubstituteItemNumber = @substituteNumber,
                 ProcessedAt = CASE WHEN @processed = 1 THEN SYSUTCDATETIME() END,
                 ProcessedByName = CASE WHEN @processed = 1 THEN @by END
             WHERE RunID = @run AND ItemID = @item;
@@ -402,9 +414,11 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         command.Parameters.Add("@delete", SqlDbType.Bit).Value = clean?.Delete ?? false;
         command.Parameters.Add("@supplied", SqlDbType.Bit).Value = clean?.AlreadySupplied ?? false;
         Text(command, "@note", clean?.Note, 500);
+        NullableGuid(command, "@substitute", substitute?.OwnerItemId);
+        Text(command, "@substituteNumber", substitute?.OwnerItemNumber, 100);
         Text(command, "@by", actor.DisplayName, 200);
         await command.ExecuteNonQueryAsync(cancellationToken);
-        return new { saved = true };
+        return new { saved = true, substituteItemNumber = substitute?.OwnerItemNumber, substituteItemName = substitute?.OwnerItemName };
     }
 
     /// <summary>التثبيت النهائي: كل صنف ناقص يجب أن يُعالج، ثم تتحول القرارات إلى مهام «متابعة النواقص».</summary>
@@ -415,11 +429,12 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         try
         {
             await RequireOwnDraftAsync(central, transaction, actor, runId, cancellationToken);
-            var decisions = new List<(Guid ItemId, string Number, string? Name, ShortageDecision Decision)>();
+            var decisions = new List<(Guid ItemId, string Number, string? Name, ShortageDecision Decision, Guid? SubstituteId, string? SubstituteNumber)>();
             var unprocessed = 0;
             await using (var read = new SqlCommand(
                 """
-                SELECT ItemID, ItemNumber, ItemName, IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note
+                SELECT ItemID, ItemNumber, ItemName, IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note,
+                       SubstituteItemID, SubstituteItemNumber
                 FROM dbo.ShortageRunItems WHERE RunID = @run;
                 """,
                 central,
@@ -436,7 +451,8 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                     }
 
                     decisions.Add((reader.GetGuid(0), reader.GetString(1), Str(reader, 2),
-                        new ShortageDecision(Dec(reader, 4), Dec(reader, 5), Dec(reader, 6), reader.GetBoolean(7), reader.GetBoolean(8), Str(reader, 9))));
+                        new ShortageDecision(Dec(reader, 4), Dec(reader, 5), Dec(reader, 6), reader.GetBoolean(7), reader.GetBoolean(8), Str(reader, 9)),
+                        reader.IsDBNull(10) ? null : reader.GetGuid(10), Str(reader, 11)));
                 }
             }
 
@@ -451,6 +467,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                          ("TaskID", typeof(Guid)), ("BusinessID", typeof(Guid)), ("RunID", typeof(Guid)), ("ItemID", typeof(Guid)),
                          ("ItemNumber", typeof(string)), ("ItemName", typeof(string)), ("TaskType", typeof(string)), ("Quantity", typeof(decimal)),
                          ("Note", typeof(string)), ("Status", typeof(string)), ("AssignedByName", typeof(string)), ("ApprovalStatus", typeof(string)),
+                         ("SubstituteItemID", typeof(Guid)), ("SubstituteItemNumber", typeof(string)),
                      })
             {
                 tasks.Columns.Add(name, kind);
@@ -462,7 +479,9 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                 {
                     tasks.Rows.Add(Guid.NewGuid(), actor.BusinessId, runId, entry.ItemId, entry.Number, (object?)entry.Name ?? DBNull.Value,
                         taskType, (object?)quantity ?? DBNull.Value, (object?)entry.Decision.Note ?? DBNull.Value, "Open",
-                        (object?)actor.DisplayName ?? DBNull.Value, taskType == ShortageTaskTypes.Delete ? "Pending" : DBNull.Value);
+                        (object?)actor.DisplayName ?? DBNull.Value, taskType == ShortageTaskTypes.Delete ? "Pending" : DBNull.Value,
+                        taskType == ShortageTaskTypes.Delete && entry.SubstituteId is Guid substituteId ? substituteId : DBNull.Value,
+                        taskType == ShortageTaskTypes.Delete ? (object?)entry.SubstituteNumber ?? DBNull.Value : DBNull.Value);
                 }
             }
 
@@ -682,14 +701,16 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
             var done = selected == "Done";
             await using var command = new SqlCommand(
                 $"""
-                 SELECT TaskID, ItemID, ItemNumber, ItemName, TaskType, Quantity, Note, Status, AssignedAt, AssignedByName,
-                        ApprovalStatus, DecidedByName, CompletedAt, CompletedByName
-                 FROM dbo.ShortageTasks
-                 WHERE BusinessID = @business
+                 SELECT task.TaskID, task.ItemID, task.ItemNumber, task.ItemName, task.TaskType, task.Quantity, task.Note, task.Status,
+                        task.AssignedAt, task.AssignedByName, task.ApprovalStatus, task.DecidedByName, task.CompletedAt, task.CompletedByName,
+                        task.SubstituteItemNumber, substitute.ItemName
+                 FROM dbo.ShortageTasks AS task
+                 LEFT JOIN dbo.Items AS substitute ON substitute.ItemID = task.SubstituteItemID
+                 WHERE task.BusinessID = @business
                    AND {(done
-                       ? "Status <> N'Open' AND CompletedAt >= @from AND CompletedAt < @to"
-                       : "Status = N'Open' AND TaskType = @type AND AssignedAt >= @from AND AssignedAt < @to")}
-                 ORDER BY {(done ? "CompletedAt DESC" : "AssignedAt")};
+                       ? "task.Status <> N'Open' AND task.CompletedAt >= @from AND task.CompletedAt < @to"
+                       : "task.Status = N'Open' AND task.TaskType = @type AND task.AssignedAt >= @from AND task.AssignedAt < @to")}
+                 ORDER BY {(done ? "task.CompletedAt DESC" : "task.AssignedAt")};
                  """,
                 central);
             Id(command, "@business", actor.BusinessId);
@@ -715,6 +736,8 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                     decidedByName = Str(reader, 11),
                     completedAt = UtcOrNull(reader, 12),
                     completedByName = Str(reader, 13),
+                    substituteItemNumber = Str(reader, 14),
+                    substituteItemName = Str(reader, 15),
                 });
             }
         }
