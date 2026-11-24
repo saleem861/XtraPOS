@@ -31,11 +31,11 @@ public static class InventoryEndpoints
         return await RunAsync(() => inventory.ConfigurationAsync(cancellationToken));
     }
 
-    private static async Task<IResult> OpenAsync(string? type, string? pages, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> OpenAsync(string? type, string? pages, Guid? customInventoryId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.FindOpenAsync(caller.Context!, type, ParsePages(pages), cancellationToken));
+        return await RunAsync(() => inventory.FindOpenAsync(caller.Context!, type, ParsePages(pages), customInventoryId, cancellationToken));
     }
 
     private static async Task<IResult> StartAsync(StartBody? body, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
@@ -43,7 +43,7 @@ public static class InventoryEndpoints
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
         if (body is null) return Results.Json(new { message = "الطلب فارغ." }, statusCode: StatusCodes.Status400BadRequest);
-        return await RunAsync(() => inventory.StartAsync(caller.Context!, body.InventoryType, body.Pages, body.ReplaceOpen, cancellationToken));
+        return await RunAsync(() => inventory.StartAsync(caller.Context!, body.InventoryType, body.Pages, body.CustomInventoryId, body.ReplaceOpen, cancellationToken));
     }
 
     private static async Task<IResult> ItemsAsync(Guid sessionId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
@@ -121,6 +121,7 @@ public static class InventoryEndpoints
     {
         public string? InventoryType { get; set; }
         public List<int>? Pages { get; set; }
+        public Guid? CustomInventoryId { get; set; }
         public bool ReplaceOpen { get; set; }
     }
 
