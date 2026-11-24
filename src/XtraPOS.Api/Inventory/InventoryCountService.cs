@@ -607,7 +607,7 @@ public sealed class InventoryCountService(
 
     private sealed record SessionRow(Guid Id, string Type, string Status);
 
-    private sealed record OwnerResolution(Guid ScannedItemId, string ScannedItemNumber, Guid OwnerItemId, string OwnerItemNumber, string OwnerItemName);
+    internal sealed record OwnerResolution(Guid ScannedItemId, string ScannedItemNumber, Guid OwnerItemId, string OwnerItemNumber, string OwnerItemName);
 
     private static string RequireType(string? type) =>
         InventoryTypes.Normalize(type) ?? throw new InventoryException("نوع الجرد غير صالح.");
@@ -674,7 +674,7 @@ public sealed class InventoryCountService(
         }
     }
 
-    private static async Task<OwnerResolution?> ResolveOwnerAsync(
+    internal static async Task<OwnerResolution?> ResolveOwnerAsync(
         SqlConnection connection,
         SqlTransaction? transaction,
         string code,
@@ -914,14 +914,14 @@ public sealed class InventoryCountService(
         };
     }
 
-    private async Task<SqlConnection> OpenLocalAsync(CancellationToken cancellationToken)
+    internal async Task<SqlConnection> OpenLocalAsync(CancellationToken cancellationToken)
     {
         var connection = new SqlConnection(connections.CreateBranchConnectionString());
         await connection.OpenAsync(cancellationToken);
         return connection;
     }
 
-    private async Task<SqlConnection?> OpenCentralAsync(CancellationToken cancellationToken)
+    internal async Task<SqlConnection?> OpenCentralAsync(CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(CentralTimeout);
