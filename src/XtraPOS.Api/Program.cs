@@ -271,6 +271,7 @@ builder.Services.AddScoped<CreditHistoryService>();
 builder.Services.AddHostedService<CreditOutboxWorker>();
 builder.Services.AddScoped<PosDeviceSettingsService>();
 builder.Services.AddHostedService<PosDeviceSettingsSyncWorker>();
+builder.Services.AddHostedService<XtraPOS.Api.Catalog.StockCentralRelayWorker>();
 builder.Services.AddHostedService<FinancialInboxWorker>();
 builder.Services.AddHostedService<CustomerReplicaSyncWorker>();
 builder.Services.AddHostedService<BranchDatabaseHostedService>();

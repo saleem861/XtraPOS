@@ -37,6 +37,12 @@ public static class BranchOperationLog
 {
     public const string RetentionSettingKey = "OperationLogRetentionDays";
 
+    /// <summary>
+    /// حركات الكمية (قرار المالك: ترحيل فوري للمركز). فروق مستقلة لا تعتمد على ترتيب، فلا تدخل في رأس الطابور
+    /// ولا تؤخر العمليات المرتبة (الآجل، السداد...). يرسلها StockCentralRelayWorker.
+    /// </summary>
+    public const string StockMovementType = "StockMovement";
+
     public static async Task EnqueueAsync(
         SqlConnection branch,
         SqlTransaction transaction,
@@ -107,6 +113,7 @@ public static class BranchOperationLog
                 SELECT 1
                 FROM dbo.BranchOperationLog AS earlier
                 WHERE earlier.Status NOT IN (N'Completed', N'Cancelled')
+                  AND earlier.OperationType <> N'StockMovement'
                   AND earlier.Serial < ISNULL((SELECT currentRow.Serial FROM dbo.BranchOperationLog AS currentRow WHERE currentRow.OperationID = @operation), 2147483647)
             ) THEN 1 ELSE 0 END;
             """,
@@ -126,7 +133,7 @@ public static class BranchOperationLog
             """
             SELECT TOP (1) OperationType
             FROM dbo.BranchOperationLog
-            WHERE Status NOT IN (N'Completed', N'Cancelled')
+            WHERE Status NOT IN (N'Completed', N'Cancelled') AND OperationType <> N'StockMovement'
             ORDER BY Serial;
             """,
             branch);
@@ -144,7 +151,7 @@ public static class BranchOperationLog
             """
             SELECT TOP (1) OperationID
             FROM dbo.BranchOperationLog
-            WHERE Status NOT IN (N'Completed', N'Cancelled')
+            WHERE Status NOT IN (N'Completed', N'Cancelled') AND OperationType <> N'StockMovement'
             ORDER BY Serial;
             """,
             branch);
@@ -206,7 +213,7 @@ public static class BranchOperationLog
               AND (@to IS NULL OR CreatedAt < @to)
               AND (@destination IS NULL OR DestinationName = @destination)
             ORDER BY Serial;
-            SELECT MIN(Serial) FROM dbo.BranchOperationLog WHERE Status IN (N'Pending', N'Executing', N'Blocked');
+            SELECT MIN(Serial) FROM dbo.BranchOperationLog WHERE Status IN (N'Pending', N'Executing', N'Blocked') AND OperationType <> N'StockMovement';
             SELECT DISTINCT DestinationName FROM dbo.BranchOperationLog ORDER BY DestinationName;
             """,
             branch);

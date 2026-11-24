@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseItemCodes, parseOptionalQuantity } from "../inventory/inventoryRules";
+import { correctionDifference, parseItemCodes, parseOptionalQuantity } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { InventoryScreen } from "./InventoryScreen";
 
@@ -157,5 +157,18 @@ describe("shortage rules", () => {
     expect(parseOptionalQuantity("")).toBeNull();
     expect(parseOptionalQuantity("٣")).toBe(3);
     expect(parseOptionalQuantity("-2")).toBeUndefined();
+  });
+});
+
+describe("remote correction by difference", () => {
+  it("sends the difference: expected 7, counted 5 → −2, so a branch at 6 ends at 4", () => {
+    expect(correctionDifference(7, 5)).toBe(-2);
+    expect(6 + (correctionDifference(7, 5) ?? 0)).toBe(4);
+    expect(correctionDifference(2.5, 4)).toBe(1.5);
+  });
+
+  it("has no difference when the branch balance is unknown", () => {
+    expect(correctionDifference(null, 5)).toBeNull();
+    expect(correctionDifference(7, null)).toBeNull();
   });
 });

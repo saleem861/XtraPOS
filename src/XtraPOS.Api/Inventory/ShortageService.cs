@@ -506,7 +506,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
             SELECT branch.BranchID, branch.BranchName,
                    CASE WHEN snapshot.IsQuantityInitialized = 1 THEN snapshot.OnHandQuantity END, snapshot.DailySalesRate, snapshot.ReceivedAt,
                    lastCount.CountedQuantity, lastCount.CountedAt, lastCount.CountedByName,
-                   pending.NewQuantity, pending.RequestedAt
+                   pending.NewQuantity, pending.RequestedAt, pending.ExpectedQuantity, pending.DeltaQuantity
             FROM dbo.Branches AS branch
             LEFT JOIN dbo.BranchStockSnapshots AS snapshot ON snapshot.BranchID = branch.BranchID AND snapshot.ItemID = @item
             OUTER APPLY (
@@ -516,7 +516,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                 WHERE countSession.BranchID = branch.BranchID AND line.ItemID = @item AND line.IsCounted = 1
                 ORDER BY line.CountedAt DESC) AS lastCount
             OUTER APPLY (
-                SELECT TOP (1) request.NewQuantity, request.RequestedAt
+                SELECT TOP (1) request.NewQuantity, request.RequestedAt, request.ExpectedQuantity, request.DeltaQuantity
                 FROM dbo.InventoryCorrectionRequests AS request
                 WHERE request.BranchID = branch.BranchID AND request.ItemID = @item AND request.Status = N'Pending'
                 ORDER BY request.RequestedAt DESC) AS pending
@@ -543,6 +543,8 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
                 lastCountedBy = Str(reader, 7),
                 pendingCorrection = Dec(reader, 8),
                 pendingSince = UtcOrNull(reader, 9),
+                pendingExpected = Dec(reader, 10),
+                pendingDelta = Dec(reader, 11),
             });
         }
 
@@ -557,7 +559,8 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         Guid requestId,
         decimal? quantity,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        decimal? expectedQuantity = null)
     {
         if (branchId == actor.BranchId)
         {
@@ -569,18 +572,29 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         var value = InventoryCountRules.ValidateCountedQuantity(quantity);
         var why = InventoryReviewRules.RequireReason(reason);
         await using var central = await CentralAsync(cancellationToken);
+        // قرار المالك: الطلب يحمل المفترضة (رصيد الفرع الذي رآه المصحّح) والمعدودة والفارق،
+        // والفرع يضيف الفارق إلى رصيده الحالي، فلا يضيع بيع حدث قبل المزامنة.
+        // بلا رصيد معروف للفرع لا يوجد فارق: يضع الفرع المعدودة كما هي.
         await using var command = new SqlCommand(
             """
+            DECLARE @expected decimal(18, 4) = @seen;
+            IF @expected IS NULL
+                SELECT @expected = CASE WHEN snapshot.IsQuantityInitialized = 1 THEN snapshot.OnHandQuantity END
+                FROM dbo.BranchStockSnapshots AS snapshot
+                WHERE snapshot.BranchID = @branch AND snapshot.ItemID = @item;
             IF NOT EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests WHERE RequestID = @id)
                 INSERT INTO dbo.InventoryCorrectionRequests
-                    (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, Reason, RequestedByUserID, RequestedByName)
-                SELECT @id, branch.BranchID, item.ItemID, item.ItemNumber, item.ItemName, @quantity, @reason, @user, @name
+                    (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, ExpectedQuantity, DeltaQuantity,
+                     Reason, RequestedByUserID, RequestedByName)
+                SELECT @id, branch.BranchID, item.ItemID, item.ItemNumber, item.ItemName, @quantity, @expected, @quantity - @expected,
+                       @reason, @user, @name
                 FROM dbo.Items AS item
                 CROSS JOIN dbo.Branches AS branch
                 WHERE item.ItemID = @item AND branch.BranchID = @branch AND branch.BusinessID = @business;
             SELECT COUNT(*) FROM dbo.InventoryCorrectionRequests WHERE RequestID = @id;
             """,
             central);
+        Num(command, "@seen", expectedQuantity);
         Id(command, "@id", requestId);
         Id(command, "@item", itemId);
         Id(command, "@branch", branchId);

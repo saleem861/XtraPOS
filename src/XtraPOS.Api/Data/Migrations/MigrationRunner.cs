@@ -117,6 +117,9 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     public const string InventoryReviewMigrationName = "Inventory report, supervisor audit and quantity corrections";
     public const string InventoryCustomMigrationId = "056_InventoryCustom";
     public const string InventoryCustomMigrationName = "Custom inventories on the branch";
+    // Owner decision, 24 November 2026: every stock movement goes to central at once; remote corrections by difference.
+    public const string StockCentralRelayMigrationId = "057_StockCentralRelay";
+    public const string StockCentralRelayMigrationName = "Stock movements relayed to central and corrections by difference";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -351,6 +354,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             InventoryCustomMigrationId,
             InventoryCustomMigrationName,
             "XtraPOS.Api.Data.Migrations.056_InventoryCustom.sql"),
+        new(
+            StockCentralRelayMigrationId,
+            StockCentralRelayMigrationName,
+            "XtraPOS.Api.Data.Migrations.057_StockCentralRelay.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

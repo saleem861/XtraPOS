@@ -21,7 +21,9 @@ import {
   type UserOption,
 } from "../api/shortages";
 import {
+  correctionDifference,
   formatDateTime,
+  formatDifference,
   formatQuantity,
   normalizeDigits,
   parseCountInput,
@@ -525,14 +527,17 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
     if (!branch) { onMessage("اختر الفرع."); return; }
     if (value === null) { onMessage("أدخل الكمية الصحيحة."); return; }
     if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
+    const difference = correctionDifference(branch.quantity, value);
     onConfirm({
       title: "تصحيح الكمية",
       message: branch.current
         ? `سيتغير رصيد هذا الفرع إلى ${formatQuantity(value)} فوراً. هل تريد المتابعة؟`
-        : `سيُرسل طلب تصحيح إلى ${branch.branchName} ليصبح الرصيد ${formatQuantity(value)}، وينفّذه الفرع خلال دقيقة إذا كان متصلاً. هل تريد المتابعة؟`,
+        : difference === null
+          ? `رصيد ${branch.branchName} غير معروف على المركز، فسيُكتب الرصيد ${formatQuantity(value)} كما هو عند التنفيذ. هل تريد المتابعة؟`
+          : `المفترضة ${formatQuantity(branch.quantity)}، المعدودة ${formatQuantity(value)}، الفارق ${formatDifference(difference)}. سيُرسل الطلب إلى ${branch.branchName}، ويضيف الفرع الفارق إلى رصيده الحالي عند التنفيذ (خلال دقيقة إذا كان متصلاً)، فلا يضيع بيع حدث قبل المزامنة. هل تريد المتابعة؟`,
       accept: "تصحيح",
       onAccept: () => {
-        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim())).then((result) => {
+        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim(), branch.current ? null : branch.quantity)).then((result) => {
           if (!result) return;
           setQuantity("");
           setReason("");
@@ -554,7 +559,11 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
               <td>{branch.branchName}{branch.current ? " (هذا الفرع)" : ""}</td>
               <td>{formatQuantity(branch.quantity)} <small>{formatDateTime(branch.snapshotAt)}</small></td>
               <td>{branch.lastCountedQuantity === null ? "—" : `${formatQuantity(branch.lastCountedQuantity)} · ${formatDateTime(branch.lastCountedAt)}`}</td>
-              <td>{branch.pendingCorrection !== null ? `قيد التنفيذ في الفرع (${formatQuantity(branch.pendingCorrection)})` : "—"}</td>
+              <td>{branch.pendingCorrection === null
+                ? "—"
+                : branch.pendingDelta === null
+                  ? `قيد التنفيذ في الفرع (${formatQuantity(branch.pendingCorrection)})`
+                  : `قيد التنفيذ في الفرع: المفترضة ${formatQuantity(branch.pendingExpected)}، المعدودة ${formatQuantity(branch.pendingCorrection)}، الفارق ${formatDifference(branch.pendingDelta)}`}</td>
             </tr>
           ))}
         </tbody>
@@ -566,7 +575,17 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
             {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
           </select>
         </label>
-        <label>الكمية الصحيحة<input inputMode="decimal" value={quantity} onChange={(event) => { setQuantity(event.target.value); setRequestId(newRequestId()); }} /></label>
+        <label>الكمية المعدودة<input inputMode="decimal" value={quantity} onChange={(event) => { setQuantity(event.target.value); setRequestId(newRequestId()); }} /></label>
+        {(() => {
+          const branch = branches.find((entry) => entry.branchId === target);
+          if (!branch || branch.current) return null;
+          const difference = correctionDifference(branch.quantity, parseCountInput(quantity));
+          return (
+            <p className="inventory-hint" aria-label="فارق التصحيح">
+              المفترضة {formatQuantity(branch.quantity)} · الفارق {formatDifference(difference)}
+            </p>
+          );
+        })()}
         <label>السبب<input value={reason} maxLength={500} onChange={(event) => { setReason(event.target.value); setRequestId(newRequestId()); }} /></label>
         <button type="button" className="ghost-button" onClick={correct}>تصحيح</button>
       </div>

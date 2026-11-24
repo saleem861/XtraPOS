@@ -96,6 +96,15 @@ export function formatDifference(value: number | null | undefined): string {
   return value > 0 ? `+${formatQuantity(value)}` : `−${formatQuantity(Math.abs(value))}`;
 }
 
+/**
+ * تصحيح كمية فرع آخر (قرار المالك): الفارق = المعدودة − المفترضة، والفرع يضيفه إلى رصيده الحالي.
+ * بلا رصيد معروف للفرع لا يوجد فارق، فيكتب الفرع المعدودة كما هي.
+ */
+export function correctionDifference(expected: number | null | undefined, counted: number | null | undefined): number | null {
+  if (expected === null || expected === undefined || counted === null || counted === undefined) return null;
+  return Math.round((counted - expected) * 10000) / 10000;
+}
+
 /** الصفحات المقترحة لليوم: صفحة الجدول إن وُجدت. الخميس بلا صفحة. */
 export function defaultPages(defaultPage: number | null): number[] {
   return defaultPage ? [defaultPage] : [];

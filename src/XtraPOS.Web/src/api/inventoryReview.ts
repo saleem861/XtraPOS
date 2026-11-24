@@ -129,6 +129,9 @@ export interface AuditView {
 export interface ItemCorrection {
   previousQuantity: number | null;
   newQuantity: number;
+  expectedQuantity?: number | null;
+  countedQuantity?: number | null;
+  deltaQuantity?: number | null;
   reason: string;
   userName: string | null;
   correctedAt: string;

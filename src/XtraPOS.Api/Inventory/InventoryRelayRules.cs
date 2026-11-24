@@ -26,6 +26,19 @@ public static class InventoryRelayRules
         return Math.Round(rate, 6, MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>
+    /// تصحيح طلبه المركز لفرع آخر (قرار المالك): الفارق = المعدودة − المفترضة، ويُضاف إلى رصيد الفرع الحالي.
+    /// مثال: مفترض 7، معدود 5، بيع 1 قبل المزامنة (الرصيد 6) → 6 + (−2) = 4.
+    /// بلا فارق معروف (طلب قديم أو رصيد غير مهيأ في المركز) أو رصيد الفرع غير مهيأ: تُكتب المعدودة كما هي.
+    /// </summary>
+    public static CorrectionPlan PlanCorrection(decimal counted, decimal? delta, bool branchInitialized) =>
+        delta is decimal difference && branchInitialized
+            ? new CorrectionPlan(true, difference)
+            : new CorrectionPlan(false, counted);
+
+    /// <summary>ByDifference: Value هو الفارق المضاف. وإلا Value هو الرصيد الذي يُكتب.</summary>
+    public readonly record struct CorrectionPlan(bool ByDifference, decimal Value);
+
     /// <summary>نسخة كاملة أول مرة، ثم مرة في كل يوم جديد بتوقيت Asia/Hebron.</summary>
     public static bool NeedsFullPush(DateTime? lastFullPushUtc, DateOnly today) =>
         lastFullPushUtc is not DateTime last || InventoryCalendar.Today(DateTime.SpecifyKind(last, DateTimeKind.Utc)) < today;

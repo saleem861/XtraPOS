@@ -620,12 +620,15 @@ public sealed class InventoryReviewService(
             await using var insert = new SqlCommand(
                 """
                 INSERT INTO dbo.InventoryQuantityCorrections
-                    (CorrectionID, BranchID, ItemID, ItemNumber, ItemName, PreviousQuantity, NewQuantity, Reason, UserID, UserName, StockMovementID)
-                SELECT @id, @branch, item.ItemID, item.ItemNumber, item.ItemName, @previous, @new, @reason, @user, @userName, @movement
+                    (CorrectionID, BranchID, ItemID, ItemNumber, ItemName, PreviousQuantity, NewQuantity,
+                     ExpectedQuantity, CountedQuantity, DeltaQuantity, Reason, UserID, UserName, StockMovementID)
+                SELECT @id, @branch, item.ItemID, item.ItemNumber, item.ItemName, @previous, @new,
+                       @previous, @new, @delta, @reason, @user, @userName, @movement
                 FROM dbo.Items AS item WHERE item.ItemID = @item;
                 """,
                 session.Connection,
                 session.Transaction);
+            AddNullableDecimal(insert, "@delta", result.QuantityDelta);
             insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = correctionId;
             insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
             insert.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
@@ -891,7 +894,7 @@ public sealed class InventoryReviewService(
         var corrections = new List<object>();
         await using (var history = new SqlCommand(
             """
-            SELECT TOP (5) PreviousQuantity, NewQuantity, Reason, UserName, CorrectedAt
+            SELECT TOP (5) PreviousQuantity, NewQuantity, Reason, UserName, CorrectedAt, ExpectedQuantity, CountedQuantity, DeltaQuantity
             FROM dbo.InventoryQuantityCorrections
             WHERE BranchID = @branch AND ItemID = @item
             ORDER BY CorrectedAt DESC;
@@ -910,6 +913,9 @@ public sealed class InventoryReviewService(
                     reason = reader.GetString(2),
                     userName = reader.IsDBNull(3) ? null : reader.GetString(3),
                     correctedAt = Utc(reader.GetDateTime(4)),
+                    expectedQuantity = reader.IsDBNull(5) ? (decimal?)null : reader.GetDecimal(5),
+                    countedQuantity = reader.IsDBNull(6) ? (decimal?)null : reader.GetDecimal(6),
+                    deltaQuantity = reader.IsDBNull(7) ? (decimal?)null : reader.GetDecimal(7),
                 });
             }
         }
