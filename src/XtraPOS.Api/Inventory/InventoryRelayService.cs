@@ -288,12 +288,20 @@ public sealed class InventoryRelayService(
                     await bulk.WriteToServerAsync(table, cancellationToken);
                 }
 
+                // حركة وصلت لحظياً (StockCentralRelay) بعد قراءة هذه النسخة أحدث منها: لا تُكتب فوقها.
+                // السرعة واسم الصنف تُحدَّث دائماً.
+                var fresh = await ColumnExistsAsync(central, "dbo.BranchStockSnapshots", "LastMovementAt", cancellationToken)
+                    ? "(target.LastMovementAt IS NULL OR target.LastMovementAt <= source.BalanceUpdatedAt)"
+                    : "1 = 1";
                 await using var merge = new SqlCommand(
-                    """
+                    $"""
                     UPDATE target
-                    SET ItemNumber = source.ItemNumber, OnHandQuantity = source.OnHandQuantity,
-                        IsQuantityInitialized = source.IsQuantityInitialized, DailySalesRate = source.DailySalesRate,
-                        BalanceUpdatedAt = source.BalanceUpdatedAt, ReceivedAt = SYSUTCDATETIME()
+                    SET ItemNumber = source.ItemNumber,
+                        OnHandQuantity = CASE WHEN {fresh} THEN source.OnHandQuantity ELSE target.OnHandQuantity END,
+                        IsQuantityInitialized = CASE WHEN {fresh} THEN source.IsQuantityInitialized ELSE target.IsQuantityInitialized END,
+                        DailySalesRate = source.DailySalesRate,
+                        BalanceUpdatedAt = CASE WHEN {fresh} THEN source.BalanceUpdatedAt ELSE target.BalanceUpdatedAt END,
+                        ReceivedAt = SYSUTCDATETIME()
                     FROM dbo.BranchStockSnapshots AS target
                     INNER JOIN #snap AS source ON source.ItemID = target.ItemID
                     WHERE target.BranchID = @branch;
@@ -377,7 +385,7 @@ public sealed class InventoryRelayService(
     private static readonly string[] CorrectionColumns =
     [
         "CorrectionID", "BranchID", "ItemID", "ItemNumber", "ItemName", "PreviousQuantity", "NewQuantity", "Reason",
-        "UserID", "UserName", "CorrectedAt", "StockMovementID",
+        "UserID", "UserName", "CorrectedAt", "StockMovementID", "ExpectedQuantity", "CountedQuantity", "DeltaQuantity",
     ];
 
     private async Task<int> PushSessionsAsync(SqlConnection local, SqlConnection central, Guid branch, CancellationToken cancellationToken)
@@ -546,10 +554,10 @@ public sealed class InventoryRelayService(
     /// </summary>
     private async Task ApplyCorrectionRequestsAsync(SqlConnection local, SqlConnection central, Guid branch, CancellationToken cancellationToken)
     {
-        var pending = new List<(Guid Id, Guid ItemId, decimal Quantity, string Reason, Guid UserId, string? UserName)>();
+        var pending = new List<(Guid Id, Guid ItemId, decimal Quantity, string Reason, Guid UserId, string? UserName, decimal? Expected, decimal? Delta)>();
         await using (var read = new SqlCommand(
             """
-            SELECT TOP (20) RequestID, ItemID, NewQuantity, Reason, RequestedByUserID, RequestedByName
+            SELECT TOP (20) RequestID, ItemID, NewQuantity, Reason, RequestedByUserID, RequestedByName, ExpectedQuantity, DeltaQuantity
             FROM dbo.InventoryCorrectionRequests
             WHERE BranchID = @branch AND Status = N'Pending'
             ORDER BY RequestedAt;
@@ -560,7 +568,10 @@ public sealed class InventoryRelayService(
             await using var reader = await read.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                pending.Add((reader.GetGuid(0), reader.GetGuid(1), reader.GetDecimal(2), reader.GetString(3), reader.GetGuid(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
+                pending.Add((reader.GetGuid(0), reader.GetGuid(1), reader.GetDecimal(2), reader.GetString(3), reader.GetGuid(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+                    reader.IsDBNull(7) ? null : reader.GetDecimal(7)));
             }
         }
 
@@ -569,6 +580,7 @@ public sealed class InventoryRelayService(
             string status;
             string? message = null;
             decimal? previous = null;
+            decimal? resulting = null;
             await using (var check = new SqlCommand(
                 $"SELECT COUNT(*) FROM dbo.Items AS item WHERE item.ItemID = @item AND item.IsActive = 1 AND {InventoryRelayRules.StockOwnerSql("item")};",
                 local))
@@ -578,34 +590,58 @@ public sealed class InventoryRelayService(
                 {
                     status = "Failed";
                     message = "الصنف غير موجود في هذا الفرع أو لا يُجرد مباشرة.";
-                    await MarkRequestAsync(central, request.Id, status, previous, message, cancellationToken);
+                    await MarkRequestAsync(central, request.Id, status, previous, null, message, cancellationToken);
                     continue;
                 }
             }
 
             try
             {
-                previous = await stock.InTransactionAsync(async (session, token) =>
+                (previous, resulting) = await stock.InTransactionAsync(async (session, token) =>
                 {
                     await using (var existing = new SqlCommand(
-                        "SELECT PreviousQuantity FROM dbo.InventoryQuantityCorrections WHERE CorrectionID = @id;",
+                        "SELECT PreviousQuantity, NewQuantity FROM dbo.InventoryQuantityCorrections WHERE CorrectionID = @id;",
                         session.Connection,
                         session.Transaction))
                     {
                         existing.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = request.Id;
-                        var found = await existing.ExecuteScalarAsync(token);
-                        if (found is not null) return found as decimal?;
+                        await using var found = await existing.ExecuteReaderAsync(token);
+                        if (await found.ReadAsync(token))
+                        {
+                            return (found.IsDBNull(0) ? (decimal?)null : found.GetDecimal(0), (decimal?)found.GetDecimal(1));
+                        }
                     }
 
-                    var result = await stock.SetAbsoluteQuantityAsync(
-                        new StockAbsoluteRequest(branch, request.ItemId, StockSourceTypes.InventoryReconciliation, request.Id, request.Id, request.Quantity, null, DateTime.UtcNow, request.UserId),
-                        session,
-                        token);
+                    bool initialized;
+                    await using (var balance = new SqlCommand(
+                        "SELECT IsQuantityInitialized FROM dbo.BranchStockBalances WITH (UPDLOCK, HOLDLOCK) WHERE BranchID = @branch AND ItemID = @item;",
+                        session.Connection,
+                        session.Transaction))
+                    {
+                        balance.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+                        balance.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = request.ItemId;
+                        initialized = await balance.ExecuteScalarAsync(token) is true;
+                    }
+
+                    var plan = InventoryRelayRules.PlanCorrection(request.Quantity, request.Delta, initialized);
+                    var now = DateTime.UtcNow;
+                    var result = plan.ByDifference
+                        ? await stock.PostDeltaAsync(
+                            new StockDeltaRequest(branch, request.ItemId, StockSourceTypes.InventoryReconciliation, request.Id, request.Id, plan.Value, null, now, request.UserId, request.Quantity),
+                            session,
+                            token)
+                        : await stock.SetAbsoluteQuantityAsync(
+                            new StockAbsoluteRequest(branch, request.ItemId, StockSourceTypes.InventoryReconciliation, request.Id, request.Id, plan.Value, null, now, request.UserId),
+                            session,
+                            token);
+                    var after = result.ResultingQuantity ?? request.Quantity;
                     await using var insert = new SqlCommand(
                         """
                         INSERT INTO dbo.InventoryQuantityCorrections
-                            (CorrectionID, BranchID, ItemID, ItemNumber, ItemName, PreviousQuantity, NewQuantity, Reason, UserID, UserName, StockMovementID)
-                        SELECT @id, @branch, item.ItemID, item.ItemNumber, item.ItemName, @previous, @new, @reason, @user, @userName, @movement
+                            (CorrectionID, BranchID, ItemID, ItemNumber, ItemName, PreviousQuantity, NewQuantity,
+                             ExpectedQuantity, CountedQuantity, DeltaQuantity, Reason, UserID, UserName, StockMovementID)
+                        SELECT @id, @branch, item.ItemID, item.ItemNumber, item.ItemName, @previous, @new,
+                               @expected, @counted, @delta, @reason, @user, @userName, @movement
                         FROM dbo.Items AS item WHERE item.ItemID = @item;
                         """,
                         session.Connection,
@@ -613,20 +649,17 @@ public sealed class InventoryRelayService(
                     insert.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = request.Id;
                     insert.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
                     insert.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = request.ItemId;
-                    var previousParameter = insert.Parameters.Add("@previous", SqlDbType.Decimal);
-                    previousParameter.Precision = 18;
-                    previousParameter.Scale = 4;
-                    previousParameter.Value = (object?)result.PreviousQuantity ?? DBNull.Value;
-                    var newParameter = insert.Parameters.Add("@new", SqlDbType.Decimal);
-                    newParameter.Precision = 18;
-                    newParameter.Scale = 4;
-                    newParameter.Value = request.Quantity;
+                    Quantity(insert, "@previous", result.PreviousQuantity);
+                    Quantity(insert, "@new", after);
+                    Quantity(insert, "@expected", request.Expected);
+                    Quantity(insert, "@counted", request.Quantity);
+                    Quantity(insert, "@delta", result.QuantityDelta);
                     insert.Parameters.Add("@reason", SqlDbType.NVarChar, 500).Value = request.Reason;
                     insert.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = request.UserId;
                     insert.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = $"{request.UserName ?? "المركز"} (من المركز)";
                     insert.Parameters.Add("@movement", SqlDbType.UniqueIdentifier).Value = result.StockMovementId;
                     await insert.ExecuteNonQueryAsync(token);
-                    return result.PreviousQuantity;
+                    return (result.PreviousQuantity, (decimal?)after);
                 }, cancellationToken);
                 status = "Applied";
             }
@@ -636,26 +669,40 @@ public sealed class InventoryRelayService(
                 message = exception.Message;
             }
 
-            await MarkRequestAsync(central, request.Id, status, previous, message, cancellationToken);
+            await MarkRequestAsync(central, request.Id, status, previous, resulting, message, cancellationToken);
             logger.LogInformation("Inventory: central correction {Request} {Status}.", request.Id, status);
         }
     }
 
-    private static async Task MarkRequestAsync(SqlConnection central, Guid id, string status, decimal? previous, string? message, CancellationToken cancellationToken)
+    private static async Task<bool> ColumnExistsAsync(SqlConnection connection, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand("SELECT COL_LENGTH(@table, @column);", connection);
+        command.Parameters.Add("@table", SqlDbType.NVarChar, 256).Value = table;
+        command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = column;
+        return await command.ExecuteScalarAsync(cancellationToken) is not null and not DBNull;
+    }
+
+    private static void Quantity(SqlCommand command, string name, decimal? value)
+    {
+        var parameter = command.Parameters.Add(name, SqlDbType.Decimal);
+        parameter.Precision = 18;
+        parameter.Scale = 4;
+        parameter.Value = (object?)value ?? DBNull.Value;
+    }
+
+    private static async Task MarkRequestAsync(SqlConnection central, Guid id, string status, decimal? previous, decimal? resulting, string? message, CancellationToken cancellationToken)
     {
         await using var command = new SqlCommand(
             """
             UPDATE dbo.InventoryCorrectionRequests
-            SET Status = @status, AppliedAt = SYSUTCDATETIME(), PreviousQuantity = @previous, Message = @message
+            SET Status = @status, AppliedAt = SYSUTCDATETIME(), PreviousQuantity = @previous, ResultingQuantity = @resulting, Message = @message
             WHERE RequestID = @id AND Status = N'Pending';
             """,
             central);
         command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
         command.Parameters.Add("@status", SqlDbType.NVarChar, 20).Value = status;
-        var parameter = command.Parameters.Add("@previous", SqlDbType.Decimal);
-        parameter.Precision = 18;
-        parameter.Scale = 4;
-        parameter.Value = (object?)previous ?? DBNull.Value;
+        Quantity(command, "@previous", previous);
+        Quantity(command, "@resulting", resulting);
         command.Parameters.Add("@message", SqlDbType.NVarChar, 500).Value = (object?)message ?? DBNull.Value;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

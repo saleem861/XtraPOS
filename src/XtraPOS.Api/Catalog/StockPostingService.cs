@@ -554,6 +554,11 @@ public sealed class StockPostingService(SqlConnectionFactory connections)
             throw new StockPostingException($"Stock movement type '{sourceType}' is not available.");
         }
 
+        // قرار المالك: كل حركة كمية تُرحَّل فوراً للمركز عبر سجل الترحيلات، داخل نفس المعاملة.
+        await StockCentralRelay.LinkAsync(
+            session, movementId, branchId, sourceType, sourceDocumentId, sourceLineId, actorUserId, cancellationToken);
+        StockCentralRelay.Nudge();
+
         return new StockPostingResult(
             movementId,
             Replay: false,

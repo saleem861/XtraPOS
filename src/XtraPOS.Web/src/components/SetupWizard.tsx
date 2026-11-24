@@ -50,6 +50,7 @@ import {
   type SecondaryStation,
 } from "../setup/secondaryDevice";
 import { getSetupStatus, SetupClientError } from "../api/client";
+import { distinctBy } from "../distinct";
 
 interface SetupWizardProps {
   value: BranchSetupInput;
@@ -1068,7 +1069,7 @@ export function SetupWizard({ value, onChange, onCancel, onSubmit, testConnectio
         ) : null}
         {step === "branchSelect" ? (
           <div className="choice-list">
-            {branches.map((branch) => (
+            {distinctBy(branches, (branch) => `${branch.branchName}|${branch.databaseName}`).map((branch) => (
               <button
                 className={value.selectedBranchId === branch.branchId ? "type-option is-selected" : "type-option"}
                 key={branch.branchId}
@@ -2118,7 +2119,7 @@ function NewLocalBranchDatabase({
       ) : null}
       {!preview && state === "ready" && status && status.instances.length > 1 ? (
         <div className="choice-list">
-          {status.instances.map((name) => (
+          {distinctBy(status.instances, (name) => name).map((name) => (
             <button
               className={instance === name ? "type-option is-selected" : "type-option"}
               key={name}

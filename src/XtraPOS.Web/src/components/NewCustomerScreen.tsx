@@ -3,6 +3,7 @@ import { ArrowLeft, CircleCheck, Pencil, Save, Send, ShieldCheck, Tag } from "lu
 import { SetupClientError, deviceHeaders } from "../api/client";
 import { createCustomerClient, type CreditPolicy, type CustomerWriteBody, type SpecialPriceRow } from "../api/customers";
 import { createItemClient } from "../api/items";
+import { distinctBy } from "../distinct";
 import { createPricingClient } from "../api/pricing";
 import { ExceptionalPricesScreen } from "./ExceptionalPricesScreen";
 import { ScreenHeader } from "./ScreenHeader";
@@ -75,7 +76,7 @@ function FieldCombo({ id, label, value, placeholder, options, onChange, onKeyDow
       {open ? (
         <ul className="nc-combo-menu" role="listbox">
           {options.length === 0 ? <li><span className="nc-combo-empty">لا توجد خيارات محفوظة</span></li> : null}
-          {options.map((option) => (
+          {distinctBy(options, (option) => option.label).map((option) => (
             <li key={`${option.value}-${option.label}`}>
               <button type="button" role="option" title={option.label} aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }}>{option.label}</button>
             </li>

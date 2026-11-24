@@ -109,6 +109,8 @@ export interface ItemBranchState {
   lastCountedBy: string | null;
   pendingCorrection: number | null;
   pendingSince: string | null;
+  pendingExpected: number | null;
+  pendingDelta: number | null;
 }
 
 export type FollowUpTab = "Purchase" | "Warehouse" | "Balance" | "Delete" | "Done";
@@ -268,8 +270,8 @@ export function createShortageClient(session: DeviceSession) {
     discard: (runId: string) => send<{ discarded: boolean }>(`/api/shortages/runs/${encodeURIComponent(runId)}/discard`, {}, "تعذر إلغاء المعالجة."),
     itemBranches: (itemId: string) =>
       get<{ itemId: string; branches: ItemBranchState[] }>(`/api/shortages/items/${encodeURIComponent(itemId)}/branches`, "تعذر تحميل كميات الفروع."),
-    correct: (itemId: string, branchId: string, requestId: string, quantity: number, reason: string) =>
-      send<{ applied: boolean; pending: boolean }>(`/api/shortages/items/${encodeURIComponent(itemId)}/corrections`, { branchId, requestId, quantity, reason }, "تعذر تصحيح الكمية."),
+    correct: (itemId: string, branchId: string, requestId: string, quantity: number, reason: string, expectedQuantity: number | null = null) =>
+      send<{ applied: boolean; pending: boolean }>(`/api/shortages/items/${encodeURIComponent(itemId)}/corrections`, { branchId, requestId, quantity, expectedQuantity, reason }, "تعذر تصحيح الكمية."),
     tasks: (tab: FollowUpTab, from: string, to: string) =>
       get<FollowUpView>(`/api/shortages/tasks?tab=${tab}&${range(from, to)}`, "تعذر تحميل متابعة النواقص."),
     taskAction: (body: { action: string; taskId?: string; itemId?: string; supplyRequestId?: string | null; supplierId?: string; quantity?: number }) =>

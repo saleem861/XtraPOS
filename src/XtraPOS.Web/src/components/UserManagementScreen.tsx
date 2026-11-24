@@ -310,7 +310,7 @@ export function UserManagementScreen({ session, onBack }: UserManagementScreenPr
         </select>
         <select aria-label="الدور" value={query.role} onChange={(event) => setQuery({ ...query, role: event.target.value })}>
           <option value="">كل الأدوار</option>
-          {distinctBy(catalog?.roles, (role) => role.roleCode).map((role) => (
+          {distinctBy(catalog?.roles, (role) => role.roleName).map((role) => (
             <option key={role.roleCode} value={role.roleCode}>{role.roleName}</option>
           ))}
         </select>
@@ -536,7 +536,7 @@ function UserPanel({
         {panel === "branches" ? (
           <fieldset>
             <legend>الفروع المسموح بها</legend>
-            {catalog?.branches.map((branch) => (
+            {distinctBy(catalog?.branches, (branch) => branch.branchName).map((branch) => (
               <label className="check-line" key={branch.branchId}>
                 <input type="checkbox" checked={draft.branchIds.includes(branch.branchId)} onChange={() => onToggleBranch(branch.branchId)} />
                 {branch.branchName}

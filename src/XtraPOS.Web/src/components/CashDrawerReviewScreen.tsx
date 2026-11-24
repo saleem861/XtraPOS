@@ -3,6 +3,7 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { deviceHeaders } from "../api/client";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { DeviceSession } from "../types/setup";
+import { distinctBy } from "../distinct";
 import { FullKeyboard } from "./FullKeyboard";
 import { ScreenHeader } from "./ScreenHeader";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
@@ -230,7 +231,7 @@ export function CashDrawerReviewScreen({ session, onBack }: { session: DeviceSes
           <div className="sales-review-filters drawer-filters">
             <label>من تاريخ<input data-review-field type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
             <label>إلى تاريخ<input data-review-field type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
-            <label>الموظف<select data-review-field value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">الكل</option>{options.users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label>
+            <label>الموظف<select data-review-field value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">الكل</option>{distinctBy(options.users, (user) => user.name).map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label>
             <label>الفرع<select data-review-field value={branchId} onChange={(event) => { setBranchId(event.target.value); setStationId(""); }}><option value="">كل الفروع</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
             <label>النقطة<select data-review-field value={stationId} onChange={(event) => setStationId(event.target.value)}><option value="">كل النقاط</option>{stations.map((station) => <option key={station.id} value={station.id}>{station.stationNumber} — {station.name}</option>)}</select></label>
             <label>الحالة<select data-review-field value={status} onChange={(event) => setStatus(event.target.value)}><option value="">الكل</option><option value="Matched">مطابق</option><option value="Shortage">نقص</option><option value="Surplus">زيادة</option></select></label>
@@ -297,24 +298,14 @@ function diffText(status: ReviewLine["status"], difference: number) {
 }
 
 export function reviewChoices(options: Options, branchId: string) {
-  const branches = distinct(options.branches, (branch) => branch.name.trim());
+  const branches = distinctBy(options.branches, (branch) => branch.name);
   const selectedName = options.branches.find((branch) => branch.id === branchId)?.name.trim();
   const branchIds = new Set(options.branches.filter((branch) => !branchId || branch.name.trim() === selectedName).map((branch) => branch.id));
-  const stations = distinct(
+  const stations = distinctBy(
     options.stations.filter((station) => branchIds.has(station.branchId)),
     (station) => `${station.stationNumber}|${station.name.trim()}`,
   );
   return { branches, stations };
-}
-
-function distinct<T>(items: T[], key: (item: T) => string) {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const value = key(item);
-    if (seen.has(value)) return false;
-    seen.add(value);
-    return true;
-  });
 }
 
 function money(value: number) {

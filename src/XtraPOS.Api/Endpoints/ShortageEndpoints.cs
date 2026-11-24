@@ -45,7 +45,7 @@ public static class ShortageEndpoints
             Run(http, auth, permissions, [Process, FollowUp], token, caller => service.ItemBranchesAsync(caller.Context, itemId, token)));
         group.MapPost("/items/{itemId:guid}/corrections", (Guid itemId, CorrectionBody? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, ["Inventory.CorrectQuantity"], token, caller => service.CorrectAsync(
-                caller.Context, body?.BranchId ?? Guid.Empty, itemId, body?.RequestId ?? Guid.Empty, body?.Quantity, body?.Reason, token)));
+                caller.Context, body?.BranchId ?? Guid.Empty, itemId, body?.RequestId ?? Guid.Empty, body?.Quantity, body?.Reason, token, body?.ExpectedQuantity)));
 
         group.MapGet("/tasks", (string? tab, DateOnly? from, DateOnly? to, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [FollowUp, Approve], token, caller => service.TasksAsync(caller.Context, tab, from, to, token)));
@@ -140,6 +140,7 @@ public static class ShortageEndpoints
         public Guid? BranchId { get; set; }
         public Guid? RequestId { get; set; }
         public decimal? Quantity { get; set; }
+        public decimal? ExpectedQuantity { get; set; }
         public string? Reason { get; set; }
     }
 

@@ -629,7 +629,10 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
               <ul className="inventory-history" aria-label="آخر التصحيحات">
                 {item.corrections.map((entry) => (
                   <li key={`${entry.correctedAt}-${entry.newQuantity}`}>
-                    {formatDateTime(entry.correctedAt)} · {entry.userName ?? "—"}: {formatQuantity(entry.previousQuantity)} ← {formatQuantity(entry.newQuantity)} ({entry.reason})
+                    {formatDateTime(entry.correctedAt)} · {entry.userName ?? "—"}: {formatQuantity(entry.previousQuantity)} ← {formatQuantity(entry.newQuantity)}
+                    {entry.deltaQuantity !== null && entry.deltaQuantity !== undefined
+                      ? ` · المفترضة ${formatQuantity(entry.expectedQuantity)}، المعدودة ${formatQuantity(entry.countedQuantity)}، الفارق ${formatDifference(entry.deltaQuantity)}`
+                      : ""} ({entry.reason})
                   </li>
                 ))}
               </ul>
