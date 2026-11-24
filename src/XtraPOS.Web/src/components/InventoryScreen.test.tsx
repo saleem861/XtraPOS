@@ -51,15 +51,78 @@ function stubApi(items: InventoryItem[]) {
   }));
 }
 
+/** المسار الطبيعي: الجرد ← الفرع ← تأكيد اسم الفرع ← الأصناف المهمة ← جديد. */
+async function openImportantCount() {
+  await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
+  const dialog = await screen.findByRole("dialog", { name: "تأكيد الفرع" });
+  expect(within(dialog).getByText(/فرع نابلس/)).toBeTruthy();
+  await userEvent.click(within(dialog).getByRole("button", { name: "نعم، متابعة" }));
+  await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /^جديد/ }));
+}
+
 describe("InventoryScreen", () => {
+  it("follows the natural path: branch, its confirmation, then type; manual offers manual or a named custom count", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url} ${typeof init?.body === "string" ? init.body : ""}`);
+      if (url.startsWith("/api/inventory/configuration")) {
+        return reply({
+          businessDate: "2026-11-23", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: 7, importantItems: 2,
+          pageItems: [{ page: 7, items: 3 }],
+          customInventories: [
+            { customInventoryId: "c1", name: "جرد الفحم", items: 4 },
+            { customInventoryId: "c2", name: "جرد الفحم", items: 4 },
+          ],
+        });
+      }
+      if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: openSession });
+      if (url === "/api/inventory/sessions") return reply({ session: { ...openSession, inventoryType: "Custom" }, resumed: false });
+      if (url.includes("/items")) return reply({ session: openSession, items: [] });
+      return reply({});
+    }));
+    render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "إلغاء" }));
+    expect(screen.queryByRole("button", { name: /جرد الأصناف المهمة/ })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: /فرع نابلس/ }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "نعم، متابعة" }));
+    expect(screen.queryByRole("button", { name: /جرد الفحم/ })).toBeNull();
+
+    // الأصناف المهمة: متابعة أو جديد.
+    await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+    expect(await screen.findByRole("button", { name: /^متابعة/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^جديد/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+
+    // الدوري: الصفحات ثم متابعة أو جديد.
+    await userEvent.click(await screen.findByRole("button", { name: /الجرد الدوري/ }));
+    expect(await screen.findByRole("button", { name: /الصفحة 7/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
+    expect(await screen.findByRole("button", { name: /^جديد/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+
+    // اليدوي: جرد يدوي أو جرد مخصص، والمخصص يختار الاسم ويفتح.
+    await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
+    expect(await screen.findByRole("button", { name: /^جرد يدوي/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /^جرد مخصص/ }));
+    const named = await screen.findAllByRole("button", { name: /جرد الفحم/ });
+    expect(named).toHaveLength(1);
+    await userEvent.click(named[0]);
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("POST /api/inventory/sessions ") && call.includes("c1"))).toBe(true));
+  });
+
   it("keeps the count blind for a cashier even if a quantity reaches the screen", async () => {
     stubApi([
       item({ itemId: "i1", itemNumber: "650", isCounted: true, countedQuantity: 8, expectedQuantity: 10, difference: -2 }),
       item({ itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة" }),
     ]);
     render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
-    await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
-    await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+    await openImportantCount();
     expect(await screen.findByText("رأس أرجيلة")).toBeTruthy();
     await userEvent.click(screen.getByRole("tab", { name: /^تم الجرد/ }));
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
@@ -71,8 +134,7 @@ describe("InventoryScreen", () => {
   it("shows the expected quantity and difference to a supervisor", async () => {
     stubApi([item({ itemId: "i1", isCounted: true, countedQuantity: 8, expectedQuantity: 10, difference: -2 })]);
     render(<InventoryScreen session={session} permissions={["Inventory.Count", "Inventory.Review"]} onBack={() => undefined} />);
-    await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
-    await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+    await openImportantCount();
     await userEvent.click(await screen.findByRole("tab", { name: /^تم الجرد/ }));
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
     expect(within(row).getByText("المفترض: 10")).toBeTruthy();
