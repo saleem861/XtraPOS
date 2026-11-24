@@ -26,6 +26,7 @@ import {
 } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
+import { distinctBy } from "../distinct";
 import { InventoryReportPanel, ItemProcessingPanel, type BackHandler } from "./InventoryReviewPanels";
 import {
   AuditRequestsPanel,
@@ -215,7 +216,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                 {option.value === "Important" && config ? <small>{config.importantItems} صنف</small> : null}
               </button>
             ))}
-            {(config?.customInventories ?? []).map((custom) => (
+            {distinctBy(config?.customInventories, (custom) => custom.name).map((custom) => (
               <button key={custom.customInventoryId} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void chooseCustom(custom.customInventoryId)}>
                 <strong>جرد مخصص: {custom.name}</strong>
                 <small>{custom.items} صنف</small>

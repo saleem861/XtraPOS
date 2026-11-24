@@ -181,6 +181,7 @@ describe("inventory report across branches", () => {
           branches: [
             { branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: null, stale: false },
             { branchId: "br2", branchName: "فرع رام الله", current: false, lastPushAt: "2026-11-24T05:00:00Z", stale: true },
+            { branchId: "br3", branchName: "فرع رام الله", current: false, lastPushAt: null, stale: true },
           ],
         });
       }
@@ -194,6 +195,8 @@ describe("inventory report across branches", () => {
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.Review"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^تقرير الجرد/ }));
     const branch = await screen.findByRole("combobox", { name: /^الفرع/ });
+    // لا يتكرر اسم في القائمة.
+    expect(within(branch).getAllByRole("option").map((option) => option.textContent)).toEqual(["فرع نابلس (هذا الفرع)", "فرع رام الله"]);
     await userEvent.selectOptions(branch, "br2");
     await userEvent.click(screen.getByRole("button", { name: "عرض" }));
     expect(await screen.findByText(/النسخة أقدم من 30 دقيقة/)).toBeTruthy();
