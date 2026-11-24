@@ -308,6 +308,9 @@
     <EmbeddedResource Include="Data\Migrations\054_InventoryCounting.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.054_InventoryCounting.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\055_InventoryReview.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.055_InventoryReview.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\039_CentralInventorySettings.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.039_CentralInventorySettings.sql</LogicalName>
     </EmbeddedResource>
