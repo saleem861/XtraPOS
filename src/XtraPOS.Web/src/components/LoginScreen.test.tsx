@@ -111,7 +111,7 @@ describe("login update button", () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/health")).toBe(false);
   });
 
-  it.skip("says the updater is not running when it does not pick the request up in two minutes", async () => {
+  it("says the updater is not running when it does not pick the request up in two minutes", async () => {
     vi.useFakeTimers();
     try {
       vi.stubGlobal("fetch", vi.fn((url: string) => {
