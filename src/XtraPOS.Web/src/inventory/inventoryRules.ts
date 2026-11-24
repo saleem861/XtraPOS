@@ -9,21 +9,21 @@ export function hasPermission(permissions: readonly string[], code: string): boo
 export interface InventoryMenuCard {
   id: string;
   label: string;
-  /** المفعّل: «الجرد» و«معالجة الأصناف» و«تقرير الجرد». البقية تظهر «قريباً» لمن يملك صلاحيتها. */
+  /** كل البطاقات مفعّلة. «قريباً» يبقى للبطاقات المستقبلية فقط. */
   available: boolean;
 }
 
 /** نفس بطاقات XtraPOS Inventory وبنفس الترتيب، كل بطاقة لمن يملك صلاحيتها. */
 const MENU: { id: string; label: string; permission: string; available: boolean }[] = [
   { id: "count", label: "الجرد", permission: "Inventory.Count", available: true },
-  { id: "define", label: "تحديد جرد", permission: "Inventory.Define", available: false },
-  { id: "shortages", label: "معالجة النواقص", permission: "Shortages.Process", available: false },
-  { id: "followUp", label: "متابعة النواقص", permission: "Shortages.FollowUp", available: false },
+  { id: "define", label: "تحديد جرد", permission: "Inventory.Define", available: true },
+  { id: "shortages", label: "معالجة النواقص", permission: "Shortages.Process", available: true },
+  { id: "followUp", label: "متابعة النواقص", permission: "Shortages.FollowUp", available: true },
   { id: "items", label: "معالجة الأصناف", permission: "Inventory.Classify", available: true },
   { id: "report", label: "تقرير الجرد", permission: "Inventory.Review", available: true },
-  { id: "audit", label: "التدقيق", permission: "Shortages.Audit", available: false },
-  { id: "efficiency", label: "تقرير الكفاءة", permission: "Shortages.Efficiency", available: false },
-  { id: "shortageReport", label: "تقرير معالجة النواقص", permission: "Shortages.Report", available: false },
+  { id: "audit", label: "التدقيق", permission: "Shortages.Audit", available: true },
+  { id: "efficiency", label: "تقرير الكفاءة", permission: "Shortages.Efficiency", available: true },
+  { id: "shortageReport", label: "تقرير معالجة النواقص", permission: "Shortages.Report", available: true },
 ];
 
 export function inventoryMenu(permissions: readonly string[]): InventoryMenuCard[] {
@@ -44,6 +44,7 @@ export const INVENTORY_TYPES: { value: InventoryType; label: string }[] = [
 ];
 
 export function inventoryTypeLabel(type: InventoryType): string {
+  if (type === "Custom") return "جرد مخصص";
   return INVENTORY_TYPES.find((option) => option.value === type)?.label ?? type;
 }
 
@@ -150,3 +151,23 @@ export function formatDateTime(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return "—";
   return `${isoDate(date)} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+
+/** أرقام أصناف من نص ملصق: سطر أو فاصلة أو مسافة لكل رقم، بلا تكرار. */
+export function parseItemCodes(text: string): string[] {
+  const codes = normalizeDigits(text).split(/[\s,،;]+/).map((code) => code.trim()).filter(Boolean);
+  return [...new Set(codes)];
+}
+
+/** كمية اختيارية في قرار النواقص: الفارغ = لا شيء، وغير الصالح = undefined. */
+export function parseOptionalQuantity(text: string): number | null | undefined {
+  if (!text.trim()) return null;
+  const value = parseCountInput(text);
+  return value === null ? undefined : value;
+}
+
+export const SHORTAGE_TYPES: { value: InventoryType; label: string }[] = [
+  { value: "Important", label: "الأصناف المهمة" },
+  { value: "Periodic", label: "الجرد الدوري" },
+  { value: "Manual", label: "الجرد اليدوي" },
+  { value: "Custom", label: "الجرد المخصص" },
+];

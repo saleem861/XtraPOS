@@ -479,3 +479,86 @@
 .inventory-report-row:disabled {
   cursor: default;
 }
+
+/* المراحل 4–6: النواقص والمتابعة والجرد المخصص والتدقيق */
+.inventory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  background: var(--xp-surface);
+}
+
+.inventory-table th,
+.inventory-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--xp-border);
+  text-align: right;
+}
+
+.inventory-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.inventory-expand {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.inventory-decision {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.inventory-decision label {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.inventory-decision input,
+.inventory-decision select {
+  height: 40px;
+  width: 120px;
+  padding: 0 8px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.inventory-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-height: 180px;
+  overflow-y: auto;
+  flex-basis: 100%;
+}
+
+.inventory-wide {
+  flex-basis: 100%;
+}
+
+.inventory-wide textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.inventory-branch-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inventory-row.is-processed {
+  border-color: #b9dcc4;
+}
