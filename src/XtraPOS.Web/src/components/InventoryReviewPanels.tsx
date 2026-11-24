@@ -29,6 +29,7 @@ import { FullKeyboard } from "./FullKeyboard";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { Waiting } from "./Waiting";
+import { distinctBy } from "../distinct";
 
 export interface PanelConfirmation {
   title: string;
@@ -74,7 +75,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
   useEffect(() => {
     let cancelled = false;
     void client.branches()
-      .then((value) => { if (!cancelled) setBranches(value.branches ?? []); })
+      .then((value) => { if (!cancelled) setBranches(distinctBy(value.branches, (branch) => branch.branchName)); })
       .catch(() => { if (!cancelled) setBranches([]); });
     return () => { cancelled = true; };
   }, [client]);
@@ -158,7 +159,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         <label>الموظف
           <select value={filter.userId} onChange={(event) => setFilter({ ...filter, userId: event.target.value })}>
             <option value="">الكل</option>
-            {(report?.employees ?? []).map((employee) => <option key={employee.userId} value={employee.userId}>{employee.userName ?? "—"}</option>)}
+            {distinctBy(report?.employees, (employee) => employee.userName ?? employee.userId).map((employee) => <option key={employee.userId} value={employee.userId}>{employee.userName ?? "—"}</option>)}
           </select>
         </label>
         <label>الحالة

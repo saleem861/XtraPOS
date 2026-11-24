@@ -33,6 +33,7 @@ import {
 } from "../inventory/inventoryRules";
 import type { BackHandler, PanelConfirmation } from "./InventoryReviewPanels";
 import { Waiting } from "./Waiting";
+import { distinctBy } from "../distinct";
 
 interface PanelProps {
   client: ShortageClient;
@@ -79,7 +80,14 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
 
   const loadOptions = useCallback(async () => {
     const value = await run("جاري تحميل الفروع...", () => client.options());
-    if (value) setOptions(value);
+    if (value) {
+      setOptions({
+        ...value,
+        branches: distinctBy(value.branches, (branch) => branch.branchName),
+        users: distinctBy(value.users, (user) => user.displayName),
+        customInventories: distinctBy(value.customInventories, (custom) => custom.name),
+      });
+    }
   }, [client, run]);
 
   useEffect(() => { void loadOptions(); }, [loadOptions]);
@@ -502,7 +510,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
 
   const load = useCallback(async () => {
     try {
-      setBranches((await client.itemBranches(itemId)).branches);
+      setBranches(distinctBy((await client.itemBranches(itemId)).branches, (branch) => branch.branchName));
     } catch (error) {
       onMessage((error as Error).message);
     }
@@ -584,7 +592,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
 
   const loadSuppliers = useCallback(async () => {
     const value = await run("جاري تحميل التجار...", () => client.suppliers());
-    if (value) setSuppliers(value.suppliers);
+    if (value) setSuppliers(distinctBy(value.suppliers, (supplier) => supplier.name));
   }, [client, run]);
 
   const load = useCallback(async (next: FollowTab = tab) => {
@@ -639,7 +647,7 @@ export function FollowUpPanel({ client, canApprove, onMessage, onBusy, onConfirm
 
       {tab === "Suppliers" ? <SuppliersView suppliers={suppliers} onSave={async (supplier) => {
         const value = await run("جاري الحفظ...", () => client.saveSupplier(supplier));
-        if (value) setSuppliers(value.suppliers);
+        if (value) setSuppliers(distinctBy(value.suppliers, (entry) => entry.name));
       }} /> : null}
 
       {tab === "Requests" ? (
@@ -891,7 +899,7 @@ export function DefineInventoryPanel({ client, onMessage, onBusy }: PanelProps) 
     void run("جاري التحميل...", () => client.customInventories()).then((value) => {
       if (!value) return;
       setList(value.customInventories);
-      setBranches(value.branches);
+      setBranches(distinctBy(value.branches, (branch) => branch.branchName));
     });
   }, [client, run]);
 
@@ -983,7 +991,7 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
   }, [client, run, from, to]);
 
   useEffect(() => {
-    void run("جاري التحميل...", () => client.auditOptions("")).then((value) => { if (value) setBranches(value.branches); });
+    void run("جاري التحميل...", () => client.auditOptions("")).then((value) => { if (value) setBranches(distinctBy(value.branches, (branch) => branch.branchName)); });
     void loadRequests();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -992,7 +1000,7 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
     setRecipient("");
     if (!id) { setUsers([]); return; }
     const value = await run("جاري تحميل الموظفين...", () => client.auditOptions(id));
-    if (value) setUsers(value.users);
+    if (value) setUsers(distinctBy(value.users, (user) => user.displayName));
   }
 
   async function create() {
