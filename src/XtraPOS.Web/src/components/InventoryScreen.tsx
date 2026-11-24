@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createInventoryClient,
   type InventoryConfiguration,
@@ -7,6 +7,7 @@ import {
   type InventorySession,
   type InventoryType,
 } from "../api/inventory";
+import { createInventoryReviewClient } from "../api/inventoryReview";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import {
   defaultPages,
@@ -24,12 +25,13 @@ import {
 } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
+import { InventoryReportPanel, ItemProcessingPanel, type BackHandler } from "./InventoryReviewPanels";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { ScreenHeader } from "./ScreenHeader";
 import { Waiting } from "./Waiting";
 import "./inventory.css";
 
-type Step = "menu" | "type" | "pages" | "resume" | "count" | "done";
+type Step = "menu" | "type" | "pages" | "resume" | "count" | "done" | "report" | "items";
 
 interface Confirmation {
   title: string;
@@ -44,6 +46,9 @@ export function InventoryScreen({ session, permissions, onBack }: {
   onBack: () => void;
 }) {
   const client = useMemo(() => createInventoryClient(session), [session]);
+  const reviewClient = useMemo(() => createInventoryReviewClient(session), [session]);
+  const panelBack = useRef<BackHandler | null>(null);
+  const registerBack = useCallback((handler: BackHandler | null) => { panelBack.current = handler; }, []);
   const canReview = hasPermission(permissions, "Inventory.Review");
   const [step, setStep] = useState<Step>("menu");
   const [type, setType] = useState<InventoryType | null>(null);
@@ -67,6 +72,11 @@ export function InventoryScreen({ session, permissions, onBack }: {
   function back() {
     setMessage("");
     if (step === "menu" || step === "done") { onBack(); return; }
+    if (step === "report" || step === "items") {
+      if (panelBack.current?.()) return;
+      setStep("menu");
+      return;
+    }
     if (step === "type") { setStep("menu"); return; }
     if (step === "pages") { setStep("type"); return; }
     if (step === "resume") { setStep(type === "Periodic" ? "pages" : "type"); return; }
@@ -136,6 +146,8 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   const title = step === "menu" ? "الجرد"
     : step === "done" ? "تم تثبيت الجرد"
+      : step === "report" ? "تقرير الجرد"
+      : step === "items" ? "معالجة الأصناف"
       : type ? inventoryTypeLabel(type) : "الجرد";
 
   return (
@@ -152,7 +164,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
                 type="button"
                 className="inventory-card"
                 disabled={!card.available}
-                onClick={() => { if (card.id === "count") { setMessage(""); setStep("type"); } }}
+                onClick={() => {
+                  setMessage("");
+                  if (card.id === "count") setStep("type");
+                  if (card.id === "report") setStep("report");
+                  if (card.id === "items") setStep("items");
+                }}
               >
                 <strong>{card.label}</strong>
                 {card.available ? null : <small>قريباً</small>}
@@ -230,6 +247,27 @@ export function InventoryScreen({ session, permissions, onBack }: {
             onConfirm={setConfirmation}
             onSaveAndExit={() => back()}
             onFinished={(result) => { setFinished(result); setActive(null); setStep("done"); }}
+          />
+        ) : null}
+
+        {step === "report" ? (
+          <InventoryReportPanel
+            client={reviewClient}
+            onMessage={setMessage}
+            onBusy={setBusy}
+            onConfirm={setConfirmation}
+            onRegisterBack={registerBack}
+          />
+        ) : null}
+
+        {step === "items" ? (
+          <ItemProcessingPanel
+            client={reviewClient}
+            canClassify={hasPermission(permissions, "Inventory.Classify")}
+            canCorrect={hasPermission(permissions, "Inventory.CorrectQuantity")}
+            onMessage={setMessage}
+            onBusy={setBusy}
+            onConfirm={setConfirmation}
           />
         ) : null}
 

@@ -323,3 +323,150 @@
   gap: 8px;
   justify-content: flex-end;
 }
+
+/* المرحلة 2: «تقرير الجرد» وتدقيق المشرف و«معالجة الأصناف» */
+.inventory-report,
+.inventory-items {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inventory-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.inventory-filter label,
+.inventory-section label {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.inventory-filter input,
+.inventory-filter select,
+.inventory-section input:not([type="checkbox"]),
+.inventory-section select {
+  height: 42px;
+  min-width: 140px;
+  padding: 0 10px;
+  border: 1px solid var(--xp-border);
+  border-radius: 10px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+}
+
+.inventory-filter .primary-button {
+  height: 42px;
+  min-width: 110px;
+}
+
+.inventory-report-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+
+.inventory-report-title {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 200px;
+}
+
+.inventory-report-title small {
+  color: var(--muted);
+}
+
+.inventory-badge {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef3f9;
+  font-size: 14px;
+}
+
+.inventory-badge.is-warning {
+  background: #fdecea;
+  color: #a12a1c;
+}
+
+.inventory-audit-start,
+.inventory-section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+}
+
+.inventory-audit-start > strong,
+.inventory-section > strong {
+  flex-basis: 100%;
+  font-size: 17px;
+}
+
+.inventory-audit-start .inventory-hint {
+  flex-basis: 100%;
+}
+
+.inventory-audit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.inventory-audits {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inventory-pick {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  color: var(--navy) !important;
+  font-size: 15px !important;
+}
+
+.inventory-pick input {
+  width: 20px;
+  height: 20px;
+}
+
+.inventory-row.is-mismatch {
+  border-color: #e0a39b;
+}
+
+.inventory-notice {
+  margin: 0;
+  color: var(--xp-save);
+  font-weight: 700;
+}
+
+.inventory-history {
+  flex-basis: 100%;
+  margin: 0;
+  padding-inline-start: 18px;
+  color: var(--muted);
+  font-size: 14px;
+}

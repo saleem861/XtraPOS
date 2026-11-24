@@ -88,7 +88,8 @@ describe("inventory rules", () => {
       "الجرد", "تحديد جرد", "معالجة النواقص", "متابعة النواقص", "معالجة الأصناف",
       "تقرير الجرد", "التدقيق", "تقرير الكفاءة", "تقرير معالجة النواقص",
     ]);
-    expect(admin.filter((card) => card.available).map((card) => card.id)).toEqual(["count"]);
+    expect(admin.filter((card) => card.available).map((card) => card.id)).toEqual(["count", "items", "report"]);
+    expect(inventoryMenu(["Inventory.Count", "Inventory.CorrectQuantity"]).map((card) => card.id)).toEqual(["count", "items"]);
   });
 
   it("accepts zero and Arabic digits but refuses negative or invalid quantities", () => {
