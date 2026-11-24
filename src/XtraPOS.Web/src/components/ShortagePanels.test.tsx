@@ -136,18 +136,22 @@ describe("receipt audits", () => {
 });
 
 describe("custom count", () => {
-  it("offers the branch's custom inventories as count types", async () => {
+  it("opens a custom count from manual options by its name", async () => {
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn((url: string) => {
-      calls.push(url);
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${url} ${typeof init?.body === "string" ? init.body : ""}`);
       if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
       if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: null });
       return reply({ session: { sessionId: "s1", inventoryType: "Custom", inventoryTypeLabel: "جرد مخصص", status: "Open", businessDate: "2026-11-24", startedAt: "", lastSavedAt: "", totalItems: 4, countedItems: 0, postedItems: 0, pages: [] }, items: [] });
     }));
     render(<InventoryScreen session={device} permissions={["Inventory.Count"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
-    await userEvent.click(await screen.findByRole("button", { name: /جرد مخصص: أراجيل العرض/ }));
-    expect(calls.some((url) => url.includes("type=Custom") && url.includes("customInventoryId=c1"))).toBe(true);
+    await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "نعم، متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^جرد مخصص/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /أراجيل العرض/ }));
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("/api/inventory/sessions ") && call.includes('"inventoryType":"Custom"') && call.includes('"customInventoryId":"c1"'))).toBe(true));
   });
 });
 

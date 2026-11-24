@@ -41,7 +41,7 @@ import { ScreenHeader } from "./ScreenHeader";
 import { Waiting } from "./Waiting";
 import "./inventory.css";
 
-type Step = "menu" | "type" | "pages" | "resume" | "count" | "done" | "report" | "items"
+type Step = "menu" | "branch" | "type" | "pages" | "resume" | "manual" | "custom" | "count" | "done" | "report" | "items"
   | "define" | "shortages" | "followUp" | "audit" | "efficiency" | "shortageReport";
 
 /** بطاقات تفتح لوحة كاملة، وعنوان كل لوحة. */
@@ -85,6 +85,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const customInventories = useMemo(() => distinctBy(config?.customInventories, (custom) => custom.name), [config]);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,9 +103,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
       setStep("menu");
       return;
     }
-    if (step === "type") { setStep("menu"); setCustomId(""); return; }
+    if (step === "branch") { setStep("menu"); return; }
+    if (step === "type") { setStep("branch"); setCustomId(""); return; }
     if (step === "pages") { setStep("type"); return; }
-    if (step === "resume") { setStep(type === "Periodic" ? "pages" : "type"); return; }
+    if (step === "resume") { setOpenSession(null); setStep(type === "Periodic" ? "pages" : "type"); return; }
+    if (step === "manual") { setStep("type"); return; }
+    if (step === "custom") { setStep("manual"); return; }
     if (step === "count") {
       setConfirmation({
         title: "حفظ وخروج",
@@ -115,34 +119,48 @@ export function InventoryScreen({ session, permissions, onBack }: {
     }
   }
 
-  async function chooseType(next: InventoryType) {
-    setType(next);
+  /** المسار: الجرد ← الفرع ← تأكيد اسم الفرع ← نوع الجرد. */
+  function confirmBranch() {
     setMessage("");
+    setConfirmation({
+      title: "تأكيد الفرع",
+      message: `سيتم الجرد على فرع «${session.branchName}». هل هذا هو الفرع الصحيح؟`,
+      accept: "نعم، متابعة",
+      onAccept: () => setStep("type"),
+    });
+  }
+
+  /** المهمة: متابعة أو جديد. الدوري: الصفحات ثم متابعة أو جديد. اليدوي: يدوي أو مخصص ويفتح. */
+  function chooseType(next: InventoryType) {
+    setType(next);
+    setCustomId("");
+    setMessage("");
+    if (next !== "Periodic") setPages([]);
     if (next === "Periodic") {
       setPages(defaultPages(config?.defaultPage ?? null));
       setStep("pages");
       return;
     }
-    await checkOpen(next, []);
+    if (next === "Manual") {
+      setStep("manual");
+      return;
+    }
+    void askContinueOrNew(next, []);
   }
 
-  async function chooseCustom(id: string) {
+  function chooseCustom(id: string) {
     setType("Custom");
     setCustomId(id);
     setMessage("");
-    await checkOpen("Custom", [], id);
+    void start("Custom", [], false, id);
   }
 
-  async function checkOpen(next: InventoryType, chosen: number[], custom = "") {
-    setBusy("جاري التحقق من وجود جرد مفتوح...");
+  async function askContinueOrNew(next: InventoryType, chosen: number[]) {
+    setBusy("جاري التحقق من وجود جرد غير مثبت...");
     try {
-      const result = await client.findOpen(next, chosen, custom);
-      if (result.session) {
-        setOpenSession(result.session);
-        setStep("resume");
-      } else {
-        await start(next, chosen, false, custom);
-      }
+      const result = await client.findOpen(next, chosen, "");
+      setOpenSession(result.session ?? null);
+      setStep("resume");
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -167,6 +185,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   function confirmNew() {
     if (!type) return;
+    if (!openSession) { void start(type, pages, false); return; }
     const label = type === "Important" ? "جرد أصناف مهمة" : type === "Periodic" ? "جرد دوري" : type === "Custom" ? "جرد مخصص" : "جرد يدوي";
     setConfirmation({
       title: "جرد جديد",
@@ -196,7 +215,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                 disabled={!card.available}
                 onClick={() => {
                   setMessage("");
-                  if (card.id === "count") setStep("type");
+                  if (card.id === "count") setStep("branch");
                   else if (card.id in PANEL_TITLES) setStep(card.id as Step);
                 }}
               >
@@ -207,18 +226,48 @@ export function InventoryScreen({ session, permissions, onBack }: {
           </div>
         ) : null}
 
+        {step === "branch" ? (
+          <div className="inventory-menu">
+            <p className="inventory-hint">اختر الفرع</p>
+            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={confirmBranch}>
+              <strong>{session.branchName}</strong>
+              <small>فرع هذا الجهاز</small>
+            </button>
+          </div>
+        ) : null}
+
         {step === "type" ? (
           <div className="inventory-menu">
-            <p className="inventory-hint">اختر نوع الجرد</p>
+            <p className="inventory-hint">الفرع: {session.branchName} · اختر نوع الجرد</p>
             {INVENTORY_TYPES.map((option) => (
-              <button key={option.value} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void chooseType(option.value)}>
+              <button key={option.value} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => chooseType(option.value)}>
                 <strong>{option.label}</strong>
                 {option.value === "Important" && config ? <small>{config.importantItems} صنف</small> : null}
               </button>
             ))}
-            {distinctBy(config?.customInventories, (custom) => custom.name).map((custom) => (
-              <button key={custom.customInventoryId} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void chooseCustom(custom.customInventoryId)}>
-                <strong>جرد مخصص: {custom.name}</strong>
+          </div>
+        ) : null}
+
+        {step === "manual" ? (
+          <div className="inventory-menu">
+            <p className="inventory-hint">خيارات الجرد اليدوي</p>
+            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => { setType("Manual"); void start("Manual", [], false, ""); }}>
+              <strong>جرد يدوي</strong>
+              <small>أدخل الأصناف بنفسك</small>
+            </button>
+            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => { setMessage(""); setStep("custom"); }}>
+              <strong>جرد مخصص</strong>
+              <small>{customInventories.length} جرد محدد لهذا الفرع</small>
+            </button>
+          </div>
+        ) : null}
+
+        {step === "custom" ? (
+          <div className="inventory-menu">
+            <p className="inventory-hint">{customInventories.length > 0 ? "اختر اسم الجرد" : "لا يوجد جرد مخصص لهذا الفرع. يُحدَّد من «تحديد جرد»."}</p>
+            {customInventories.map((custom) => (
+              <button key={custom.customInventoryId} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => chooseCustom(custom.customInventoryId)}>
+                <strong>{custom.name}</strong>
                 <small>{custom.items} صنف</small>
               </button>
             ))}
@@ -250,24 +299,26 @@ export function InventoryScreen({ session, permissions, onBack }: {
               disabled={Boolean(busy)}
               onClick={() => {
                 if (pages.length === 0) { setMessage("يرجى اختيار صفحة واحدة على الأقل"); return; }
-                void checkOpen("Periodic", pages);
+                void askContinueOrNew("Periodic", pages);
               }}
             >متابعة</button>
           </div>
         ) : null}
 
-        {step === "resume" && openSession && type ? (
+        {step === "resume" && type ? (
           <div className="inventory-menu">
             <p className="inventory-hint">
-              يوجد جرد غير مثبت من اليوم: تم جرد {openSession.countedItems} من {openSession.totalItems || openSession.countedItems} صنف.
+              {openSession
+                ? `يوجد جرد غير مثبت من اليوم: تم جرد ${openSession.countedItems} من ${openSession.totalItems || openSession.countedItems} صنف.`
+                : "لا يوجد جرد غير مثبت. اختر «جديد» للبدء."}
             </p>
-            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => void start(type, pages, false)}>
+            <button type="button" className="inventory-card" disabled={Boolean(busy) || !openSession} onClick={() => void start(type, pages, false)}>
               <strong>متابعة</strong>
-              <small>من حيث توقفت</small>
+              <small>{openSession ? "من حيث توقفت" : "لا يوجد جرد للمتابعة"}</small>
             </button>
             <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={confirmNew}>
               <strong>جديد</strong>
-              <small>يمسح الجرد غير المثبت</small>
+              <small>{openSession ? "يمسح الجرد غير المثبت" : "يبدأ جرداً جديداً"}</small>
             </button>
           </div>
         ) : null}
