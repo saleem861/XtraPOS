@@ -204,7 +204,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
             $"""
              SELECT item.ItemID, item.ItemNumber, item.ItemName, target.BranchID,
                     CASE WHEN snapshot.IsQuantityInitialized = 1 THEN snapshot.OnHandQuantity END, snapshot.DailySalesRate
-             FROM (SELECT DISTINCT ItemID FROM ({scope}) AS raw) AS scope
+             FROM (SELECT DISTINCT ItemID FROM ({scope}) AS candidates) AS scope
              INNER JOIN dbo.Items AS item ON item.ItemID = scope.ItemID
              CROSS JOIN dbo.ShortageRunBranches AS target
              LEFT JOIN dbo.BranchStockSnapshots AS snapshot ON snapshot.BranchID = target.BranchID AND snapshot.ItemID = item.ItemID

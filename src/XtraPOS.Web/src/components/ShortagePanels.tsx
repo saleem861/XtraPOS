@@ -269,7 +269,15 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
         <label>عدد أيام التوفير
           <input inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value)} aria-label="عدد أيام التوفير" />
         </label>
-        <button type="button" className="primary-button" onClick={() => submit(Boolean(options.draft))}>تثبيت ومتابعة</button>
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => options.draft
+            ? onConfirm({ title: "معالجة جديدة", message: "لديك معالجة غير مثبتة وستُلغى ويُحسب من جديد. هل تريد المتابعة؟", accept: "جديد", onAccept: () => submit(true) })
+            : submit(false)}
+        >
+          تثبيت ومتابعة
+        </button>
       </section>
     </div>
   );
