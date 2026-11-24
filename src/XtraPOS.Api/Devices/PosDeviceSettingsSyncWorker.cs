@@ -52,6 +52,21 @@ public sealed class PosDeviceSettingsSyncWorker(IServiceProvider services, ILogg
 
                     try
                     {
+                        var relayed = await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Inventory.InventoryRelayService>().RunAsync(stoppingToken);
+                        if (relayed.Any)
+                        {
+                            logger.LogInformation(
+                                "Inventory relay: {Rates} rate(s), {Balances} balance(s), {Sessions} count(s), {Audits} audit(s), {Corrections} correction(s).",
+                                relayed.RatesUpdated, relayed.BalancesPushed, relayed.SessionsPushed, relayed.AuditsPushed, relayed.CorrectionsPushed);
+                        }
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning(exception, "Inventory data was not sent to central; it will retry.");
+                    }
+
+                    try
+                    {
                         var copied = await scope.ServiceProvider.GetRequiredService<XtraPOS.Api.Catalog.QuickItemsService>().PullAsync(stoppingToken);
                         if (copied > 0)
                         {

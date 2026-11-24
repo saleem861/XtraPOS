@@ -470,3 +470,12 @@
   color: var(--muted);
   font-size: 14px;
 }
+
+.inventory-hint.is-warning {
+  color: #a12a1c;
+  font-weight: 700;
+}
+
+.inventory-report-row:disabled {
+  cursor: default;
+}

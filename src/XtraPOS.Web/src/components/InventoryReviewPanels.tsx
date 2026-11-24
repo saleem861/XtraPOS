@@ -8,6 +8,7 @@ import {
   type InventoryReport,
   type InventoryReviewClient,
   type ItemProcessing,
+  type ReportBranch,
   type ReportFilter,
   type SessionDetail,
 } from "../api/inventoryReview";
@@ -55,7 +56,7 @@ function DesktopKeyboard() {
 // تقرير الجرد وتدقيق المشرف
 // ======================================================================
 
-type ReportView = { kind: "list" } | { kind: "session"; sessionId: string } | { kind: "audit"; auditId: string; sessionId: string };
+type ReportView = { kind: "list" } | { kind: "session"; sessionId: string; branchId: string } | { kind: "audit"; auditId: string; sessionId: string };
 
 export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onRegisterBack }: {
   client: InventoryReviewClient;
@@ -65,9 +66,20 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
   onRegisterBack: (handler: BackHandler | null) => void;
 }) {
   const [view, setView] = useState<ReportView>({ kind: "list" });
-  const [filter, setFilter] = useState<ReportFilter>(() => ({ ...defaultReportRange(new Date()), type: "", userId: "", status: "" }));
+  const [filter, setFilter] = useState<ReportFilter>(() => ({ branchId: "", ...defaultReportRange(new Date()), type: "", userId: "", status: "" }));
   const [report, setReport] = useState<InventoryReport | null>(null);
   const [loading, setLoading] = useState(false);
+  const [branches, setBranches] = useState<ReportBranch[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void client.branches()
+      .then((value) => { if (!cancelled) setBranches(value.branches ?? []); })
+      .catch(() => { if (!cancelled) setBranches([]); });
+    return () => { cancelled = true; };
+  }, [client]);
+
+  const selectedBranch = branches.find((branch) => branch.branchId === filter.branchId);
 
   const load = useCallback(async (next: ReportFilter) => {
     setLoading(true);
@@ -86,7 +98,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
 
   useEffect(() => {
     onRegisterBack(() => {
-      if (view.kind === "audit") { setView({ kind: "session", sessionId: view.sessionId }); return true; }
+      if (view.kind === "audit") { setView({ kind: "session", sessionId: view.sessionId, branchId: "" }); return true; }
       if (view.kind === "session") { setView({ kind: "list" }); void load(filter); return true; }
       return false;
     });
@@ -98,6 +110,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
       <SessionDetailView
         client={client}
         sessionId={view.sessionId}
+        branchId={view.branchId}
         onMessage={onMessage}
         onBusy={onBusy}
         onOpenAudit={(auditId) => setView({ kind: "audit", auditId, sessionId: view.sessionId })}
@@ -123,6 +136,17 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         className="inventory-filter"
         onSubmit={(event) => { event.preventDefault(); void load(filter); }}
       >
+        {branches.length > 1 ? (
+          <label>الفرع
+            <select value={filter.branchId} onChange={(event) => setFilter({ ...filter, branchId: event.target.value, userId: "" })}>
+              {branches.map((branch) => (
+                <option key={branch.branchId} value={branch.current ? "" : branch.branchId}>
+                  {branch.branchName}{branch.current ? " (هذا الفرع)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label>من تاريخ<input type="date" value={filter.from} onChange={(event) => setFilter({ ...filter, from: event.target.value })} /></label>
         <label>إلى تاريخ<input type="date" value={filter.to} onChange={(event) => setFilter({ ...filter, to: event.target.value })} /></label>
         <label>النوع
@@ -148,11 +172,18 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         <button type="submit" className="primary-button" disabled={loading}>عرض</button>
       </form>
 
+      {selectedBranch && !selectedBranch.current ? (
+        <p className={selectedBranch.stale ? "inventory-hint is-warning" : "inventory-hint"}>
+          من نسخة الفرع على المركز. آخر تحديث: {formatDateTime(selectedBranch.lastPushAt)}
+          {selectedBranch.stale ? " · النسخة أقدم من 30 دقيقة." : ""}
+        </p>
+      ) : null}
+
       <div className="inventory-list">
         {loading ? <Waiting compact label="جاري تحميل التقرير..." /> : null}
         {!loading && report && report.sessions.length === 0 ? <p className="inventory-hint">لا يوجد جرد في هذه الفترة.</p> : null}
         {!loading && report ? report.sessions.map((entry) => (
-          <button key={entry.sessionId} type="button" className="inventory-report-row" onClick={() => setView({ kind: "session", sessionId: entry.sessionId })}>
+          <button key={entry.sessionId} type="button" className="inventory-report-row" onClick={() => setView({ kind: "session", sessionId: entry.sessionId, branchId: report.remote ? report.branchId : "" })}>
             <span className="inventory-report-title">
               <strong>{entry.inventoryTypeLabel}</strong>
               {entry.pages.length > 0 ? <small>الصفحات: {entry.pages.join("، ")}</small> : null}
@@ -168,9 +199,10 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
   );
 }
 
-function SessionDetailView({ client, sessionId, onMessage, onBusy, onOpenAudit }: {
+function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onOpenAudit }: {
   client: InventoryReviewClient;
   sessionId: string;
+  branchId: string;
   onMessage: (message: string) => void;
   onBusy: (label: string) => void;
   onOpenAudit: (auditId: string) => void;
@@ -183,12 +215,12 @@ function SessionDetailView({ client, sessionId, onMessage, onBusy, onOpenAudit }
   useEffect(() => {
     let cancelled = false;
     onMessage("");
-    void client.session(sessionId)
+    void client.session(sessionId, branchId)
       .then((value) => { if (!cancelled) setDetail(value); })
       .catch((error: Error) => { if (!cancelled) onMessage(error.message); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, sessionId]);
+  }, [client, sessionId, branchId]);
 
   const lines = useMemo(() => filterReportLines(detail?.items ?? [], picking ? "counted" : tab), [detail, tab, picking]);
 
@@ -224,7 +256,8 @@ function SessionDetailView({ client, sessionId, onMessage, onBusy, onOpenAudit }
         </span>
       </header>
 
-      {session.status === "Completed" ? (
+      {detail.remote ? <p className="inventory-hint">جرد فرع آخر من نسخته على المركز: للعرض فقط، والتدقيق يتم في الفرع نفسه.</p> : null}
+      {!detail.remote && session.status === "Completed" ? (
         <section className="inventory-audit-start" aria-label="تدقيق المشرف">
           <strong>تدقيق المشرف</strong>
           <p className="inventory-hint">عدّ أعمى للأصناف المعدودة، ثم مقارنة بعدّ الموظف. التدقيق لا يغيّر المخزون.</p>
@@ -243,12 +276,13 @@ function SessionDetailView({ client, sessionId, onMessage, onBusy, onOpenAudit }
           )}
           {openAudit && !picking ? <p className="inventory-hint">يوجد تدقيق غير منتهٍ. «بدء» لنفس المشرف يتابعه.</p> : null}
         </section>
-      ) : <p className="inventory-hint">يُدقق الجرد بعد تثبيته فقط.</p>}
+      ) : null}
+      {!detail.remote && session.status !== "Completed" ? <p className="inventory-hint">يُدقق الجرد بعد تثبيته فقط.</p> : null}
 
       {detail.audits.length > 0 && !picking ? (
         <section className="inventory-audits" aria-label="التدقيقات">
           {detail.audits.map((audit) => (
-            <button key={audit.auditId} type="button" className="inventory-report-row" onClick={() => onOpenAudit(audit.auditId)}>
+            <button key={audit.auditId} type="button" className="inventory-report-row" disabled={detail.remote} onClick={() => onOpenAudit(audit.auditId)}>
               <strong>تدقيق: {audit.auditModeLabel}</strong>
               <span>{audit.userName ?? "—"} · {formatDateTime(audit.startedAt)}</span>
               <span>{audit.status === "Completed" ? `متطابق ${audit.matchedItems} من ${audit.countedItems}` : `دُقق ${audit.countedItems} من ${audit.totalItems} (غير منتهٍ)`}</span>

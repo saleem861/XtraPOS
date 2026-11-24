@@ -16,6 +16,7 @@ public static class InventoryReviewEndpoints
     public static void MapInventoryReviewEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/inventory");
+        group.MapGet("/report/branches", BranchesAsync);
         group.MapGet("/report/sessions", ReportAsync);
         group.MapGet("/report/sessions/{sessionId:guid}", SessionAsync);
         group.MapPost("/report/sessions/{sessionId:guid}/audits", StartAuditAsync);
@@ -27,21 +28,29 @@ public static class InventoryReviewEndpoints
         group.MapPost("/items/{itemId:guid}/quantity", QuantityAsync);
     }
 
-    private static async Task<IResult> ReportAsync(
-        DateOnly? from, DateOnly? to, string? type, Guid? userId, string? status,
+    private static async Task<IResult> BranchesAsync(
         HttpContext http, AuthService auth, PermissionService permissions, InventoryReviewService review, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, [ReviewPermission], cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => review.ReportAsync(caller.Context!, from, to, type, userId, status, cancellationToken));
+        return await RunAsync(() => review.BranchesAsync(caller.Context!, cancellationToken));
     }
 
-    private static async Task<IResult> SessionAsync(
-        Guid sessionId, HttpContext http, AuthService auth, PermissionService permissions, InventoryReviewService review, CancellationToken cancellationToken)
+    private static async Task<IResult> ReportAsync(
+        Guid? branchId, DateOnly? from, DateOnly? to, string? type, Guid? userId, string? status,
+        HttpContext http, AuthService auth, PermissionService permissions, InventoryReviewService review, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, [ReviewPermission], cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => review.SessionDetailAsync(caller.Context!, sessionId, cancellationToken));
+        return await RunAsync(() => review.ReportAsync(caller.Context!, branchId, from, to, type, userId, status, cancellationToken));
+    }
+
+    private static async Task<IResult> SessionAsync(
+        Guid sessionId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryReviewService review, CancellationToken cancellationToken)
+    {
+        var caller = await CallerAsync(http, auth, permissions, [ReviewPermission], cancellationToken);
+        if (caller.Result is not null) return caller.Result;
+        return await RunAsync(() => review.SessionDetailAsync(caller.Context!, sessionId, branchId, cancellationToken));
     }
 
     private static async Task<IResult> StartAuditAsync(

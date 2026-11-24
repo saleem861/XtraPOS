@@ -21,6 +21,8 @@ const reply = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: 
 const configuration = { businessDate: "2026-11-24", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: null, importantItems: 0, pageItems: [] };
 
 const report = {
+  branchId: "br",
+  remote: false,
   from: "2026-11-18",
   to: "2026-11-24",
   employees: [{ userId: "u1", userName: "أحمد" }],
@@ -41,6 +43,7 @@ const detail: SessionDetail = {
     { sessionItemId: "l2", itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة", isCounted: true, countedQuantity: 5, expectedQuantity: 5, difference: 0, countedAt: null, countedByName: "أحمد", posted: true, quantityAfterPosting: 5 },
   ],
   audits: [],
+  remote: false,
 };
 
 function audit(status: "Open" | "Completed"): AuditView {
@@ -72,6 +75,7 @@ describe("inventory report and supervisor audit", () => {
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       calls.push(`${init?.method ?? "GET"} ${url}`);
       if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url === "/api/inventory/report/branches") return reply({ centralReachable: false, branches: [] });
       if (url.startsWith("/api/inventory/report/sessions?")) return reply(report);
       if (url === "/api/inventory/report/sessions/s1") return reply(detail);
       if (url === "/api/inventory/report/sessions/s1/audits") return reply(audit("Open"));
@@ -162,5 +166,41 @@ describe("review rules", () => {
     expect(filterReportLines(lines, "counted")).toHaveLength(3);
     expect(filterReportLines(lines, "uncounted")).toHaveLength(1);
     expect(defaultReportRange(new Date(2026, 10, 24))).toEqual({ from: "2026-11-18", to: "2026-11-24" });
+  });
+});
+
+describe("inventory report across branches", () => {
+  it("reads another branch from central, read only", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      calls.push(url);
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url === "/api/inventory/report/branches") {
+        return reply({
+          centralReachable: true,
+          branches: [
+            { branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: null, stale: false },
+            { branchId: "br2", branchName: "فرع رام الله", current: false, lastPushAt: "2026-11-24T05:00:00Z", stale: true },
+          ],
+        });
+      }
+      if (url.startsWith("/api/inventory/report/sessions?")) {
+        return reply(url.includes("branchId=br2") ? { ...report, branchId: "br2", remote: true } : report);
+      }
+      if (url === "/api/inventory/report/sessions/s1?branchId=br2") return reply({ ...detail, remote: true });
+      return reply({});
+    }));
+
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.Review"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^تقرير الجرد/ }));
+    const branch = await screen.findByRole("combobox", { name: /^الفرع/ });
+    await userEvent.selectOptions(branch, "br2");
+    await userEvent.click(screen.getByRole("button", { name: "عرض" }));
+    expect(await screen.findByText(/النسخة أقدم من 30 دقيقة/)).toBeTruthy();
+    expect(calls.some((url) => url.includes("branchId=br2"))).toBe(true);
+
+    await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
+    expect(await screen.findByText(/للعرض فقط/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "الفروقات فقط" })).toBeNull();
   });
 });
