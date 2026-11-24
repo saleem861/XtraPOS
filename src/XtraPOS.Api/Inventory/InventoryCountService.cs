@@ -484,50 +484,78 @@ public sealed class InventoryCountService(
             since = (DateTime)(await newest.ExecuteScalarAsync(cancellationToken))!;
         }
 
-        var rows = new List<(string Number, bool Important, byte? Page, int? Days, DateTime UpdatedAt, string? By)>();
-        await using (var read = new SqlCommand(
-            """
-            SELECT TOP (2000) ItemNumber, IsImportant, InventoryPage, SupplyDays, UpdatedAt, UpdatedByName
-            FROM dbo.ItemInventorySettings
-            WHERE UpdatedAt >= DATEADD(MINUTE, -10, @since)
-            ORDER BY UpdatedAt, ItemNumber;
-            """,
-            central))
+        // نسخة الفرع من نفس النافذة: الصفوف التي لم تتغير لا تُكتب.
+        var known = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        await using (var mine = new SqlCommand(
+            "SELECT ItemNumber, UpdatedAt FROM dbo.ItemInventorySettings WHERE UpdatedAt >= DATEADD(MINUTE, -10, @since);",
+            local))
         {
-            read.Parameters.Add("@since", SqlDbType.DateTime2).Value = since;
-            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            mine.Parameters.Add("@since", SqlDbType.DateTime2).Value = since;
+            await using var reader = await mine.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                rows.Add((
-                    reader.GetString(0),
-                    reader.GetBoolean(1),
-                    reader.IsDBNull(2) ? (byte?)null : reader.GetByte(2),
-                    reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3),
-                    reader.GetDateTime(4),
-                    reader.IsDBNull(5) ? null : reader.GetString(5)));
+                known[reader.GetString(0)] = reader.GetDateTime(1);
             }
         }
 
+        // استيراد دفعة واحدة يعطي آلاف الصفوف نفس UpdatedAt، فالقراءة بصفحات (UpdatedAt, ItemNumber) حتى النهاية.
         var copied = 0;
-        foreach (var row in rows)
+        DateTime? afterTime = null;
+        var afterNumber = "";
+        while (true)
         {
-            await using var upsert = new SqlCommand(
+            var rows = new List<(string Number, bool Important, byte? Page, int? Days, DateTime UpdatedAt, string? By)>();
+            await using (var read = new SqlCommand(
                 """
-                UPDATE dbo.ItemInventorySettings
-                SET IsImportant = @important, InventoryPage = @page, SupplyDays = @days, UpdatedAt = @updated, UpdatedByName = @by
-                WHERE ItemNumber = @number AND UpdatedAt <> @updated;
-                IF @@ROWCOUNT = 0 AND NOT EXISTS (SELECT 1 FROM dbo.ItemInventorySettings WHERE ItemNumber = @number)
-                    INSERT INTO dbo.ItemInventorySettings (ItemNumber, IsImportant, InventoryPage, SupplyDays, UpdatedAt, UpdatedByName)
-                    VALUES (@number, @important, @page, @days, @updated, @by);
+                SELECT TOP (2000) ItemNumber, IsImportant, InventoryPage, SupplyDays, UpdatedAt, UpdatedByName
+                FROM dbo.ItemInventorySettings
+                WHERE UpdatedAt >= DATEADD(MINUTE, -10, @since)
+                  AND (@afterTime IS NULL OR UpdatedAt > @afterTime OR (UpdatedAt = @afterTime AND ItemNumber > @afterNumber))
+                ORDER BY UpdatedAt, ItemNumber;
                 """,
-                local);
-            upsert.Parameters.Add("@number", SqlDbType.NVarChar, 100).Value = row.Number;
-            upsert.Parameters.Add("@important", SqlDbType.Bit).Value = row.Important;
-            upsert.Parameters.Add("@page", SqlDbType.TinyInt).Value = (object?)row.Page ?? DBNull.Value;
-            upsert.Parameters.Add("@days", SqlDbType.Int).Value = (object?)row.Days ?? DBNull.Value;
-            upsert.Parameters.Add("@updated", SqlDbType.DateTime2).Value = row.UpdatedAt;
-            upsert.Parameters.Add("@by", SqlDbType.NVarChar, 200).Value = (object?)row.By ?? DBNull.Value;
-            copied += await upsert.ExecuteNonQueryAsync(cancellationToken) > 0 ? 1 : 0;
+                central))
+            {
+                read.Parameters.Add("@since", SqlDbType.DateTime2).Value = since;
+                read.Parameters.Add("@afterTime", SqlDbType.DateTime2).Value = (object?)afterTime ?? DBNull.Value;
+                read.Parameters.Add("@afterNumber", SqlDbType.NVarChar, 100).Value = afterNumber;
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    rows.Add((
+                        reader.GetString(0),
+                        reader.GetBoolean(1),
+                        reader.IsDBNull(2) ? (byte?)null : reader.GetByte(2),
+                        reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3),
+                        reader.GetDateTime(4),
+                        reader.IsDBNull(5) ? null : reader.GetString(5)));
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (known.TryGetValue(row.Number, out var mineAt) && mineAt == row.UpdatedAt) continue;
+                await using var upsert = new SqlCommand(
+                    """
+                    UPDATE dbo.ItemInventorySettings
+                    SET IsImportant = @important, InventoryPage = @page, SupplyDays = @days, UpdatedAt = @updated, UpdatedByName = @by
+                    WHERE ItemNumber = @number AND UpdatedAt <> @updated;
+                    IF @@ROWCOUNT = 0 AND NOT EXISTS (SELECT 1 FROM dbo.ItemInventorySettings WHERE ItemNumber = @number)
+                        INSERT INTO dbo.ItemInventorySettings (ItemNumber, IsImportant, InventoryPage, SupplyDays, UpdatedAt, UpdatedByName)
+                        VALUES (@number, @important, @page, @days, @updated, @by);
+                    """,
+                    local);
+                upsert.Parameters.Add("@number", SqlDbType.NVarChar, 100).Value = row.Number;
+                upsert.Parameters.Add("@important", SqlDbType.Bit).Value = row.Important;
+                upsert.Parameters.Add("@page", SqlDbType.TinyInt).Value = (object?)row.Page ?? DBNull.Value;
+                upsert.Parameters.Add("@days", SqlDbType.Int).Value = (object?)row.Days ?? DBNull.Value;
+                upsert.Parameters.Add("@updated", SqlDbType.DateTime2).Value = row.UpdatedAt;
+                upsert.Parameters.Add("@by", SqlDbType.NVarChar, 200).Value = (object?)row.By ?? DBNull.Value;
+                copied += await upsert.ExecuteNonQueryAsync(cancellationToken) > 0 ? 1 : 0;
+            }
+
+            if (rows.Count < 2000) break;
+            afterTime = rows[^1].UpdatedAt;
+            afterNumber = rows[^1].Number;
         }
 
         if (await TableExistsAsync(central, "dbo.InventorySchedule", cancellationToken))

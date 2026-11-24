@@ -27,7 +27,8 @@
 - فرع `054_InventoryCounting`: `ItemInventorySettings`، `InventorySchedule`، `InventorySessions`، `InventorySessionPages`، `InventorySessionItems`، و11 صلاحية جديدة.
 - مركز `039_CentralInventorySettings`: `ItemInventorySettings` و`InventorySchedule` والصلاحيات. **انسخ `XtraPOS_Central` احتياطياً قبل النشر.**
 - كل دقيقة يسحب `PosDeviceSettingsSyncWorker` التصنيف والجدول من المركز (`InventoryCountService.PullSettingsAsync`). التصنيف لا يُحذف من المركز: إلغاؤه = `IsImportant = 0` وصفحة فارغة.
-- التصنيف فارغ حتى يُستورد من `saleemPOSDB.dbo.InventorySettings` (المرحلة 7) أو يُعدَّل من «معالجة الأصناف» (المرحلة 2). بدونه لا يبدأ جرد المهم والدوري، ويعمل اليدوي.
+- التصنيف فارغ حتى يُستورد من `saleemPOSDB` (المرحلة 7، أدناه) أو يُعدَّل من «معالجة الأصناف» (المرحلة 2). بدونه لا يبدأ جرد المهم والدوري، ويعمل اليدوي.
+- السحب يقرأ بصفحات `(UpdatedAt, ItemNumber)` حتى النهاية في كل مرة، فاستيراد آلاف الأصناف بنفس `UpdatedAt` يصل كاملاً، والصفوف التي لم تتغير لا تُكتب على الفرع.
 - الجلسات تبقى على الفرع في هذه المرحلة. ترحيلها للمركز في المرحلة 3.
 
 ## الصلاحيات
@@ -42,3 +43,18 @@
 ## API
 
 `/api/inventory/configuration`، `sessions/open`، `POST sessions`، `sessions/{id}/items`، `sessions/{id}/lookup`، `PUT sessions/{id}/count`، `POST sessions/{id}/finalize`. كلها بجلسة `XtraPOS.Auth` وصلاحية `Inventory.Count`، والجلسة لصاحبها فقط.
+
+## الاستيراد من XtraPOS Inventory (المرحلة 7)
+
+مرة واحدة، يدوياً، بسكربتين. لا يتصل XtraPOS بـ `saleemPOSDB`.
+
+1. `scripts/inventory-import-1-export.sql` على `saleemPOSDB`: قراءة فقط. يُخرج عموداً واحداً من أسطر `INSERT`: التصنيف (`InventorySettings`)، والجدول (`InventorySchedule`)، و`PeriodsPerDay` و`PeriodicPageCount`.
+2. `scripts/inventory-import-2-central.sql` على `XtraPOS_Central` بعد نسخة احتياطية: تُلصق الأسطر في BLOCK 1، ويُشغَّل بـ `@Apply = 0` للمعاينة، ثم بـ `@Apply = 1` للكتابة في معاملة واحدة. يرفض أي قاعدة غير المركز، ويتوقف إن لم يُطبَّق 039.
+
+القواعد:
+
+- الصنف مهم إذا كان `IsImportant = 1` أو `InventoryPage = 0` (كما في التطبيق القديم). تكرار رقم الصنف يُدمج بـ `MAX` كما كان القديم يفعل.
+- صفحة خارج 0..12 أو أيام تزويد خارج 1..365 تُهمل (تظهر في المعاينة) ويبقى باقي الصنف.
+- لا يُكتب إلا ما تغيّر، فتشغيله ثانية لا يكتب شيئاً. أصناف المركز غير الموجودة في التصدير لا تُلمس.
+- الجدول يصبح جدول القديم: اليوم/الفترة الغائبة هناك تُعطَّل هنا. إن كان `PeriodsPerDay = 1` فصفحة اليوم تملأ AM وPM.
+- الفروع تسحب النتيجة خلال دقيقة. التجار ليسوا في هذا الاستيراد: لا جدول لهم في XtraPOS قبل المرحلة 5.
