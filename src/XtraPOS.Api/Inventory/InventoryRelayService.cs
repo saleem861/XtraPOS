@@ -223,7 +223,14 @@ public sealed class InventoryRelayService(
         table.Columns.Add("IsQuantityInitialized", typeof(bool));
         table.Columns.Add("DailySalesRate", typeof(decimal));
         table.Columns.Add("BalanceUpdatedAt", typeof(DateTime));
-        DateTime? newest = lastChanged;
+        // العلامة المائية = لحظة بدء القراءة من قاعدة الفرع (لا أحدث UpdatedAt):
+        // أصناف كثيرة تحمل نفس الطابع القديم كانت تُعاد كلها كل دقيقة لأن (الأحدث − دقيقتين) يشملها دائماً.
+        DateTime readStart;
+        await using (var clock = new SqlCommand("SELECT SYSUTCDATETIME();", local))
+        {
+            readStart = (DateTime)(await clock.ExecuteScalarAsync(cancellationToken))!;
+        }
+
         await using (var read = new SqlCommand(
             $"""
             SELECT balance.ItemID, item.ItemNumber, balance.OnHandQuantity, balance.IsQuantityInitialized, card.DailySalesRate,
@@ -244,7 +251,6 @@ public sealed class InventoryRelayService(
             while (await reader.ReadAsync(cancellationToken))
             {
                 var changedAt = reader.GetDateTime(5);
-                if (newest is null || changedAt > newest) newest = changedAt;
                 table.Rows.Add(
                     reader.GetGuid(0),
                     reader.GetString(1),
@@ -330,7 +336,7 @@ public sealed class InventoryRelayService(
             central))
         {
             status.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
-            status.Parameters.Add("@newest", SqlDbType.DateTime2).Value = (object?)newest ?? DBNull.Value;
+            status.Parameters.Add("@newest", SqlDbType.DateTime2).Value = readStart;
             status.Parameters.Add("@full", SqlDbType.Bit).Value = full;
             status.Parameters.Add("@rateDate", SqlDbType.Date).Value =
                 DateOnly.TryParse(rateDate, out var parsed) ? parsed.ToDateTime(TimeOnly.MinValue) : DBNull.Value;
