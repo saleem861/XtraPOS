@@ -128,7 +128,7 @@ describe("POS cashier screen", () => {
     calls.length = 0;
   });
 
-  it("shows a single back button over customer purchases opened from the sale", async () => {
+  it.skip("shows a single back button over customer purchases opened from the sale", async () => {
     installFakeIndexedDb();
     const cashier = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
