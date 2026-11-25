@@ -16,6 +16,7 @@ import { InventoryScreen } from "./InventoryScreen";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.localStorage.clear();
 });
 
 const session = {
@@ -257,12 +258,15 @@ describe("counting rules from the owner's notes", () => {
       const current = { ...openSession, countedItems: counted, uncountedItems: 2 - counted };
       if (url === "/api/inventory/sessions") return reply({ session: current, resumed: false });
       if (url.includes("/items")) return reply({ session: current, items: lines });
-      if (url.includes("/count")) {
-        const body = JSON.parse(String(init?.body)) as { itemId: string; quantity: number };
+      if (url.includes("/counts")) {
+        const body = JSON.parse(String(init?.body)) as { items: { itemId: string; quantity: number }[] };
         bodies.push(body);
         headers.push(new Headers(init?.headers).get("X-XtraPOS-Background"));
-        const saved = { ...lines.find((line) => line.itemId === body.itemId)!, isCounted: true, countedQuantity: body.quantity };
-        const answer = () => { counted += 1; return { ok: true, status: 200, json: async () => ({ session: { ...openSession, countedItems: counted, uncountedItems: 2 - counted }, item: saved }) }; };
+        const saved = body.items.map((entry) => ({ ...lines.find((line) => line.itemId === entry.itemId)!, isCounted: true, countedQuantity: entry.quantity }));
+        const answer = () => {
+          counted += saved.length;
+          return { ok: true, status: 200, json: async () => ({ session: { ...openSession, countedItems: counted, uncountedItems: 2 - counted }, items: saved, rejected: [] }) };
+        };
         // الحفظ الأول يتأخر في «المركز» حتى نطلقه: الشاشة لا تنتظره.
         if (bodies.length === 1) return new Promise((resolve) => { release = () => resolve(answer()); });
         return Promise.resolve(answer());
@@ -283,7 +287,7 @@ describe("counting rules from the owner's notes", () => {
     expect(screen.queryByRole("textbox", { name: "الكمية الفعلية فحم سريع" })).toBeNull();
     expect(screen.getByRole("tab", { name: "تم الجرد (1)" })).toBeTruthy();
     expect(screen.getByText(/تم جرد 1 من 2/)).toBeTruthy();
-    await vi.waitFor(() => expect(bodies[0]).toMatchObject({ itemId: "i1", quantity: 0 }));
+    await vi.waitFor(() => expect(bodies[0]).toEqual({ items: [{ itemId: "i1", quantity: 0 }] }));
     expect(headers[0]).toBe("1");
 
     // الصنف التالي متاح مباشرة، والحفظ الثاني ينتظر دوره خلف الأول.
@@ -296,9 +300,43 @@ describe("counting rules from the owner's notes", () => {
     expect(bodies).toHaveLength(1);
 
     release!();
-    await vi.waitFor(() => expect(bodies[1]).toMatchObject({ itemId: "i2", quantity: 3 }));
+    await vi.waitFor(() => expect(bodies[1]).toEqual({ items: [{ itemId: "i2", quantity: 3 }] }));
     await vi.waitFor(() => expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(screen.getByRole("tab", { name: "تم الجرد (2)" }));
     expect((await screen.findByLabelText("650 تم حفظ العد")).className).toContain("is-selected");
+    expect(window.localStorage.getItem(`xtrapos.inventory.pending.${openSession.sessionId}`)).toBeNull();
+  });
+
+  it("keeps unsent counts on the device and sends them in one request when the count reopens", async () => {
+    const lines = [item({ itemId: "i1", itemNumber: "650" }), item({ itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة" })];
+    window.localStorage.setItem(`xtrapos.inventory.pending.${openSession.sessionId}`, JSON.stringify([
+      { itemId: "i1", itemNumber: "650", quantity: 4, previous: lines[0], attempts: 0 },
+      { itemId: "i2", itemNumber: "224", quantity: 1, previous: lines[1], attempts: 0 },
+    ]));
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/inventory/configuration")) {
+        return reply({ businessDate: "2026-11-23", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: 7, importantItems: 2, pageItems: [] });
+      }
+      if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: null });
+      if (url === "/api/inventory/sessions") return reply({ session: openSession, resumed: true });
+      if (url.includes("/items")) return reply({ session: openSession, items: lines });
+      if (url.includes("/counts")) {
+        const body = JSON.parse(String(init?.body)) as { items: { itemId: string; quantity: number }[] };
+        bodies.push(body);
+        return reply({
+          session: { ...openSession, countedItems: 2, uncountedItems: 0 },
+          items: body.items.map((entry) => ({ ...lines.find((line) => line.itemId === entry.itemId)!, isCounted: true, countedQuantity: entry.quantity })),
+          rejected: [],
+        });
+      }
+      return reply({});
+    }));
+    render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
+    await openImportantCount();
+    await vi.waitFor(() => expect(bodies).toEqual([{ items: [{ itemId: "i1", quantity: 4 }, { itemId: "i2", quantity: 1 }] }]));
+    expect(await screen.findByRole("tab", { name: "تم الجرد (2)" })).toBeTruthy();
+    await vi.waitFor(() => expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(window.localStorage.getItem(`xtrapos.inventory.pending.${openSession.sessionId}`)).toBeNull();
   });
 });
