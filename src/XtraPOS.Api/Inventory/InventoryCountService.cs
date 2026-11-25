@@ -374,70 +374,8 @@ public sealed class InventoryCountService(
         try
         {
             var session = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
-            var exists = false;
-            await using (var find = new SqlCommand(
-                "SELECT COUNT(*) FROM dbo.InventorySessionItems WITH (UPDLOCK, HOLDLOCK) WHERE SessionID = @id AND ItemID = @item;",
-                connection,
-                transaction))
-            {
-                find.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                find.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
-                exists = (int)(await find.ExecuteScalarAsync(cancellationToken) ?? 0) > 0;
-            }
-
-            if (!exists)
-            {
-                if (session.Type != InventoryTypes.Manual)
-                {
-                    throw new InventoryException("هذا الصنف ليس ضمن هذا الجرد.", StatusCodes.Status404NotFound);
-                }
-
-                await InsertManualItemAsync(connection, transaction, actor.BranchId, sessionId, itemId, target.Remote, cancellationToken);
-            }
-
-            var balance = await ReadBalanceAsync(connection, transaction, actor.BranchId, itemId, target.Remote, cancellationToken);
-            await using (var update = new SqlCommand(
-                """
-                UPDATE dbo.InventorySessionItems
-                SET IsCounted = 1,
-                    CountedQuantity = @counted,
-                    SystemQuantityAtCount = @system,
-                    SystemQuantityKnown = @known,
-                    CountedAt = SYSUTCDATETIME(),
-                    CountedByUserID = @user,
-                    CountedByName = @userName
-                WHERE SessionID = @id AND ItemID = @item;
-                """,
-                connection,
-                transaction))
-            {
-                AddDecimal(update, "@counted", counted);
-                AddNullableDecimal(update, "@system", balance.Known ? balance.Quantity : null);
-                update.Parameters.Add("@known", SqlDbType.Bit).Value = balance.Known;
-                update.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
-                update.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
-                update.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                update.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
-                await update.ExecuteNonQueryAsync(cancellationToken);
-            }
-
+            var item = await SaveOneAsync(connection, transaction, actor, session, target.Remote, sessionId, itemId, counted, canReview, cancellationToken);
             await UpdateCountersAsync(connection, transaction, sessionId, cancellationToken);
-            object? item = null;
-            await using (var read = new SqlCommand(
-                """
-                SELECT SessionItemID, ItemID, ItemNumber, ItemName, IsCounted, CountedQuantity, SystemQuantityAtCount,
-                       SystemQuantityKnown, CountedAt, CountedByName, PostedAt, QuantityAfterPosting
-                FROM dbo.InventorySessionItems WHERE SessionID = @id AND ItemID = @item;
-                """,
-                connection,
-                transaction))
-            {
-                read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                read.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
-                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
-                if (await reader.ReadAsync(cancellationToken)) item = ReadItem(reader, canReview);
-            }
-
             var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return new { session = summary, item };
@@ -447,6 +385,141 @@ public sealed class InventoryCountService(
             await transaction.RollbackAsync(CancellationToken.None);
             throw;
         }
+    }
+
+    public const int MaxBatchCounts = 100;
+
+    /// <summary>
+    /// ملاحظة المالك (25 نوفمبر): الحفظ بطيء. الشاشة ترسل كل العدّ المنتظر دفعة واحدة: اتصال واحد بالمركز،
+    /// وفحص واحد للجلسة، ومعاملة واحدة، بدل طلب كامل لكل صنف. صنف مرفوض (ليس في الجرد) لا يُسقط الباقي،
+    /// ويرجع في rejected برسالته. الترتيب محفوظ، والصنف المكرر يأخذ آخر كمية.
+    /// </summary>
+    public async Task<object> SaveCountsAsync(
+        PosDeviceContext device,
+        Guid sessionId,
+        IReadOnlyList<(Guid ItemId, decimal? Quantity)> lines,
+        bool canReview,
+        CancellationToken cancellationToken,
+        Guid? branchId = null)
+    {
+        if (lines.Count == 0) throw new InventoryException("لا يوجد عدّ للحفظ.");
+        if (lines.Count > MaxBatchCounts) throw new InventoryException($"أقصى عدد في الدفعة {MaxBatchCounts} صنفاً.");
+        var latest = new Dictionary<Guid, decimal>();
+        var order = new List<Guid>();
+        foreach (var line in lines)
+        {
+            var counted = InventoryCountRules.ValidateCountedQuantity(line.Quantity);
+            if (!latest.ContainsKey(line.ItemId)) order.Add(line.ItemId);
+            latest[line.ItemId] = counted;
+        }
+
+        await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
+        var connection = target.Connection;
+        var actor = target.Actor!;
+        await RequireSchemaAsync(connection, cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        try
+        {
+            var session = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
+            var items = new List<object>();
+            var rejected = new List<object>();
+            foreach (var itemId in order)
+            {
+                try
+                {
+                    var item = await SaveOneAsync(connection, transaction, actor, session, target.Remote, sessionId, itemId, latest[itemId], canReview, cancellationToken);
+                    if (item is not null) items.Add(item);
+                }
+                catch (InventoryException exception) when (exception.StatusCode is >= 400 and < 500)
+                {
+                    rejected.Add(new { itemId, message = exception.Message });
+                }
+            }
+
+            await UpdateCountersAsync(connection, transaction, sessionId, cancellationToken);
+            var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new { session = summary, items, rejected };
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    /// <summary>حفظ عدّ صنف واحد داخل معاملة مفتوحة (الكمية المفترضة = الرصيد لحظة العد).</summary>
+    private async Task<object?> SaveOneAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        PosDeviceContext actor,
+        SessionRow session,
+        bool remote,
+        Guid sessionId,
+        Guid itemId,
+        decimal counted,
+        bool canReview,
+        CancellationToken cancellationToken)
+    {
+        var exists = false;
+        await using (var find = new SqlCommand(
+            "SELECT COUNT(*) FROM dbo.InventorySessionItems WITH (UPDLOCK, HOLDLOCK) WHERE SessionID = @id AND ItemID = @item;",
+            connection,
+            transaction))
+        {
+            find.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+            find.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
+            exists = (int)(await find.ExecuteScalarAsync(cancellationToken) ?? 0) > 0;
+        }
+
+        if (!exists)
+        {
+            if (session.Type != InventoryTypes.Manual)
+            {
+                throw new InventoryException("هذا الصنف ليس ضمن هذا الجرد.", StatusCodes.Status404NotFound);
+            }
+
+            await InsertManualItemAsync(connection, transaction, actor.BranchId, sessionId, itemId, remote, cancellationToken);
+        }
+
+        var balance = await ReadBalanceAsync(connection, transaction, actor.BranchId, itemId, remote, cancellationToken);
+        await using (var update = new SqlCommand(
+            """
+            UPDATE dbo.InventorySessionItems
+            SET IsCounted = 1,
+                CountedQuantity = @counted,
+                SystemQuantityAtCount = @system,
+                SystemQuantityKnown = @known,
+                CountedAt = SYSUTCDATETIME(),
+                CountedByUserID = @user,
+                CountedByName = @userName
+            WHERE SessionID = @id AND ItemID = @item;
+            """,
+            connection,
+            transaction))
+        {
+            AddDecimal(update, "@counted", counted);
+            AddNullableDecimal(update, "@system", balance.Known ? balance.Quantity : null);
+            update.Parameters.Add("@known", SqlDbType.Bit).Value = balance.Known;
+            update.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
+            update.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
+            update.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+            update.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var read = new SqlCommand(
+            """
+            SELECT SessionItemID, ItemID, ItemNumber, ItemName, IsCounted, CountedQuantity, SystemQuantityAtCount,
+                   SystemQuantityKnown, CountedAt, CountedByName, PostedAt, QuantityAfterPosting
+            FROM dbo.InventorySessionItems WHERE SessionID = @id AND ItemID = @item;
+            """,
+            connection,
+            transaction);
+        read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+        read.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadItem(reader, canReview) : null;
     }
 
     /// <summary>

@@ -143,6 +143,32 @@ export function createInventoryClient(session: DeviceSession, branchId = "") {
       });
       return readJson<{ session: InventorySession; item: InventoryItem | null }>(response, "تعذر حفظ العد. حاول مرة أخرى.");
     },
+    /**
+     * ملاحظة المالك (25 نوفمبر): حفظ كل العدّ المنتظر في طلب واحد، في الخلفية، بمهلة 20 ثانية.
+     * المهلة تُرجع خطأً بلا رمز، فيُعاد الطلب تلقائياً ولا يتعلق الطابور.
+     */
+    async countBatch(sessionId: string, items: { itemId: string; quantity: number }[], timeoutMs = 20000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/counts`, {
+          method: "PUT",
+          headers: { ...json, [BACKGROUND_HEADER]: "1" },
+          body: JSON.stringify({ items, ...(remote ? { branchId: remote } : {}) }),
+          signal: controller.signal,
+        });
+        return await readJson<{
+          session: InventorySession;
+          items: InventoryItem[];
+          rejected: { itemId: string; message: string }[];
+        }>(response, "تعذر حفظ العد. حاول مرة أخرى.");
+      } catch (error) {
+        if ((error as Error).name === "AbortError") throw new Error("لم يرد المركز خلال 20 ثانية.");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     async finalize(sessionId: string) {
       const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/finalize${query()}`, {
         method: "POST",

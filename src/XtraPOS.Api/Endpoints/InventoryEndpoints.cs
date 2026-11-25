@@ -22,6 +22,7 @@ public static class InventoryEndpoints
         group.MapGet("/sessions/{sessionId:guid}/items", ItemsAsync);
         group.MapGet("/sessions/{sessionId:guid}/lookup", LookupAsync);
         group.MapPut("/sessions/{sessionId:guid}/count", CountAsync);
+        group.MapPut("/sessions/{sessionId:guid}/counts", CountsAsync);
         group.MapPost("/sessions/{sessionId:guid}/finalize", FinalizeAsync);
     }
 
@@ -75,6 +76,18 @@ public static class InventoryEndpoints
         if (caller.Result is not null) return caller.Result;
         if (body?.ItemId is not Guid itemId) return Results.Json(new { message = "يرجى اختيار الصنف." }, statusCode: StatusCodes.Status400BadRequest);
         return await RunAsync(() => inventory.SaveCountAsync(caller.Context!, sessionId, itemId, body.Quantity, caller.CanReview, cancellationToken, body.BranchId));
+    }
+
+    /// <summary>حفظ دفعة من العدّ في طلب واحد (ملاحظة المالك: الحفظ في الخلفية وبسرعة).</summary>
+    private static async Task<IResult> CountsAsync(Guid sessionId, CountsBody? body, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    {
+        var caller = await CallerAsync(http, auth, permissions, cancellationToken);
+        if (caller.Result is not null) return caller.Result;
+        var lines = (body?.Items ?? [])
+            .Where(line => line.ItemId is Guid id && id != Guid.Empty)
+            .Select(line => (line.ItemId!.Value, line.Quantity))
+            .ToList();
+        return await RunAsync(() => inventory.SaveCountsAsync(caller.Context!, sessionId, lines, caller.CanReview, cancellationToken, body?.BranchId));
     }
 
     private static async Task<IResult> FinalizeAsync(Guid sessionId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
@@ -132,6 +145,12 @@ public static class InventoryEndpoints
         public List<int>? Pages { get; set; }
         public Guid? CustomInventoryId { get; set; }
         public bool ReplaceOpen { get; set; }
+        public Guid? BranchId { get; set; }
+    }
+
+    private sealed class CountsBody
+    {
+        public List<CountBody>? Items { get; set; }
         public Guid? BranchId { get; set; }
     }
 

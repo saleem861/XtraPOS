@@ -521,6 +521,29 @@ interface PendingSave {
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+/** الحفظ الذي لم يصل المركز يُحفظ على الجهاز، فلا يضيع إن أُعيد تحميل الصفحة، ويُرسل عند العودة للجرد. */
+const PENDING_KEY = (sessionId: string) => `xtrapos.inventory.pending.${sessionId}`;
+const BATCH_LIMIT = 100;
+
+function readStoredPending(sessionId: string): PendingSave[] {
+  try {
+    const raw = window.localStorage.getItem(PENDING_KEY(sessionId));
+    const parsed = raw ? (JSON.parse(raw) as PendingSave[]) : [];
+    return Array.isArray(parsed) ? parsed.filter((job) => typeof job?.itemId === "string" && typeof job?.quantity === "number") : [];
+  } catch {
+    return [];
+  }
+}
+
+function storePending(sessionId: string, jobs: PendingSave[]) {
+  try {
+    if (jobs.length === 0) window.localStorage.removeItem(PENDING_KEY(sessionId));
+    else window.localStorage.setItem(PENDING_KEY(sessionId), JSON.stringify(jobs.map((job) => ({ ...job, attempts: 0 }))));
+  } catch {
+    // التخزين غير متاح: يبقى الطابور في الذاكرة فقط.
+  }
+}
+
 function upsertItem(items: InventoryItem[], next: InventoryItem) {
   return items.some((item) => item.itemId === next.itemId)
     ? items.map((item) => (item.itemId === next.itemId ? next : item))
@@ -570,7 +593,24 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     setLoading(true);
     try {
       const result = await client.items(session.sessionId);
-      setItems(result.items);
+      // عدّ لم يصل المركز في المرة السابقة (أُعيد تحميل الصفحة): يظهر محفوظاً ويُرسل الآن.
+      const stored = queue.current.length === 0 ? readStoredPending(session.sessionId) : [];
+      let loaded = result.items;
+      for (const job of stored) {
+        const base = loaded.find((item) => item.itemId === job.itemId) ?? job.previous;
+        if (!base) continue;
+        loaded = upsertItem(loaded, { ...base, isCounted: true, countedQuantity: job.quantity });
+      }
+      setItems(loaded);
+      if (stored.length > 0) {
+        queue.current.push(...stored.map((job) => ({ ...job, attempts: 0 })));
+        setPending(() => {
+          const next = new Map<string, number>();
+          for (const job of queue.current) next.set(job.itemId, (next.get(job.itemId) ?? 0) + 1);
+          return next;
+        });
+        void drain();
+      }
       onSession(result.session);
     } catch (error) {
       onMessage((error as Error).message);
@@ -596,40 +636,66 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     });
   }
 
+  /**
+   * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
+   * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
+   */
   async function drain() {
     if (draining.current) return;
     draining.current = true;
+    let attempts = 0;
     try {
       while (alive.current && queue.current.length > 0) {
-        const job = queue.current[0];
+        const batch = queue.current.slice(0, BATCH_LIMIT);
+        const latest = new Map<string, number>();
+        for (const job of batch) latest.set(job.itemId, job.quantity);
         try {
-          const result = await client.count(session.sessionId, job.itemId, job.quantity, true);
-          queue.current.shift();
+          const result = await client.countBatch(
+            session.sessionId,
+            [...latest.entries()].map(([itemId, quantity]) => ({ itemId, quantity })),
+          );
+          queue.current.splice(0, batch.length);
+          storePending(session.sessionId, queue.current);
+          attempts = 0;
           setRetrying(false);
-          const later = queue.current.some((entry) => entry.itemId === job.itemId);
-          if (result.item && !later) {
-            const saved = result.item;
-            setItems((current) => upsertItem(current, saved));
+          const stillQueued = new Set(queue.current.map((job) => job.itemId));
+          const saved = result.items.filter((item) => !stillQueued.has(item.itemId));
+          const rejected = new Map(result.rejected.map((entry) => [entry.itemId, entry.message]));
+          setItems((current) => {
+            let next = current;
+            for (const item of saved) next = upsertItem(next, item);
+            for (const job of batch) {
+              if (!rejected.has(job.itemId) || stillQueued.has(job.itemId)) continue;
+              next = job.previous ? upsertItem(next, job.previous) : next.filter((item) => item.itemId !== job.itemId);
+            }
+            return next;
+          });
+          if (rejected.size > 0) {
+            const numbers = batch.filter((job) => rejected.has(job.itemId)).map((job) => job.itemNumber);
+            onMessage(`لم يُحفظ عدّ ${[...new Set(numbers)].join("، ")}: ${[...rejected.values()][0]}`);
           }
           onSession(result.session);
-          markPending(job.itemId, -1);
+          for (const job of batch) markPending(job.itemId, -1);
         } catch (error) {
           const status = errorStatus(error);
           if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-            // رفضه الخادم (صنف ليس في الجرد، كمية غير صالحة...): لا يُعاد، ويرجع الصنف كما كان.
-            queue.current.shift();
-            markPending(job.itemId, -1);
-            if (!queue.current.some((entry) => entry.itemId === job.itemId)) {
-              setItems((current) => job.previous
-                ? upsertItem(current, job.previous)
-                : current.filter((item) => item.itemId !== job.itemId));
-            }
-            onMessage(`لم يُحفظ عدّ الصنف ${job.itemNumber}: ${(error as Error).message}`);
+            // الدفعة كلها مرفوضة (الجرد أُغلق مثلاً): لا تُعاد، وترجع الأصناف كما كانت.
+            queue.current.splice(0, batch.length);
+            storePending(session.sessionId, queue.current);
+            const stillQueued = new Set(queue.current.map((job) => job.itemId));
+            setItems((current) => batch.reduce(
+              (next, job) => stillQueued.has(job.itemId)
+                ? next
+                : job.previous ? upsertItem(next, job.previous) : next.filter((item) => item.itemId !== job.itemId),
+              current,
+            ));
+            for (const job of batch) markPending(job.itemId, -1);
+            onMessage(`لم يُحفظ العدّ: ${(error as Error).message}`);
             continue;
           }
-          job.attempts += 1;
+          attempts += 1;
           setRetrying(true);
-          await wait(Math.min(15000, 1000 * 2 ** Math.min(job.attempts, 4)));
+          await wait(Math.min(15000, 1000 * 2 ** Math.min(attempts, 4)));
         }
       }
     } finally {
@@ -671,6 +737,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     if (manual) setManualItem(null);
 
     queue.current.push({ itemId, itemNumber: base.itemNumber, quantity, previous, attempts: 0 });
+    storePending(session.sessionId, queue.current);
     markPending(itemId, 1);
     void drain();
 
