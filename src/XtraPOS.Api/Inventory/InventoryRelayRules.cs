@@ -8,7 +8,10 @@ public static class InventoryRelayRules
     /// <summary>كل إرسال يعيد آخر دقيقتين، فلا يضيع رصيد تغيّر في نفس الثانية.</summary>
     public const int OverlapMinutes = 2;
 
-    /// <summary>بعدها تُعدّ نسخة الفرع على المركز قديمة، ويظهر تنبيه قبل معالجة النواقص.</summary>
+    /// <summary>
+    /// كانت تُعدّ بعدها نسخة الفرع على المركز قديمة. منذ قرار 25 نوفمبر المركز هو المرجع للكمية،
+    /// فلا تُنتظر نسخة الفرع ولا يظهر تنبيه القِدم في الجرد والنواقص.
+    /// </summary>
     public const int StaleMinutes = 30;
 
     /// <summary>عدد أيام القسمة: 30، أو منذ أول بيع إن كان أحدث. يوم واحد على الأقل.</summary>
@@ -38,6 +41,27 @@ public static class InventoryRelayRules
 
     /// <summary>ByDifference: Value هو الفارق المضاف. وإلا Value هو الرصيد الذي يُكتب.</summary>
     public readonly record struct CorrectionPlan(bool ByDifference, decimal Value);
+
+    /// <summary>
+    /// قرار المالك (25 نوفمبر 2026): في النظام المركزي يُثبَّت الجرد والتصحيح على المركز أولاً بالفارق.
+    /// المفترضة = ما رآه الموظف (رصيد المركز لحظة العد)، أو رصيد المركز الآن إن لم يُعرف.
+    /// الفارق = المعدودة − المفترضة، ويُضاف إلى رصيد المركز الحالي، فلا يضيع بيع وصل بين العد والتثبيت.
+    /// مثال: مفترض 7، معدود 5، بيع 1 وصل المركز قبل التثبيت (المركز 6) → 6 + (−2) = 4.
+    /// رصيد المركز غير معروف: تُكتب المعدودة كما هي ولا يوجد فارق (والفرع يكتبها كما هي أيضاً).
+    /// </summary>
+    public static CentralPlan PlanCentral(decimal counted, decimal? expected, decimal? centralQuantity)
+    {
+        if (centralQuantity is decimal current)
+        {
+            var delta = counted - (expected ?? current);
+            return new CentralPlan(delta, current + delta);
+        }
+
+        return new CentralPlan(null, counted);
+    }
+
+    /// <summary>Delta: الفارق المضاف (null = كُتبت المعدودة كما هي). Resulting: رصيد المركز بعد التثبيت.</summary>
+    public readonly record struct CentralPlan(decimal? Delta, decimal Resulting);
 
     /// <summary>نسخة كاملة أول مرة، ثم مرة في كل يوم جديد بتوقيت Asia/Hebron.</summary>
     public static bool NeedsFullPush(DateTime? lastFullPushUtc, DateOnly today) =>

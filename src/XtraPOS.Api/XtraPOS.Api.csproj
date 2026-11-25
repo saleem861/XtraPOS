@@ -329,6 +329,12 @@
     <EmbeddedResource Include="Data\Central\Migrations\043_CentralShortageSubstitute.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.043_CentralShortageSubstitute.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\044_CentralQuantityAuthority.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.044_CentralQuantityAuthority.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\058_CentralSalesHistory.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.058_CentralSalesHistory.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\040_CentralInventoryRelay.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.040_CentralInventoryRelay.sql</LogicalName>
     </EmbeddedResource>

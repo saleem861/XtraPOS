@@ -10,7 +10,8 @@ namespace XtraPOS.Api.Inventory;
 /// - «تقرير الجرد»: جلسات الفرع وفروقاتها، ومنه «تدقيق المشرف» الأعمى (لا يغيّر المخزون).
 /// - «معالجة الأصناف»: تغيير التصنيف (يُكتب في المركز ثم نسخة الفرع)، و«كمية صنف» مع التصحيح
 ///   (حركة InventoryReconciliation واحدة عبر StockPostingService، ومعرّف التصحيح هو سطر المصدر).
-/// التقرير لفرع الجهاز فقط حتى تُرحَّل الجلسات للمركز في المرحلة 3.
+/// قرار المالك (25 نوفمبر 2026): في النظام المركزي الجلسات والتدقيق والرصيد على المركز (المرجع)، و«تصحيح» الكمية
+/// يُثبَّت على المركز أولاً بالفارق ويأخذه الفرع في أول مزامنة. الجهاز المنفرد (بلا مركز) يعمل على قاعدته.
 /// </summary>
 public sealed class InventoryReviewService(
     InventoryCountService counting,
@@ -18,6 +19,7 @@ public sealed class InventoryReviewService(
 {
     private const string MigrationMissing = "قاعدة هذا الفرع لم تُحدَّث بعد لمراجعة الجرد (الترحيل 055).";
     private const string CentralUnavailable = "المركز غير متاح الآن. لم يُحفظ التصنيف، حاول لاحقاً.";
+    private const string AuthorityUnavailable = "المركز غير متاح الآن. الجرد والكميات تعمل على المركز فقط، حاول عند عودة الاتصال.";
 
     // ------------------------------------------------------------------
     // تقرير الجرد
@@ -47,7 +49,7 @@ public sealed class InventoryReviewService(
 
         var branch = branchId ?? actor.BranchId;
         var remote = branch != actor.BranchId;
-        await using var connection = await OpenSourceAsync(remote, cancellationToken);
+        await using var connection = await OpenSessionsAsync(remote, cancellationToken);
         var sessions = new List<object>();
         await using (var command = new SqlCommand(
             """
@@ -146,7 +148,7 @@ public sealed class InventoryReviewService(
     {
         var branch = branchId ?? actor.BranchId;
         var remote = branch != actor.BranchId;
-        await using var connection = await OpenSourceAsync(remote, cancellationToken);
+        await using var connection = await OpenSessionsAsync(remote, cancellationToken);
         var header = await ReadSessionHeaderAsync(connection, null, branch, sessionId, cancellationToken);
 
         var items = new List<object>();
@@ -217,7 +219,6 @@ public sealed class InventoryReviewService(
                     central);
                 command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = actor.BusinessId;
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                var now = DateTime.UtcNow;
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     var id = reader.GetGuid(0);
@@ -228,7 +229,7 @@ public sealed class InventoryReviewService(
                         branchName = reader.GetString(1),
                         current = id == actor.BranchId,
                         lastPushAt = lastPush,
-                        stale = id != actor.BranchId && InventoryRelayRules.IsStale(lastPush, now),
+                        stale = false,
                     });
                 }
             }
@@ -237,11 +238,15 @@ public sealed class InventoryReviewService(
         return new { centralReachable = central is not null, branches };
     }
 
-    /// <summary>فرع الجهاز من قاعدته، وأي فرع آخر من نسخته على المركز (المرحلة 3).</summary>
-    private async Task<SqlConnection> OpenSourceAsync(bool remote, CancellationToken cancellationToken)
+    /// <summary>
+    /// مصدر الجلسات والتدقيق: في النظام المركزي المركز لكل الفروع (الجرد يجري عليه، والجلسات القديمة رُحّلت إليه)،
+    /// وفي الجهاز المنفرد قاعدة الفرع (لفرع الجهاز فقط).
+    /// </summary>
+    private async Task<SqlConnection> OpenSessionsAsync(bool otherBranch, CancellationToken cancellationToken)
     {
-        if (!remote)
+        if (!await counting.CentralConfiguredAsync(cancellationToken))
         {
+            if (otherBranch) throw new InventoryException("تقرير فرع آخر يحتاج نظاماً مركزياً.", StatusCodes.Status409Conflict);
             var local = await counting.OpenLocalAsync(cancellationToken);
             try
             {
@@ -256,7 +261,7 @@ public sealed class InventoryReviewService(
         }
 
         var central = await counting.OpenCentralAsync(cancellationToken)
-            ?? throw new InventoryException("المركز غير متاح الآن. تقرير الفروع الأخرى يُقرأ من المركز.", StatusCodes.Status503ServiceUnavailable);
+            ?? throw new InventoryException(AuthorityUnavailable, StatusCodes.Status503ServiceUnavailable);
         if (!await TableExistsAsync(central, "dbo.InventorySessionItems", cancellationToken))
         {
             await central.DisposeAsync();
@@ -264,6 +269,24 @@ public sealed class InventoryReviewService(
         }
 
         return central;
+    }
+
+    /// <summary>المركز في النظام المركزي (مرجع الكمية)، أو null للجهاز المنفرد.</summary>
+    private async Task<SqlConnection?> OpenAuthorityAsync(CancellationToken cancellationToken)
+    {
+        if (!await counting.CentralConfiguredAsync(cancellationToken)) return null;
+        var central = await counting.OpenCentralAsync(cancellationToken)
+            ?? throw new InventoryException(AuthorityUnavailable, StatusCodes.Status503ServiceUnavailable);
+        try
+        {
+            await CentralStock.RequireReadyAsync(central, null, cancellationToken);
+            return central;
+        }
+        catch
+        {
+            await central.DisposeAsync();
+            throw;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -278,8 +301,7 @@ public sealed class InventoryReviewService(
         CancellationToken cancellationToken)
     {
         var normalized = InventoryAuditModes.Normalize(mode) ?? throw new InventoryException("نوع التدقيق غير صالح.");
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
+        await using var connection = await OpenSessionsAsync(false, cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         try
         {
@@ -327,8 +349,9 @@ public sealed class InventoryReviewService(
             var auditId = Guid.NewGuid();
             await using (var insert = new SqlCommand(
                 """
-                INSERT INTO dbo.InventoryAudits (AuditID, SessionID, BranchID, UserID, UserName, AuditMode, Status, TotalItems)
-                VALUES (@audit, @session, @branch, @user, @name, @mode, N'Open', @total);
+                INSERT INTO dbo.InventoryAudits
+                    (AuditID, SessionID, BranchID, UserID, UserName, AuditMode, Status, StartedAt, TotalItems, CountedItems, MatchedItems)
+                VALUES (@audit, @session, @branch, @user, @name, @mode, N'Open', SYSUTCDATETIME(), @total, 0, 0);
                 """,
                 connection,
                 transaction))
@@ -347,8 +370,8 @@ public sealed class InventoryReviewService(
             {
                 await using var line = new SqlCommand(
                     """
-                    INSERT INTO dbo.InventoryAuditItems (AuditItemID, AuditID, SessionItemID, ItemID, ItemNumber, ItemName)
-                    SELECT NEWID(), @audit, SessionItemID, ItemID, ItemNumber, ItemName
+                    INSERT INTO dbo.InventoryAuditItems (AuditItemID, AuditID, SessionItemID, ItemID, ItemNumber, ItemName, IsCounted)
+                    SELECT NEWID(), @audit, SessionItemID, ItemID, ItemNumber, ItemName, 0
                     FROM dbo.InventorySessionItems WHERE SessionItemID = @line;
                     """,
                     connection,
@@ -371,8 +394,7 @@ public sealed class InventoryReviewService(
     /// <summary>أثناء التدقيق: عدّ المشرف فقط (أعمى). بعد الإنهاء: النظام، الموظف، المشرف، والفارق.</summary>
     public async Task<object> AuditAsync(PosDeviceContext actor, Guid auditId, CancellationToken cancellationToken)
     {
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
+        await using var connection = await OpenSessionsAsync(false, cancellationToken);
         var audit = await ReadAuditHeaderAsync(connection, null, actor, auditId, cancellationToken);
         var revealed = audit.Status == "Completed";
         var lines = new List<object>();
@@ -424,8 +446,7 @@ public sealed class InventoryReviewService(
         CancellationToken cancellationToken)
     {
         var counted = InventoryCountRules.ValidateCountedQuantity(quantity);
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
+        await using var connection = await OpenSessionsAsync(false, cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         try
         {
@@ -466,8 +487,7 @@ public sealed class InventoryReviewService(
 
     public async Task<object> CompleteAuditAsync(PosDeviceContext actor, Guid auditId, CancellationToken cancellationToken)
     {
-        await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        await RequireSchemaAsync(connection, cancellationToken);
+        await using var connection = await OpenSessionsAsync(false, cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         try
         {
@@ -509,7 +529,8 @@ public sealed class InventoryReviewService(
         var resolved = await InventoryCountService.ResolveOwnerAsync(connection, null, text, cancellationToken)
             ?? throw new InventoryException("الصنف غير موجود.", StatusCodes.Status404NotFound);
         await RequireCountableAsync(connection, null, resolved.OwnerItemId, cancellationToken);
-        return await ItemViewAsync(connection, actor, resolved.OwnerItemId, resolved.ScannedItemNumber, cancellationToken);
+        await using var authority = await OpenAuthorityAsync(cancellationToken);
+        return await ItemViewAsync(connection, authority, actor, resolved.OwnerItemId, resolved.ScannedItemNumber, cancellationToken);
     }
 
     public async Task<object> SaveClassificationAsync(
@@ -572,7 +593,8 @@ public sealed class InventoryReviewService(
             await local.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        return await ItemViewAsync(connection, actor, itemId, itemNumber, cancellationToken);
+        await using var authority = await OpenAuthorityAsync(cancellationToken);
+        return await ItemViewAsync(connection, authority, actor, itemId, itemNumber, cancellationToken);
     }
 
     public async Task<object> CorrectQuantityAsync(
@@ -590,6 +612,45 @@ public sealed class InventoryReviewService(
         {
             await RequireSchemaAsync(check, cancellationToken);
             await RequireCountableAsync(check, null, itemId, cancellationToken);
+        }
+
+        // قرار المالك (25 نوفمبر 2026): في النظام المركزي يُثبَّت التصحيح على المركز أولاً بالفارق
+        // (المعدودة − رصيد المركز الحالي)، والفرع يأخذه في أول مزامنة. بلا مركز متاح لا يُصحَّح.
+        await using (var authority = await OpenAuthorityAsync(cancellationToken))
+        {
+            if (authority is not null)
+            {
+                await using (var transaction = (SqlTransaction)await authority.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken))
+                {
+                    try
+                    {
+                        await CentralStock.PostCorrectionAsync(
+                            authority,
+                            transaction,
+                            new CentralStock.CorrectionInput(
+                                actor.BranchId,
+                                itemId,
+                                correctionId,
+                                StockSourceTypes.InventoryReconciliation,
+                                correctionId,
+                                newQuantity,
+                                null,
+                                why,
+                                actor.UserId,
+                                actor.DisplayName),
+                            cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+                    }
+                    catch
+                    {
+                        if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
+                        throw;
+                    }
+                }
+
+                await using var view = await counting.OpenLocalAsync(cancellationToken);
+                return await ItemViewAsync(view, authority, actor, itemId, null, cancellationToken);
+            }
         }
 
         await stock.InTransactionAsync(async (session, token) =>
@@ -643,7 +704,7 @@ public sealed class InventoryReviewService(
         }, cancellationToken);
 
         await using var connection = await counting.OpenLocalAsync(cancellationToken);
-        return await ItemViewAsync(connection, actor, itemId, null, cancellationToken);
+        return await ItemViewAsync(connection, null, actor, itemId, null, cancellationToken);
     }
 
     // ------------------------------------------------------------------
@@ -846,8 +907,13 @@ public sealed class InventoryReviewService(
             ?? throw new InventoryException("الصنف غير موجود.", StatusCodes.Status404NotFound);
     }
 
+    /// <summary>
+    /// الصنف وتصنيفه من نسخة الفرع. الرصيد والسرعة وآخر التصحيحات: من المركز (المرجع) في النظام المركزي،
+    /// ومن قاعدة الفرع في الجهاز المنفرد.
+    /// </summary>
     private static async Task<object> ItemViewAsync(
         SqlConnection connection,
+        SqlConnection? central,
         PosDeviceContext actor,
         Guid itemId,
         string? scannedItemNumber,
@@ -891,15 +957,45 @@ public sealed class InventoryReviewService(
             dailyRate = reader.IsDBNull(9) ? null : reader.GetDecimal(9);
         }
 
+        if (central is not null)
+        {
+            onHand = null;
+            dailyRate = null;
+            await using var balance = new SqlCommand(
+                """
+                SELECT CASE WHEN IsQuantityInitialized = 1 THEN OnHandQuantity END, DailySalesRate
+                FROM dbo.BranchStockSnapshots WHERE BranchID = @branch AND ItemID = @item;
+                """,
+                central);
+            balance.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+            balance.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;
+            await using var reader = await balance.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                onHand = reader.IsDBNull(0) ? null : reader.GetDecimal(0);
+                dailyRate = reader.IsDBNull(1) ? null : reader.GetDecimal(1);
+            }
+        }
+
         var corrections = new List<object>();
-        await using (var history = new SqlCommand(
-            """
-            SELECT TOP (5) PreviousQuantity, NewQuantity, Reason, UserName, CorrectedAt, ExpectedQuantity, CountedQuantity, DeltaQuantity
-            FROM dbo.InventoryQuantityCorrections
-            WHERE BranchID = @branch AND ItemID = @item
-            ORDER BY CorrectedAt DESC;
-            """,
-            connection))
+        await using (var history = central is null
+            ? new SqlCommand(
+                """
+                SELECT TOP (5) PreviousQuantity, NewQuantity, Reason, UserName, CorrectedAt, ExpectedQuantity, CountedQuantity, DeltaQuantity
+                FROM dbo.InventoryQuantityCorrections
+                WHERE BranchID = @branch AND ItemID = @item
+                ORDER BY CorrectedAt DESC;
+                """,
+                connection)
+            : new SqlCommand(
+                """
+                SELECT TOP (5) CentralPreviousQuantity, COALESCE(CentralResultingQuantity, NewQuantity), Reason, RequestedByName,
+                       COALESCE(CentralAppliedAt, RequestedAt), ExpectedQuantity, NewQuantity, DeltaQuantity
+                FROM dbo.InventoryCorrectionRequests
+                WHERE BranchID = @branch AND ItemID = @item
+                ORDER BY RequestedAt DESC;
+                """,
+                central))
         {
             history.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
             history.Parameters.Add("@item", SqlDbType.UniqueIdentifier).Value = itemId;

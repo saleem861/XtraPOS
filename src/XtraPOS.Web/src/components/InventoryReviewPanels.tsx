@@ -180,10 +180,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
       </form>
 
       {selectedBranch && !selectedBranch.current ? (
-        <p className={selectedBranch.stale ? "inventory-hint is-warning" : "inventory-hint"}>
-          من نسخة الفرع على المركز. آخر تحديث: {formatDateTime(selectedBranch.lastPushAt)}
-          {selectedBranch.stale ? " · النسخة أقدم من 30 دقيقة." : ""}
-        </p>
+        <p className="inventory-hint">من المركز، وهو مرجع الكميات والجرد لكل الفروع.</p>
       ) : null}
 
       <div className="inventory-list">
@@ -265,7 +262,7 @@ function SessionDetailView({ client, sessionId, branchId, onMessage, onBusy, onO
         </span>
       </header>
 
-      {detail.remote ? <p className="inventory-hint">جرد فرع آخر من نسخته على المركز: للعرض فقط، والتدقيق يتم في الفرع نفسه.</p> : null}
+      {detail.remote ? <p className="inventory-hint">جرد فرع آخر: للعرض فقط، والتدقيق يتم من جهاز ذلك الفرع.</p> : null}
       {!detail.remote && session.status === "Completed" ? (
         <section className="inventory-audit-start" aria-label="تدقيق المشرف">
           <strong>تدقيق المشرف</strong>
@@ -563,7 +560,7 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
     const before = item.quantityKnown ? formatQuantity(item.onHandQuantity) : "غير معروفة";
     onConfirm({
       title: "تصحيح الكمية",
-      message: `سيتم تغيير رصيد ${item.itemName ?? item.itemNumber} في هذا الفرع من ${before} إلى ${formatQuantity(value)}. هل تريد المتابعة؟`,
+      message: `سيتم تغيير رصيد ${item.itemName ?? item.itemNumber} في هذا الفرع من ${before} إلى ${formatQuantity(value)}. في النظام المركزي يُثبَّت التصحيح على المركز أولاً، ويأخذ الفرع الفارق في أول مزامنة. هل تريد المتابعة؟`,
       accept: "تصحيح",
       onAccept: () => {
         void (async () => {

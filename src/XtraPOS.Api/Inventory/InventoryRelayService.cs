@@ -13,6 +13,9 @@ namespace XtraPOS.Api.Inventory;
 /// 3. يرسل جلسات الجرد المثبتة والتدقيقات المنتهية وتصحيحات الكمية التي لم تُرسل بعد (RelayedAt).
 /// لا يمر بسجل الترحيل (BranchOperationLog) حتى لا يؤخر ترحيل المبيعات: كل خطوة تعيد نفسها بأمان.
 /// المركز لا يكتب مخزون الفرع من هذه النسخ.
+/// قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية. نسخة الفرع لا تكتب فوق رصيد المركز بعد أن يعرفه:
+/// تُحفظ في BranchReportedQuantity تقريرَ فروق فقط، وتكون بداية الرصيد لصنف لا يعرفه المركز بعد.
+/// سرعة البيع يحسبها المركز من الحركات (لحظياً مع البيع، ومرة في اليوم لكل الأصناف).
 /// </summary>
 public sealed class InventoryRelayService(
     SqlConnectionFactory connections,
@@ -50,7 +53,11 @@ public sealed class InventoryRelayService(
             return none with { RatesUpdated = rates };
         }
 
-        var balances = await PushBalancesAsync(local, central, branch, today, rates > 0, cancellationToken);
+        // المركز لم يُحدَّث بعد للترحيل 044: لا تُرسل الأرصدة حتى يُحدَّث (يُحدَّث تلقائياً عند تشغيل نسخة محدثة).
+        var balances = await CentralStock.IsReadyAsync(central, null, cancellationToken)
+            ? await PushBalancesAsync(local, central, branch, today, rates > 0, cancellationToken)
+            : 0;
+        await RefreshCentralRatesAsync(central, branch, today, cancellationToken);
         var sessions = await PushSessionsAsync(local, central, branch, cancellationToken);
         var audits = await PushAuditsAsync(local, central, branch, cancellationToken);
         // المرحلة 6 و4: الجرد المخصص لهذا الفرع، وطلبات تصحيح الكمية التي أرسلها المركز لهذا الفرع.
@@ -288,28 +295,36 @@ public sealed class InventoryRelayService(
                     await bulk.WriteToServerAsync(table, cancellationToken);
                 }
 
-                // حركة وصلت لحظياً (StockCentralRelay) بعد قراءة هذه النسخة أحدث منها: لا تُكتب فوقها.
-                // السرعة واسم الصنف تُحدَّث دائماً.
-                var fresh = await ColumnExistsAsync(central, "dbo.BranchStockSnapshots", "LastMovementAt", cancellationToken)
-                    ? "(target.LastMovementAt IS NULL OR target.LastMovementAt <= source.BalanceUpdatedAt)"
-                    : "1 = 1";
+                // المركز هو المرجع: رصيد يعرفه المركز لا يُكتب فوقه، ورصيد الفرع يُحفظ تقريرَ فروق فقط.
+                // صنف لا يعرف المركز رصيده بعد يبدأ من رصيد الفرع، ومن بعدها الفروق فقط (StockCentralRelay).
+                // السرعة من الفرع فقط حتى تصل المركز مبيعات هذا الفرع (FirstSaleAt)، ثم يحسبها المركز.
                 await using var merge = new SqlCommand(
-                    $"""
+                    """
+                    DECLARE @centralRates bit = CASE WHEN EXISTS (SELECT 1 FROM dbo.BranchSnapshotStatus
+                                                                 WHERE BranchID = @branch AND FirstSaleAt IS NOT NULL) THEN 1 ELSE 0 END;
+
                     UPDATE target
                     SET ItemNumber = source.ItemNumber,
-                        OnHandQuantity = CASE WHEN {fresh} THEN source.OnHandQuantity ELSE target.OnHandQuantity END,
-                        IsQuantityInitialized = CASE WHEN {fresh} THEN source.IsQuantityInitialized ELSE target.IsQuantityInitialized END,
-                        DailySalesRate = source.DailySalesRate,
-                        BalanceUpdatedAt = CASE WHEN {fresh} THEN source.BalanceUpdatedAt ELSE target.BalanceUpdatedAt END,
+                        BranchReportedQuantity = CASE WHEN source.IsQuantityInitialized = 1 THEN source.OnHandQuantity END,
+                        BranchReportedAt = source.BalanceUpdatedAt,
+                        OnHandQuantity = CASE WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL
+                                              THEN target.OnHandQuantity ELSE source.OnHandQuantity END,
+                        IsQuantityInitialized = CASE WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL
+                                                     THEN 1 ELSE source.IsQuantityInitialized END,
+                        BalanceUpdatedAt = CASE WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL
+                                                THEN target.BalanceUpdatedAt ELSE source.BalanceUpdatedAt END,
+                        DailySalesRate = CASE WHEN @centralRates = 1 THEN target.DailySalesRate ELSE source.DailySalesRate END,
                         ReceivedAt = SYSUTCDATETIME()
                     FROM dbo.BranchStockSnapshots AS target
                     INNER JOIN #snap AS source ON source.ItemID = target.ItemID
                     WHERE target.BranchID = @branch;
 
                     INSERT INTO dbo.BranchStockSnapshots
-                        (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, BalanceUpdatedAt)
+                        (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, BalanceUpdatedAt,
+                         BranchReportedQuantity, BranchReportedAt)
                     SELECT @branch, source.ItemID, source.ItemNumber, source.OnHandQuantity, source.IsQuantityInitialized,
-                           source.DailySalesRate, source.BalanceUpdatedAt
+                           source.DailySalesRate, source.BalanceUpdatedAt,
+                           CASE WHEN source.IsQuantityInitialized = 1 THEN source.OnHandQuantity END, source.BalanceUpdatedAt
                     FROM #snap AS source
                     WHERE NOT EXISTS (SELECT 1 FROM dbo.BranchStockSnapshots AS target
                                       WHERE target.BranchID = @branch AND target.ItemID = source.ItemID);
@@ -352,6 +367,27 @@ public sealed class InventoryRelayService(
         }
 
         return table.Rows.Count;
+    }
+
+    /// <summary>مرة في اليوم: يعيد المركز سرعة كل أصناف هذا الفرع، فتنزل سرعة صنف توقف بيعه مع مرور الأيام.</summary>
+    private async Task RefreshCentralRatesAsync(SqlConnection central, Guid branch, DateOnly today, CancellationToken cancellationToken)
+    {
+        if (!await CentralStock.IsReadyAsync(central, null, cancellationToken)) return;
+        await using (var check = new SqlCommand(
+            "SELECT CASE WHEN FirstSaleAt IS NOT NULL AND (CentralRateDate IS NULL OR CentralRateDate < @today) THEN 1 ELSE 0 END FROM dbo.BranchSnapshotStatus WHERE BranchID = @branch;",
+            central))
+        {
+            check.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+            check.Parameters.Add("@today", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not 1) return;
+        }
+
+        var updated = await CentralStock.RecomputeRatesAsync(central, null, branch, null, cancellationToken);
+        await using var stamp = new SqlCommand("UPDATE dbo.BranchSnapshotStatus SET CentralRateDate = @today WHERE BranchID = @branch;", central);
+        stamp.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+        stamp.Parameters.Add("@today", SqlDbType.Date).Value = today.ToDateTime(TimeOnly.MinValue);
+        await stamp.ExecuteNonQueryAsync(cancellationToken);
+        logger.LogInformation("Inventory: central sales rate recalculated for {Count} item(s).", updated);
     }
 
     // ------------------------------------------------------------------
@@ -672,14 +708,6 @@ public sealed class InventoryRelayService(
             await MarkRequestAsync(central, request.Id, status, previous, resulting, message, cancellationToken);
             logger.LogInformation("Inventory: central correction {Request} {Status}.", request.Id, status);
         }
-    }
-
-    private static async Task<bool> ColumnExistsAsync(SqlConnection connection, string table, string column, CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand("SELECT COL_LENGTH(@table, @column);", connection);
-        command.Parameters.Add("@table", SqlDbType.NVarChar, 256).Value = table;
-        command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = column;
-        return await command.ExecuteScalarAsync(cancellationToken) is not null and not DBNull;
     }
 
     private static void Quantity(SqlCommand command, string name, decimal? value)

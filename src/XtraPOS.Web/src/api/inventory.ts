@@ -99,7 +99,7 @@ export function createInventoryClient(session: DeviceSession, branchId = "") {
     remote: Boolean(remote),
     async branches() {
       const response = await fetch("/api/inventory/branches", { headers });
-      return readJson<{ branches: InventoryBranch[]; notice: string | null }>(response, "تعذر تحميل الفروع.");
+      return readJson<{ branches: InventoryBranch[]; notice: string | null; central?: boolean }>(response, "تعذر تحميل الفروع.");
     },
     async configuration() {
       const response = await fetch(`/api/inventory/configuration${query()}`, { headers });

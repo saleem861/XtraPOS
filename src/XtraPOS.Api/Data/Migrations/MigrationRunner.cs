@@ -120,6 +120,9 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     // Owner decision, 24 November 2026: every stock movement goes to central at once; remote corrections by difference.
     public const string StockCentralRelayMigrationId = "057_StockCentralRelay";
     public const string StockCentralRelayMigrationName = "Stock movements relayed to central and corrections by difference";
+    // Owner decision, 25 November 2026: central computes the sales rate, so the last 31 days of sales are sent once.
+    public const string CentralSalesHistoryMigrationId = "058_CentralSalesHistory";
+    public const string CentralSalesHistoryMigrationName = "Last 31 days of sales sent to central for the sales rate";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -358,6 +361,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             StockCentralRelayMigrationId,
             StockCentralRelayMigrationName,
             "XtraPOS.Api.Data.Migrations.057_StockCentralRelay.sql"),
+        new(
+            CentralSalesHistoryMigrationId,
+            CentralSalesHistoryMigrationName,
+            "XtraPOS.Api.Data.Migrations.058_CentralSalesHistory.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

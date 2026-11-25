@@ -74,6 +74,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [branch, setBranch] = useState<InventoryBranch | null>(null);
   const [branches, setBranches] = useState<InventoryBranch[] | null>(null);
   const [branchNotice, setBranchNotice] = useState("");
+  const [centralMode, setCentralMode] = useState(false);
   const [pendingBranch, setPendingBranch] = useState("");
   const baseClient = useMemo(() => createInventoryClient(session), [session]);
   const client = useMemo(() => createInventoryClient(session, branch?.branchId ?? ""), [session, branch]);
@@ -112,6 +113,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
       .then((value) => {
         const list = distinctBy(value?.branches?.length ? value.branches : fallback, (entry) => entry.branchName);
         setBranches(list);
+        setCentralMode(Boolean(value?.central));
         setBranchNotice(value?.notice ?? "");
       })
       .catch(() => { setBranches(fallback); setBranchNotice("تعذر تحميل الفروع. يظهر فرع هذا الجهاز فقط."); });
@@ -145,12 +147,11 @@ export function InventoryScreen({ session, permissions, onBack }: {
   function confirmBranch(chosen: InventoryBranch) {
     setMessage("");
     setPendingBranch(chosen.branchId);
-    const remote = chosen.branchId !== session.branchId;
     setConfirmation({
       title: "تأكيد الفرع",
+      // قرار المالك (25 نوفمبر 2026): في النظام المركزي يجري كل جرد على المركز، ويُثبَّت الفارق عليه أولاً.
       message: `سيتم الجرد على فرع «${chosen.branchName}». هل هذا هو الفرع الصحيح؟`
-        + (remote ? " الجرد على فرع آخر يجري على المركز برصيد ذلك الفرع، وعند التثبيت يُرسل الفارق للفرع فيضيفه إلى رصيده الحالي." : "")
-        + (chosen.stale ? " تنبيه: نسخة هذا الفرع على المركز أقدم من 30 دقيقة." : ""),
+        + (centralMode ? " الجرد يجري على المركز، وعند التثبيت يُثبَّت الفارق على المركز أولاً، ويأخذه الفرع في أول مزامنة." : ""),
       accept: "نعم، متابعة",
       onAccept: () => {
         setPendingBranch("");
@@ -273,7 +274,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                   onClick={() => confirmBranch(entry)}
                 >
                   <strong>{entry.branchName}</strong>
-                  <small>{entry.current ? "فرع هذا الجهاز" : entry.stale ? "على المركز · النسخة أقدم من 30 دقيقة" : "على المركز"}</small>
+                  <small>{entry.current ? "فرع هذا الجهاز" : "على المركز"}</small>
                 </button>
               );
             })}
@@ -433,16 +434,16 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
         {step === "done" && finished ? (
           <div className="inventory-done">
-            <strong>{finished.remote ? `تم تثبيت جرد ${branch?.branchName ?? "الفرع"} وإرسال الفروقات إليه.` : "تم تثبيت الجرد وتحديث المخزون بنجاح."}</strong>
+            <strong>{finished.remote ? `تم تثبيت جرد ${branch?.branchName ?? "الفرع"} على المركز.` : "تم تثبيت الجرد وتحديث المخزون بنجاح."}</strong>
             <dl>
               <div><dt>إجمالي الأصناف</dt><dd>{finished.session.totalItems}</dd></div>
               <div><dt>تم جردها</dt><dd>{finished.session.countedItems}</dd></div>
               <div><dt>غير مجرودة</dt><dd>{finished.session.uncountedItems}</dd></div>
-              <div><dt>{finished.remote ? "أُرسلت للفرع" : "تم ترحيلها"}</dt><dd>{finished.posted}</dd></div>
+              <div><dt>{finished.remote ? "ثُبّتت على المركز" : "تم ترحيلها"}</dt><dd>{finished.posted}</dd></div>
             </dl>
             <p className="inventory-hint">
               {finished.remote
-                ? "ينفّذ الفرع كل فارق بإضافته إلى رصيده الحالي خلال دقيقة إذا كان متصلاً، فلا يضيع بيع حدث أثناء الجرد. الأصناف غير المجرودة لم تُغيَّر."
+                ? "ثُبّت كل فارق على المركز أولاً، ويأخذه الفرع في أول مزامنة بإضافته إلى رصيده الحالي، فلا يضيع بيع حدث أثناء الجرد. الأصناف غير المجرودة لم تُغيَّر."
                 : "تم تحديث كميات الأصناف المجرودة فقط. الأصناف غير المجرودة لم تُغيَّر كمياتها."}
             </p>
             <button type="button" className="primary-button" onClick={() => { setFinished(null); setStep("type"); }}>جرد آخر</button>

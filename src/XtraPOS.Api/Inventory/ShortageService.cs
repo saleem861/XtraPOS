@@ -9,9 +9,10 @@ namespace XtraPOS.Api.Inventory;
 /// المرحلتان 4 و5 من وحدة الجرد والنواقص، كلها على XtraPOS_Central:
 /// «معالجة النواقص» (الحساب من نسخ أرصدة الفروع وسرعاتها، المسودة، القرار لكل صنف، التثبيت النهائي)،
 /// و«متابعة النواقص» (الشراء، المخزن، الموازنة، الحذف بموافقة المدير، التجار وطلبات التزويد).
-/// المركز لا يكتب مخزون أي فرع: تصحيح كمية فرع آخر طلب ينفّذه الفرع نفسه (InventoryRelayService).
+/// قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية، فالنواقص تُحسب من رصيد المركز وحده بلا انتظار نسخة الفرع،
+/// والتصحيح يُثبَّت على المركز أولاً ويأخذ الفرع الفارق في أول مزامنة (InventoryRelayService).
 /// </summary>
-public sealed class ShortageService(InventoryCountService counting, InventoryReviewService review)
+public sealed class ShortageService(InventoryCountService counting)
 {
     private const string CentralUnavailable = "المركز غير متاح الآن. النواقص ومتابعتها تعمل مع المركز فقط.";
     private const string CentralNotUpdated = "المركز لم يُحدَّث بعد للنواقص (الترحيل 041).";
@@ -613,7 +614,11 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         return new { itemId, branches = rows };
     }
 
-    /// <summary>«تصحيح»: فرع الجهاز يُرحَّل فوراً، وأي فرع آخر طلب ينفّذه ذلك الفرع ويظهر «قيد التنفيذ في الفرع».</summary>
+    /// <summary>
+    /// «تصحيح» كمية صنف في أي فرع، حتى فرع الجهاز (قرار المالك 25 نوفمبر 2026): يُثبَّت على المركز أولاً بالفارق
+    /// (المعدودة − المفترضة التي رآها المصحّح، أو رصيد المركز الآن)، ويأخذه الفرع في أول مزامنة بإضافة الفارق
+    /// إلى رصيده، فلا يضيع بيع حدث قبل المزامنة. يظهر «قيد التنفيذ في الفرع» حتى ينفّذه الفرع.
+    /// </summary>
     public async Task<object> CorrectAsync(
         PosDeviceContext actor,
         Guid branchId,
@@ -624,53 +629,53 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         CancellationToken cancellationToken,
         decimal? expectedQuantity = null)
     {
-        if (branchId == actor.BranchId)
-        {
-            await review.CorrectQuantityAsync(actor, itemId, requestId, quantity, reason, cancellationToken);
-            return new { applied = true, pending = false };
-        }
-
         if (requestId == Guid.Empty) throw new InventoryException("طلب التصحيح غير صالح.");
         var value = InventoryCountRules.ValidateCountedQuantity(quantity);
         var why = InventoryReviewRules.RequireReason(reason);
         await using var central = await CentralAsync(cancellationToken);
-        // قرار المالك: الطلب يحمل المفترضة (رصيد الفرع الذي رآه المصحّح) والمعدودة والفارق،
-        // والفرع يضيف الفارق إلى رصيده الحالي، فلا يضيع بيع حدث قبل المزامنة.
-        // بلا رصيد معروف للفرع لا يوجد فارق: يضع الفرع المعدودة كما هي.
-        await using var command = new SqlCommand(
-            """
-            DECLARE @expected decimal(18, 4) = @seen;
-            IF @expected IS NULL
-                SELECT @expected = CASE WHEN snapshot.IsQuantityInitialized = 1 THEN snapshot.OnHandQuantity END
-                FROM dbo.BranchStockSnapshots AS snapshot
-                WHERE snapshot.BranchID = @branch AND snapshot.ItemID = @item;
-            IF NOT EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests WHERE RequestID = @id)
-                INSERT INTO dbo.InventoryCorrectionRequests
-                    (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, ExpectedQuantity, DeltaQuantity,
-                     Reason, RequestedByUserID, RequestedByName)
-                SELECT @id, branch.BranchID, item.ItemID, item.ItemNumber, item.ItemName, @quantity, @expected, @quantity - @expected,
-                       @reason, @user, @name
-                FROM dbo.Items AS item
-                CROSS JOIN dbo.Branches AS branch
-                WHERE item.ItemID = @item AND branch.BranchID = @branch AND branch.BusinessID = @business;
-            SELECT COUNT(*) FROM dbo.InventoryCorrectionRequests WHERE RequestID = @id;
-            """,
-            central);
-        Num(command, "@seen", expectedQuantity);
-        Id(command, "@id", requestId);
-        Id(command, "@item", itemId);
-        Id(command, "@branch", branchId);
-        Id(command, "@business", actor.BusinessId);
-        Num(command, "@quantity", value);
-        Text(command, "@reason", why, 500);
-        Id(command, "@user", actor.UserId);
-        Text(command, "@name", actor.DisplayName, 200);
-        if ((int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
+        await CentralStock.RequireReadyAsync(central, null, cancellationToken);
+        await using (var branch = new SqlCommand(
+            "SELECT COUNT(*) FROM dbo.Branches WHERE BranchID = @branch AND BusinessID = @business;",
+            central))
         {
-            throw new InventoryException("الصنف أو الفرع غير موجود في المركز.", StatusCodes.Status404NotFound);
+            Id(branch, "@branch", branchId);
+            Id(branch, "@business", actor.BusinessId);
+            if ((int)(await branch.ExecuteScalarAsync(cancellationToken) ?? 0) == 0)
+            {
+                throw new InventoryException("الصنف أو الفرع غير موجود في المركز.", StatusCodes.Status404NotFound);
+            }
         }
 
-        return new { applied = false, pending = true };
+        CentralStock.CorrectionResult result;
+        await using (var transaction = (SqlTransaction)await central.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken))
+        {
+            try
+            {
+                result = await CentralStock.PostCorrectionAsync(
+                    central,
+                    transaction,
+                    new CentralStock.CorrectionInput(
+                        branchId,
+                        itemId,
+                        requestId,
+                        XtraPOS.Api.Catalog.StockSourceTypes.InventoryReconciliation,
+                        requestId,
+                        value,
+                        expectedQuantity,
+                        why,
+                        actor.UserId,
+                        actor.DisplayName),
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+        }
+
+        return new { applied = true, pending = true, central = true, quantity = result.Resulting, delta = result.Delta };
     }
 
     // ------------------------------------------------------------------
@@ -1279,12 +1284,12 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
             central);
         Id(command, "@business", actor.BusinessId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var now = DateTime.UtcNow;
         while (await reader.ReadAsync(cancellationToken))
         {
             var id = reader.GetGuid(0);
             var last = UtcOrNull(reader, 2);
-            rows.Add(new BranchOption(id, reader.GetString(1), id == actor.BranchId, last, InventoryRelayRules.IsStale(last, now)));
+            // المركز هو المرجع للكمية: لا تُنتظر نسخة الفرع، فلا تنبيه قِدم.
+            rows.Add(new BranchOption(id, reader.GetString(1), id == actor.BranchId, last, false));
         }
 
         return rows;
@@ -1335,11 +1340,10 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         {
             Id(command, "@run", runId);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            var now = DateTime.UtcNow;
             while (await reader.ReadAsync(cancellationToken))
             {
                 var snapshot = UtcOrNull(reader, 2);
-                branches.Add(new { branchId = reader.GetGuid(0), branchName = Str(reader, 1), snapshotAt = snapshot, stale = InventoryRelayRules.IsStale(snapshot, now) });
+                branches.Add(new { branchId = reader.GetGuid(0), branchName = Str(reader, 1), snapshotAt = snapshot, stale = false });
             }
         }
 
