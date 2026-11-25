@@ -147,9 +147,9 @@ describe("custom count", () => {
     render(<InventoryScreen session={device} permissions={["Inventory.Count"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
     await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
-    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "نعم، متابعة" }));
+    await userEvent.click(within(await screen.findByRole("group", { name: "تم اختيار الفرع" })).getByRole("button", { name: "متابعة" }));
     await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
-    await userEvent.click(await screen.findByRole("button", { name: /^جرد مخصص/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^الجرد المخصص/ }));
     await userEvent.click(await screen.findByRole("button", { name: /أراجيل العرض/ }));
     await vi.waitFor(() => expect(calls.some((call) => call.startsWith("/api/inventory/sessions ") && call.includes('"inventoryType":"Custom"') && call.includes('"customInventoryId":"c1"'))).toBe(true));
   });

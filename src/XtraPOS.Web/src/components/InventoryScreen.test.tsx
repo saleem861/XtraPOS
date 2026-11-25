@@ -51,28 +51,30 @@ function stubApi(items: InventoryItem[]) {
   }));
 }
 
-/** المسار الطبيعي: الجرد ← الفرع ← تأكيد اسم الفرع ← الأصناف المهمة ← جديد. */
+/** تسلسل النظام القديم: الجرد ← الفرع ← «تم اختيار الفرع» (متابعة) ← الأصناف المهمة ← «تم اختيار نوع الجرد» (جديد). */
 async function openImportantCount() {
   await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
   await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
-  const dialog = await screen.findByRole("dialog", { name: "تأكيد الفرع" });
-  expect(within(dialog).getByText(/فرع نابلس/)).toBeTruthy();
-  await userEvent.click(within(dialog).getByRole("button", { name: "نعم، متابعة" }));
+  const chosen = await screen.findByRole("group", { name: "تم اختيار الفرع" });
+  expect(within(chosen).getByText("فرع نابلس")).toBeTruthy();
+  await userEvent.click(within(chosen).getByRole("button", { name: "متابعة" }));
   await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
-  await userEvent.click(await screen.findByRole("button", { name: /^جديد/ }));
+  const card = await screen.findByRole("group", { name: "تم اختيار نوع الجرد" });
+  await vi.waitFor(() => expect(within(card).getByText("لا يوجد جرد مفتوح اليوم")).toBeTruthy());
+  await userEvent.click(within(card).getByRole("button", { name: "جديد" }));
 }
 
 describe("InventoryScreen", () => {
-  it("follows the natural path: branch, its confirmation, then type; manual offers manual or a named custom count", async () => {
+  it("follows the legacy sequence: branch card, type card with continue/new/change branch, pages with the same actions, and custom with branch states", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       calls.push(`${init?.method ?? "GET"} ${url} ${typeof init?.body === "string" ? init.body : ""}`);
       if (url.startsWith("/api/inventory/configuration")) {
         return reply({
           businessDate: "2026-11-23", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: 7, importantItems: 2,
-          pageItems: [{ page: 7, items: 3 }],
+          pageItems: [{ page: 7, items: 3 }, { page: 8, items: 2 }],
           customInventories: [
-            { customInventoryId: "c1", name: "جرد الفحم", items: 4 },
+            { customInventoryId: "c1", name: "جرد الفحم", items: 4, branches: [{ branchName: "فرع نابلس", completed: true }, { branchName: "فرع رام الله", completed: false }] },
             { customInventoryId: "c2", name: "جرد الفحم", items: 4 },
           ],
         });
@@ -85,33 +87,44 @@ describe("InventoryScreen", () => {
     render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
     await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
-    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "إلغاء" }));
-    expect(screen.queryByRole("button", { name: /جرد الأصناف المهمة/ })).toBeNull();
-
+    // «تم اختيار الفرع»: بطاقة فيها «متابعة» فقط، و«رجوع» يعيد لقائمة الفروع مع تظليل الفرع المختار.
+    const chosen = await screen.findByRole("group", { name: "تم اختيار الفرع" });
+    expect(within(chosen).getAllByRole("button").map((button) => button.textContent)).toEqual(["متابعة"]);
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    expect(screen.getByRole("button", { name: /فرع نابلس/ }).className).toContain("is-selected");
     await userEvent.click(screen.getByRole("button", { name: /فرع نابلس/ }));
-    await userEvent.click(within(await screen.findByRole("dialog", { name: "تأكيد الفرع" })).getByRole("button", { name: "نعم، متابعة" }));
-    expect(screen.queryByRole("button", { name: /جرد الفحم/ })).toBeNull();
+    await userEvent.click(within(await screen.findByRole("group", { name: "تم اختيار الفرع" })).getByRole("button", { name: "متابعة" }));
 
-    // الأصناف المهمة: متابعة أو جديد.
+    // الأصناف المهمة: «تم اختيار نوع الجرد» مع الفرع، ومتابعة / جديد / تغيير الفرع.
     await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
-    expect(await screen.findByRole("button", { name: /^متابعة/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^جديد/ })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    const card = await screen.findByRole("group", { name: "تم اختيار نوع الجرد" });
+    expect(within(card).getByText("فرع نابلس")).toBeTruthy();
+    await vi.waitFor(() => expect((within(card).getByRole("button", { name: "متابعة" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(within(card).getByText(/تم جرد 1 من 2/)).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "جديد" })).toBeTruthy();
+    await userEvent.click(within(card).getByRole("button", { name: "تغيير الفرع" }));
+    expect(await screen.findByRole("button", { name: /فرع نابلس/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /فرع نابلس/ }));
+    await userEvent.click(within(await screen.findByRole("group", { name: "تم اختيار الفرع" })).getByRole("button", { name: "متابعة" }));
 
-    // الدوري: الصفحات ثم متابعة أو جديد.
+    // الدوري: صفحة اليوم عليها ✓، وتحت الصفحات متابعة / جديد / تغيير الفرع.
     await userEvent.click(await screen.findByRole("button", { name: /الجرد الدوري/ }));
-    expect(await screen.findByRole("button", { name: /الصفحة 7/ })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
-    expect(await screen.findByRole("button", { name: /^جديد/ })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    const today = await screen.findByRole("button", { name: /الصفحة 7/ });
+    expect(today.textContent).toContain("✓");
+    expect(screen.getByRole("button", { name: /الصفحة 8/ }).textContent).not.toContain("✓");
+    expect(screen.getByRole("button", { name: "جديد" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "تغيير الفرع" })).toBeTruthy();
+    await vi.waitFor(() => expect(calls.some((call) => call.startsWith("GET /api/inventory/sessions/open?") && call.includes("Periodic"))).toBe(true));
     await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
 
-    // اليدوي: جرد يدوي أو جرد مخصص، والمخصص يختار الاسم ويفتح.
+    // اليدوي: جرد يدوي أو الجرد المخصص، وتحت كل اسم حالة كل فرع؛ لا يتكرر الاسم.
     await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
     expect(await screen.findByRole("button", { name: /^جرد يدوي/ })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /^جرد مخصص/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^الجرد المخصص/ }));
     const named = await screen.findAllByRole("button", { name: /جرد الفحم/ });
     expect(named).toHaveLength(1);
+    expect(named[0].textContent).toContain("فرع نابلس (مكتمل)");
+    expect(named[0].textContent).toContain("فرع رام الله (غير مكتمل)");
     await userEvent.click(named[0]);
     await vi.waitFor(() => expect(calls.some((call) => call.startsWith("POST /api/inventory/sessions ") && call.includes("c1"))).toBe(true));
   });
@@ -211,25 +224,30 @@ describe("counting another branch", () => {
     expect(other.textContent).toContain("على المركز");
     expect(other.textContent).not.toContain("أقدم من 30 دقيقة");
     await userEvent.click(other);
-    const dialog = await screen.findByRole("dialog", { name: "تأكيد الفرع" });
-    expect(within(dialog).getByText(/فرع رام الله.*المركز/)).toBeTruthy();
+    const chosen = await screen.findByRole("group", { name: "تم اختيار الفرع" });
+    expect(within(chosen).getByText("فرع رام الله")).toBeTruthy();
+    expect(within(chosen).getByText(/يجري على المركز/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
     expect(screen.getByRole("button", { name: /فرع رام الله/ }).className).toContain("is-selected");
     expect(screen.getByRole("button", { name: /فرع نابلس/ }).className).not.toContain("is-selected");
-    await userEvent.click(within(dialog).getByRole("button", { name: "نعم، متابعة" }));
+    await userEvent.click(screen.getByRole("button", { name: /فرع رام الله/ }));
+    await userEvent.click(within(await screen.findByRole("group", { name: "تم اختيار الفرع" })).getByRole("button", { name: "متابعة" }));
 
     await vi.waitFor(() => expect(calls.some((call) => call.startsWith("GET /api/inventory/configuration?branchId=b2"))).toBe(true));
     await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));
     await vi.waitFor(() => expect(calls.some((call) => call.startsWith("GET /api/inventory/sessions/open?") && call.includes("branchId=b2"))).toBe(true));
-    await userEvent.click(await screen.findByRole("button", { name: /^جديد/ }));
+    await userEvent.click(within(await screen.findByRole("group", { name: "تم اختيار نوع الجرد" })).getByRole("button", { name: "جديد" }));
     await vi.waitFor(() => expect(calls.some((call) => call.startsWith("POST /api/inventory/sessions ") && call.includes('"branchId":"b2"'))).toBe(true));
     await vi.waitFor(() => expect(calls.some((call) => call.includes("/items?branchId=b2"))).toBe(true));
   });
 });
 
 describe("counting rules from the owner's notes", () => {
-  it("defaults to a faded zero, highlights a saved item in place, and enables posting only when everything is counted", async () => {
+  it("defaults to a faded zero, moves a saved item to «تم الجرد» at once, saves in the background, and enables posting only when everything reached central", async () => {
     const bodies: unknown[] = [];
+    const headers: (string | null)[] = [];
     let counted = 0;
+    let release: (() => void) | null = null;
     const lines = [item({ itemId: "i1", itemNumber: "650" }), item({ itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة" })];
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       if (url.startsWith("/api/inventory/configuration")) {
@@ -242,9 +260,12 @@ describe("counting rules from the owner's notes", () => {
       if (url.includes("/count")) {
         const body = JSON.parse(String(init?.body)) as { itemId: string; quantity: number };
         bodies.push(body);
-        counted += 1;
+        headers.push(new Headers(init?.headers).get("X-XtraPOS-Background"));
         const saved = { ...lines.find((line) => line.itemId === body.itemId)!, isCounted: true, countedQuantity: body.quantity };
-        return reply({ session: { ...openSession, countedItems: counted, uncountedItems: 2 - counted }, item: saved });
+        const answer = () => { counted += 1; return { ok: true, status: 200, json: async () => ({ session: { ...openSession, countedItems: counted, uncountedItems: 2 - counted }, item: saved }) }; };
+        // الحفظ الأول يتأخر في «المركز» حتى نطلقه: الشاشة لا تنتظره.
+        if (bodies.length === 1) return new Promise((resolve) => { release = () => resolve(answer()); });
+        return Promise.resolve(answer());
       }
       return reply({});
     }));
@@ -254,20 +275,30 @@ describe("counting rules from the owner's notes", () => {
     const first = await screen.findByRole("textbox", { name: "الكمية الفعلية فحم سريع" });
     expect(first.getAttribute("placeholder")).toBe("0");
     expect((first as HTMLInputElement).value).toBe("");
-    const post = screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement;
-    expect(post.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/بقي 2/)).toBeTruthy();
 
-    const firstRow = first.closest("article") as HTMLElement;
-    await userEvent.click(within(firstRow).getByRole("button", { name: "حفظ" }));
+    await userEvent.click(within(first.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
+    // ينتقل فوراً إلى «تم الجرد» ولو لم يرد المركز بعد.
+    expect(screen.queryByRole("textbox", { name: "الكمية الفعلية فحم سريع" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "تم الجرد (1)" })).toBeTruthy();
+    expect(screen.getByText(/تم جرد 1 من 2/)).toBeTruthy();
     await vi.waitFor(() => expect(bodies[0]).toMatchObject({ itemId: "i1", quantity: 0 }));
-    const saved = await screen.findByLabelText("650 تم حفظ العد");
-    expect(saved.className).toContain("is-selected");
-    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(headers[0]).toBe("1");
 
+    // الصنف التالي متاح مباشرة، والحفظ الثاني ينتظر دوره خلف الأول.
     const second = screen.getByRole("textbox", { name: "الكمية الفعلية رأس أرجيلة" });
     await userEvent.type(second, "3");
     await userEvent.click(within(second.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
+    expect(screen.getByRole("tab", { name: "تم الجرد (2)" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/جاري إرسال 2 صنف للمركز/)).toBeTruthy();
+    expect(bodies).toHaveLength(1);
+
+    release!();
+    await vi.waitFor(() => expect(bodies[1]).toMatchObject({ itemId: "i2", quantity: 3 }));
     await vi.waitFor(() => expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole("tab", { name: "تم الجرد (2)" }));
+    expect((await screen.findByLabelText("650 تم حفظ العد")).className).toContain("is-selected");
   });
 });

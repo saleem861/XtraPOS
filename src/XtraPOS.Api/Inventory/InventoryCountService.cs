@@ -77,7 +77,7 @@ public sealed class InventoryCountService(
             }
         }
 
-        var customInventories = new List<object>();
+        var customRows = new List<(Guid Id, string Name, int Items)>();
         await using (var custom = new SqlCommand(
             $"""
             IF OBJECT_ID(N'dbo.CustomInventories', N'U') IS NOT NULL
@@ -93,9 +93,50 @@ public sealed class InventoryCountService(
             await using var reader = await custom.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                customInventories.Add(new { customInventoryId = reader.GetGuid(0), name = reader.GetString(1), items = reader.GetInt32(2) });
+                customRows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetInt32(2)));
             }
         }
+
+        // كما في النظام القديم: تحت كل جرد مخصص فروعه وحالة كل فرع (مكتمل = جرد مثبت بعد آخر تعديل للجرد المخصص).
+        var customBranches = new Dictionary<Guid, List<object>>();
+        if (target.Remote && customRows.Count > 0)
+        {
+            await using var statuses = new SqlCommand(
+                """
+                SELECT assigned.CustomInventoryID, branch.BranchName,
+                       CASE WHEN EXISTS (SELECT 1 FROM dbo.InventorySessions AS countSession
+                                         WHERE countSession.CustomInventoryID = assigned.CustomInventoryID
+                                           AND countSession.BranchID = assigned.BranchID
+                                           AND countSession.Status = N'Completed'
+                                           AND countSession.CompletedAt >= inventory.UpdatedAt) THEN 1 ELSE 0 END
+                FROM dbo.CustomInventoryBranches AS assigned
+                INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = assigned.CustomInventoryID
+                INNER JOIN dbo.Branches AS branch ON branch.BranchID = assigned.BranchID AND branch.IsActive = 1
+                WHERE inventory.IsActive = 1
+                  AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS mine
+                              WHERE mine.CustomInventoryID = assigned.CustomInventoryID AND mine.BranchID = @branch)
+                ORDER BY branch.BranchName;
+                """,
+                connection);
+            statuses.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = (object?)target.Actor?.BranchId ?? DBNull.Value;
+            await using var reader = await statuses.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var id = reader.GetGuid(0);
+                if (!customBranches.TryGetValue(id, out var list)) customBranches[id] = list = [];
+                list.Add(new { branchName = reader.GetString(1), completed = reader.GetInt32(2) == 1 });
+            }
+        }
+
+        var customInventories = customRows
+            .Select(row => (object)new
+            {
+                customInventoryId = row.Id,
+                name = row.Name,
+                items = row.Items,
+                branches = customBranches.TryGetValue(row.Id, out var assignedBranches) ? assignedBranches : new List<object>(),
+            })
+            .ToList();
 
         return new
         {

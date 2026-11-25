@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createInventoryClient,
+  errorStatus,
   type InventoryBranch,
   type InventoryConfiguration,
   type InventoryItem,
@@ -44,8 +45,15 @@ import { ScreenHeader } from "./ScreenHeader";
 import { Waiting } from "./Waiting";
 import "./inventory.css";
 
-type Step = "menu" | "branch" | "type" | "pages" | "resume" | "manual" | "custom" | "count" | "done" | "report" | "items"
-  | "define" | "shortages" | "followUp" | "audit" | "efficiency" | "shortageReport";
+/**
+ * تسلسل النظام القديم (inventory.sharbelfashion.com) داخل هيدر XtraPOS:
+ * الفرع ← «تم اختيار الفرع» (متابعة) ← نوع الجرد ←
+ *   المهمة: «تم اختيار نوع الجرد» (متابعة / جديد / تغيير الفرع)؛
+ *   الدوري: «اختيار الصفحات» وتحتها متابعة / جديد / تغيير الفرع؛
+ *   اليدوي: جرد يدوي، أو الجرد المخصص ← «اختيار اسم الجرد» مع حالة كل فرع.
+ */
+type Step = "menu" | "branch" | "branchConfirmed" | "type" | "typeCard" | "pages" | "manual" | "custom" | "count" | "done"
+  | "report" | "items" | "define" | "shortages" | "followUp" | "audit" | "efficiency" | "shortageReport";
 
 /** بطاقات تفتح لوحة كاملة، وعنوان كل لوحة. */
 const PANEL_TITLES: Partial<Record<Step, string>> = {
@@ -75,7 +83,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [branches, setBranches] = useState<InventoryBranch[] | null>(null);
   const [branchNotice, setBranchNotice] = useState("");
   const [centralMode, setCentralMode] = useState(false);
-  const [pendingBranch, setPendingBranch] = useState("");
+  const [countPending, setCountPending] = useState(0);
   const baseClient = useMemo(() => createInventoryClient(session), [session]);
   const client = useMemo(() => createInventoryClient(session, branch?.branchId ?? ""), [session, branch]);
   const reviewClient = useMemo(() => createInventoryReviewClient(session), [session]);
@@ -89,6 +97,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [config, setConfig] = useState<InventoryConfiguration | null>(null);
   const [pages, setPages] = useState<number[]>([]);
   const [openSession, setOpenSession] = useState<InventorySession | null>(null);
+  const [checkingOpen, setCheckingOpen] = useState(false);
   const [active, setActive] = useState<InventorySession | null>(null);
   const [finished, setFinished] = useState<{ session: InventorySession; posted: number; remote?: boolean } | null>(null);
   const [message, setMessage] = useState("");
@@ -128,12 +137,16 @@ export function InventoryScreen({ session, permissions, onBack }: {
       return;
     }
     if (step === "branch") { setStep("menu"); return; }
+    if (step === "branchConfirmed") { setStep("branch"); return; }
     if (step === "type") { setStep("branch"); setCustomId(""); return; }
-    if (step === "pages") { setStep("type"); return; }
-    if (step === "resume") { setOpenSession(null); setStep(type === "Periodic" ? "pages" : "type"); return; }
+    if (step === "typeCard" || step === "pages") { setOpenSession(null); setStep("type"); return; }
     if (step === "manual") { setStep("type"); return; }
     if (step === "custom") { setStep("manual"); return; }
     if (step === "count") {
+      if (countPending > 0) {
+        setMessage(`انتظر حتى يُحفظ كل العدّ على المركز (بقي ${countPending}).`);
+        return;
+      }
       setConfirmation({
         title: "حفظ وخروج",
         message: "هل تريد حفظ الجرد والخروج؟ يمكنك متابعة الجرد لاحقًا من حيث توقفت.",
@@ -143,61 +156,51 @@ export function InventoryScreen({ session, permissions, onBack }: {
     }
   }
 
-  /** المسار: الجرد ← الفرع ← تأكيد اسم الفرع ← نوع الجرد. الفرع المختار يُظلَّل ويبقى ظاهراً أثناء التأكيد. */
-  function confirmBranch(chosen: InventoryBranch) {
+  /** كما في النظام القديم: اختيار الفرع يفتح بطاقة «تم اختيار الفرع» وفيها «متابعة». */
+  function chooseBranch(chosen: InventoryBranch) {
     setMessage("");
-    setPendingBranch(chosen.branchId);
-    setConfirmation({
-      title: "تأكيد الفرع",
-      // قرار المالك (25 نوفمبر 2026): في النظام المركزي يجري كل جرد على المركز، ويُثبَّت الفارق عليه أولاً.
-      message: `سيتم الجرد على فرع «${chosen.branchName}». هل هذا هو الفرع الصحيح؟`
-        + (centralMode ? " الجرد يجري على المركز، وعند التثبيت يُثبَّت الفارق على المركز أولاً، ويأخذه الفرع في أول مزامنة." : ""),
-      accept: "نعم، متابعة",
-      onAccept: () => {
-        setPendingBranch("");
-        if (branch?.branchId !== chosen.branchId) setConfig(null);
-        setBranch(chosen);
-        setStep("type");
-      },
-    });
+    if (branch?.branchId !== chosen.branchId) setConfig(null);
+    setBranch(chosen);
+    setStep("branchConfirmed");
   }
 
-  /** المهمة: متابعة أو جديد. الدوري: الصفحات ثم متابعة أو جديد. اليدوي: يدوي أو مخصص ويفتح. */
+  /** المهمة: بطاقة النوع (متابعة / جديد). الدوري: الصفحات وتحتها متابعة / جديد. اليدوي: يدوي أو مخصص ويفتح. */
   function chooseType(next: InventoryType) {
     setType(next);
     setCustomId("");
     setMessage("");
-    if (next !== "Periodic") setPages([]);
+    setOpenSession(null);
     if (next === "Periodic") {
       setPages(defaultPages(config?.defaultPage ?? null));
       setStep("pages");
       return;
     }
+    setPages([]);
     if (next === "Manual") {
       setStep("manual");
       return;
     }
-    void askContinueOrNew(next, []);
+    setStep("typeCard");
   }
+
+  // جرد اليوم غير المثبت لهذا النوع (وهذه الصفحات)، ليُفعَّل «متابعة».
+  useEffect(() => {
+    if (!type || (step !== "typeCard" && step !== "pages")) return;
+    if (step === "pages" && pages.length === 0) { setOpenSession(null); return; }
+    let cancelled = false;
+    setCheckingOpen(true);
+    void client.findOpen(type, step === "pages" ? pages : [], "")
+      .then((result) => { if (!cancelled) setOpenSession(result.session ?? null); })
+      .catch((error: Error) => { if (!cancelled) setMessage(error.message); })
+      .finally(() => { if (!cancelled) setCheckingOpen(false); });
+    return () => { cancelled = true; };
+  }, [client, step, type, pages]);
 
   function chooseCustom(id: string) {
     setType("Custom");
     setCustomId(id);
     setMessage("");
     void start("Custom", [], false, id);
-  }
-
-  async function askContinueOrNew(next: InventoryType, chosen: number[]) {
-    setBusy("جاري التحقق من وجود جرد غير مثبت...");
-    try {
-      const result = await client.findOpen(next, chosen, "");
-      setOpenSession(result.session ?? null);
-      setStep("resume");
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
   }
 
   async function start(next: InventoryType, chosen: number[], replaceOpen: boolean, custom = customId) {
@@ -217,6 +220,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
   function confirmNew() {
     if (!type) return;
+    if (type === "Periodic" && pages.length === 0) { setMessage("يرجى اختيار صفحة واحدة على الأقل"); return; }
     if (!openSession) { void start(type, pages, false); return; }
     const label = type === "Important" ? "جرد أصناف مهمة" : type === "Periodic" ? "جرد دوري" : type === "Custom" ? "جرد مخصص" : "جرد يدوي";
     setConfirmation({
@@ -225,6 +229,29 @@ export function InventoryScreen({ session, permissions, onBack }: {
       accept: "بدء جرد جديد",
       onAccept: () => { void start(type, pages, true); },
     });
+  }
+
+  /** «متابعة» و«جديد» و«تغيير الفرع» كما في النظام القديم: تحت بطاقة النوع، وتحت الصفحات في الدوري. */
+  function resumeActions() {
+    return (
+      <div className="inventory-resume">
+        <button
+          type="button"
+          className="primary-button"
+          disabled={Boolean(busy) || checkingOpen || !openSession}
+          onClick={() => { if (type) void start(type, pages, false); }}
+        >متابعة</button>
+        <small className="inventory-hint">
+          {checkingOpen
+            ? "جاري التحقق من وجود جرد مفتوح..."
+            : openSession
+              ? `جرد مفتوح اليوم: تم جرد ${openSession.countedItems} من ${openSession.totalItems || openSession.countedItems} صنف`
+              : "لا يوجد جرد مفتوح اليوم"}
+        </small>
+        <button type="button" className="primary-button inventory-new" disabled={Boolean(busy) || checkingOpen} onClick={confirmNew}>جديد</button>
+        <button type="button" className="link-button" onClick={() => { setOpenSession(null); setStep("branch"); }}>تغيير الفرع</button>
+      </div>
+    );
   }
 
   const title = step === "menu" ? "الجرد"
@@ -263,7 +290,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
             <p className="inventory-hint">اختر الفرع</p>
             {branchNotice ? <p className="inventory-hint is-warning">{branchNotice}</p> : null}
             {branches === null ? <Waiting compact label="جاري تحميل الفروع..." /> : branches.map((entry) => {
-              const selected = (confirmation?.title === "تأكيد الفرع" && pendingBranch === entry.branchId) || (!confirmation && branch?.branchId === entry.branchId);
+              const selected = branch?.branchId === entry.branchId;
               return (
                 <button
                   key={entry.branchId}
@@ -271,13 +298,22 @@ export function InventoryScreen({ session, permissions, onBack }: {
                   className={selected ? "inventory-card is-selected" : "inventory-card"}
                   aria-pressed={selected}
                   disabled={Boolean(busy)}
-                  onClick={() => confirmBranch(entry)}
+                  onClick={() => chooseBranch(entry)}
                 >
                   <strong>{entry.branchName}</strong>
                   <small>{entry.current ? "فرع هذا الجهاز" : "على المركز"}</small>
                 </button>
               );
             })}
+          </div>
+        ) : null}
+
+        {step === "branchConfirmed" && branch ? (
+          <div className="inventory-confirm-card" role="group" aria-label="تم اختيار الفرع">
+            <small>تم اختيار الفرع</small>
+            <strong>{branch.branchName}</strong>
+            {centralMode ? <small className="inventory-hint">الجرد يجري على المركز، ويُثبَّت الفارق عليه أولاً، ويأخذه الفرع في أول مزامنة.</small> : null}
+            <button type="button" className="primary-button" onClick={() => { setMessage(""); setStep("type"); }}>متابعة</button>
           </div>
         ) : null}
 
@@ -301,7 +337,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
               <small>أدخل الأصناف بنفسك</small>
             </button>
             <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => { setMessage(""); setStep("custom"); }}>
-              <strong>جرد مخصص</strong>
+              <strong>الجرد المخصص</strong>
               <small>{customInventories.length} جرد محدد لهذا الفرع</small>
             </button>
           </div>
@@ -314,6 +350,12 @@ export function InventoryScreen({ session, permissions, onBack }: {
               <button key={custom.customInventoryId} type="button" className="inventory-card" disabled={Boolean(busy)} onClick={() => chooseCustom(custom.customInventoryId)}>
                 <strong>{custom.name}</strong>
                 <small>{custom.items} صنف</small>
+                {custom.branches?.length ? (
+                  <span className="inventory-custom-branches">
+                    الفروع: {distinctBy(custom.branches, (entry) => entry.branchName)
+                      .map((entry) => `${entry.branchName} (${entry.completed ? "مكتمل" : "غير مكتمل"})`).join("، ")}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
@@ -333,38 +375,22 @@ export function InventoryScreen({ session, permissions, onBack }: {
                   aria-pressed={pages.includes(entry.page)}
                   onClick={() => setPages((current) => togglePage(current, entry.page))}
                 >
-                  <strong>الصفحة {entry.page}</strong>
+                  <strong>{pages.includes(entry.page) ? "✓ " : ""}الصفحة {entry.page}</strong>
                   <small>{entry.items} صنف</small>
                 </button>
               ))}
             </div>
-            <button
-              type="button"
-              className="primary-button"
-              disabled={Boolean(busy)}
-              onClick={() => {
-                if (pages.length === 0) { setMessage("يرجى اختيار صفحة واحدة على الأقل"); return; }
-                void askContinueOrNew("Periodic", pages);
-              }}
-            >متابعة</button>
+            {resumeActions()}
           </div>
         ) : null}
 
-        {step === "resume" && type ? (
-          <div className="inventory-menu">
-            <p className="inventory-hint">
-              {openSession
-                ? `يوجد جرد غير مثبت من اليوم: تم جرد ${openSession.countedItems} من ${openSession.totalItems || openSession.countedItems} صنف.`
-                : "لا يوجد جرد غير مثبت. اختر «جديد» للبدء."}
-            </p>
-            <button type="button" className="inventory-card" disabled={Boolean(busy) || !openSession} onClick={() => void start(type, pages, false)}>
-              <strong>متابعة</strong>
-              <small>{openSession ? "من حيث توقفت" : "لا يوجد جرد للمتابعة"}</small>
-            </button>
-            <button type="button" className="inventory-card" disabled={Boolean(busy)} onClick={confirmNew}>
-              <strong>جديد</strong>
-              <small>{openSession ? "يمسح الجرد غير المثبت" : "يبدأ جرداً جديداً"}</small>
-            </button>
+        {step === "typeCard" && type ? (
+          <div className="inventory-confirm-card" role="group" aria-label="تم اختيار نوع الجرد">
+            <small>تم اختيار نوع الجرد</small>
+            <strong>{inventoryTypeLabel(type)}</strong>
+            <small>الفرع:</small>
+            <strong>{branch?.branchName ?? session.branchName}</strong>
+            {resumeActions()}
           </div>
         ) : null}
 
@@ -374,6 +400,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
             session={active}
             canReview={canReview}
             onSession={setActive}
+            onPendingChange={setCountPending}
             onMessage={setMessage}
             onConfirm={setConfirmation}
             onSaveAndExit={() => back()}
@@ -469,11 +496,29 @@ export function InventoryScreen({ session, permissions, onBack }: {
   );
 }
 
-function CountingPanel({ client, session, canReview, onSession, onMessage, onConfirm, onSaveAndExit, onFinished }: {
+/** سطر حفظ ينتظر دوره في الطابور: الكمية، وحالة الصنف قبل الحفظ (للتراجع إن رفضه الخادم). */
+interface PendingSave {
+  itemId: string;
+  itemNumber: string;
+  quantity: number;
+  previous: InventoryItem | null;
+  attempts: number;
+}
+
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function upsertItem(items: InventoryItem[], next: InventoryItem) {
+  return items.some((item) => item.itemId === next.itemId)
+    ? items.map((item) => (item.itemId === next.itemId ? next : item))
+    : [...items, next];
+}
+
+function CountingPanel({ client, session, canReview, onSession, onPendingChange, onMessage, onConfirm, onSaveAndExit, onFinished }: {
   client: ReturnType<typeof createInventoryClient>;
   session: InventorySession;
   canReview: boolean;
   onSession: (session: InventorySession) => void;
+  onPendingChange: (count: number) => void;
   onMessage: (message: string) => void;
   onConfirm: (confirmation: Confirmation) => void;
   onSaveAndExit: () => void;
@@ -486,14 +531,26 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<string | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [savedId, setSavedId] = useState<string | null>(null);
-  /** أصناف حُفظت في هذه الزيارة: تبقى في مكانها في «لم يتم الجرد» مظللة حتى تغيير التبويب. */
-  const [savedHere, setSavedHere] = useState<ReadonlySet<string>>(() => new Set());
+  const [lastSaved, setLastSaved] = useState<{ itemId: string; label: string } | null>(null);
   const [manualItem, setManualItem] = useState<InventoryLookup | null>(null);
   const [finalizing, setFinalizing] = useState(false);
+  /** ملاحظة المالك: الحفظ في الخلفية. الصنف ينتقل فوراً، والطلبات تُرسل بالترتيب وتُعاد عند انقطاع المركز. */
+  const queue = useRef<PendingSave[]>([]);
+  const draining = useRef(false);
+  const alive = useRef(true);
+  const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [retrying, setRetrying] = useState(false);
   const desktop = usesDesktopCustomerKeyboard();
   const [keyboardOpen] = useFullKeyboardVisible();
+
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  const pendingCount = useMemo(() => [...pending.values()].reduce((sum, count) => sum + count, 0), [pending]);
+  useEffect(() => { onPendingChange(pendingCount); }, [pendingCount, onPendingChange]);
+  useEffect(() => () => onPendingChange(0), [onPendingChange]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -511,15 +568,62 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
 
   useEffect(() => { void load(); }, [load]);
 
-  const visible = useMemo(() => {
-    const text = manual && tab === "current" ? "" : query;
-    if (tab !== "current" || savedHere.size === 0) return filterItems(items, tab, text);
-    const shown = new Set(filterItems(items.map((item) => (savedHere.has(item.itemId) ? { ...item, isCounted: false } : item)), tab, text).map((item) => item.itemId));
-    return items.filter((item) => shown.has(item.itemId));
-  }, [items, tab, query, manual, savedHere]);
+  // ملاحظة المالك: بعد الحفظ ينتقل الصنف إلى «تم الجرد» ولا يبقى في «لم يتم الجرد».
+  const visible = useMemo(() => filterItems(items, tab, manual && tab === "current" ? "" : query), [items, tab, query, manual]);
   const paging = usePaging(visible, `${tab}|${query}`);
 
-  async function save(itemId: string) {
+  function markPending(itemId: string, delta: number) {
+    setPending((current) => {
+      const next = new Map(current);
+      const count = (next.get(itemId) ?? 0) + delta;
+      if (count > 0) next.set(itemId, count);
+      else next.delete(itemId);
+      return next;
+    });
+  }
+
+  async function drain() {
+    if (draining.current) return;
+    draining.current = true;
+    try {
+      while (alive.current && queue.current.length > 0) {
+        const job = queue.current[0];
+        try {
+          const result = await client.count(session.sessionId, job.itemId, job.quantity, true);
+          queue.current.shift();
+          setRetrying(false);
+          const later = queue.current.some((entry) => entry.itemId === job.itemId);
+          if (result.item && !later) {
+            const saved = result.item;
+            setItems((current) => upsertItem(current, saved));
+          }
+          onSession(result.session);
+          markPending(job.itemId, -1);
+        } catch (error) {
+          const status = errorStatus(error);
+          if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+            // رفضه الخادم (صنف ليس في الجرد، كمية غير صالحة...): لا يُعاد، ويرجع الصنف كما كان.
+            queue.current.shift();
+            markPending(job.itemId, -1);
+            if (!queue.current.some((entry) => entry.itemId === job.itemId)) {
+              setItems((current) => job.previous
+                ? upsertItem(current, job.previous)
+                : current.filter((item) => item.itemId !== job.itemId));
+            }
+            onMessage(`لم يُحفظ عدّ الصنف ${job.itemNumber}: ${(error as Error).message}`);
+            continue;
+          }
+          job.attempts += 1;
+          setRetrying(true);
+          await wait(Math.min(15000, 1000 * 2 ** Math.min(job.attempts, 4)));
+        }
+      }
+    } finally {
+      draining.current = false;
+    }
+  }
+
+  function save(itemId: string) {
     // الكمية الافتراضية صفر (باهت): الحفظ بلا كتابة يحفظ صفراً.
     const typed = (drafts[itemId] ?? "").trim();
     const quantity = parseCountInput(typed === "" ? "0" : typed);
@@ -527,31 +631,39 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       onMessage("أدخل كمية صحيحة. الصفر مسموح والسالبة غير مسموحة.");
       return;
     }
-    if (saving) {
-      onMessage("جاري حفظ هذا الصنف. انتظر لحظة ثم أعد المحاولة.");
-      return;
-    }
-    setSaving(itemId);
-    onMessage("");
-    try {
-      const result = await client.count(session.sessionId, itemId, quantity);
-      onSession(result.session);
-      if (result.item) {
-        const saved = result.item;
-        setItems((current) => {
-          const exists = current.some((item) => item.itemId === saved.itemId);
-          return exists ? current.map((item) => (item.itemId === saved.itemId ? saved : item)) : [...current, saved];
-        });
+
+    const previous = items.find((item) => item.itemId === itemId) ?? null;
+    const base: InventoryItem | null = previous ?? (manualItem?.itemId === itemId
+      ? {
+        sessionItemId: "", itemId, itemNumber: manualItem.itemNumber, itemName: manualItem.itemName, isCounted: false,
+        countedQuantity: null, countedAt: null, countedByName: null, posted: false, expectedQuantity: null, difference: null,
+        quantityAfterPosting: null,
       }
-      setDrafts((current) => { const next = { ...current }; delete next[itemId]; return next; });
-      setEditing(null);
-      setSavedId(itemId);
-      setSavedHere((current) => new Set(current).add(itemId));
-      if (manual) setManualItem(null);
-    } catch (error) {
-      onMessage((error as Error).message);
-    } finally {
-      setSaving(null);
+      : null);
+    if (!base) return;
+
+    onMessage("");
+    const optimistic: InventoryItem = {
+      ...base,
+      isCounted: true,
+      countedQuantity: quantity,
+      countedAt: new Date().toISOString(),
+      difference: base.expectedQuantity === null ? null : quantity - base.expectedQuantity,
+    };
+    setItems((current) => upsertItem(current, optimistic));
+    setDrafts((current) => { const next = { ...current }; delete next[itemId]; return next; });
+    setEditing(null);
+    setLastSaved({ itemId, label: base.itemName || base.itemNumber });
+    if (manual) setManualItem(null);
+
+    queue.current.push({ itemId, itemNumber: base.itemNumber, quantity, previous, attempts: 0 });
+    markPending(itemId, 1);
+    void drain();
+
+    // الصنف التالي في «لم يتم الجرد» يأخذ التركيز مباشرة.
+    if (!manual && tab === "current") {
+      const next = visible.find((item) => item.itemId !== itemId);
+      if (next) window.setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count-item='${next.itemId}']`)?.focus(), 0);
     }
   }
 
@@ -562,16 +674,23 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
     onMessage("");
     try {
       const found = await client.lookup(session.sessionId, code);
+      // الحالة المحلية أحدث من الخادم ما دام في الطابور حفظ لم يصل بعد.
+      const local = items.find((entry) => entry.itemId === found.itemId);
+      const isCounted = local?.isCounted ?? found.isCounted;
+      const countedQuantity = local?.isCounted ? local.countedQuantity : found.countedQuantity;
       if (manual) {
         setManualItem(found);
         setTab("current");
-        setDrafts((current) => ({ ...current, [found.itemId]: found.countedQuantity === null ? "" : String(found.countedQuantity) }));
-        if (found.isCounted) onMessage("تم جرد هذا الصنف سابقًا، ويمكنك تعديل الكمية.");
+        setDrafts((current) => ({ ...current, [found.itemId]: countedQuantity === null ? "" : String(countedQuantity) }));
+        if (isCounted) onMessage("تم جرد هذا الصنف سابقًا، ويمكنك تعديل الكمية.");
         setQuery("");
       } else {
-        setTab(found.isCounted ? "counted" : "current");
+        setTab(isCounted ? "counted" : "current");
         setQuery(found.itemNumber);
-        if (found.isCounted) setEditing(found.itemId);
+        if (isCounted) {
+          setEditing(found.itemId);
+          setDrafts((current) => ({ ...current, [found.itemId]: formatQuantity(countedQuantity) }));
+        }
       }
       window.setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count-item='${found.itemId}']`)?.focus(), 0);
     } catch (error) {
@@ -580,6 +699,10 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
   }
 
   function finalize() {
+    if (pendingCount > 0) {
+      onMessage(`انتظر حتى يُحفظ كل العدّ على المركز (بقي ${pendingCount}).`);
+      return;
+    }
     onConfirm({
       title: "تثبيت الجرد",
       message: "سيتم تثبيت الجرد وترحيل الفروقات إلى مخزون الفرع. هل تريد المتابعة؟",
@@ -610,23 +733,28 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
           label={`الكمية الفعلية ${label}`}
           value={value}
           onChange={(next) => setDrafts((current) => ({ ...current, [itemId]: next }))}
-          onEnter={() => void save(itemId)}
+          onEnter={() => save(itemId)}
         />
         <button type="button" aria-label="زيادة الكمية" onClick={() => setDrafts((current) => ({ ...current, [itemId]: stepQuantity(current[itemId] ?? "", 1) }))}>+</button>
-        <button type="button" className="primary-button" disabled={saving === itemId} onClick={() => void save(itemId)}>{saving === itemId ? "جاري الحفظ..." : "حفظ"}</button>
+        <button type="button" className="primary-button" onClick={() => save(itemId)}>حفظ</button>
       </div>
     );
   }
 
-  /** قاعدة المالك: «تثبيت الجرد» يُفعَّل بعد حفظ عدّ كل الأصناف؛ في اليدوي كل ما أُضيف. */
-  const remaining = manual ? 0 : Math.max(session.totalItems - session.countedItems, 0);
-  const allCounted = manual
-    ? session.countedItems > 0 && !manualItem
-    : session.totalItems > 0 && remaining === 0;
+  /**
+   * قاعدة المالك: «تثبيت الجرد» يُفعَّل بعد حفظ عدّ كل الأصناف (في اليدوي كل ما أُضيف)، وبعد أن يصل كل حفظ للمركز.
+   * العدّاد من الأصناف في الشاشة، فيتحرك فوراً مع الحفظ في الخلفية.
+   */
+  const counted = items.filter((item) => item.isCounted).length;
+  const total = manual ? counted : session.totalItems;
+  const remaining = manual ? 0 : Math.max(total - counted, 0);
+  const allCounted = pendingCount === 0 && (manual
+    ? counted > 0 && !manualItem
+    : total > 0 && remaining === 0);
 
   const progress = manual
-    ? `تم جرد ${session.countedItems} صنف`
-    : `تم جرد ${session.countedItems} من ${session.totalItems} صنف`;
+    ? `تم جرد ${counted} صنف`
+    : `تم جرد ${counted} من ${total} صنف`;
 
   return (
     <div className="inventory-count">
@@ -650,13 +778,26 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       </form>
 
       <div className="inventory-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === "current"} className={tab === "current" ? "is-active" : undefined} onClick={() => { setTab("current"); setSavedHere(new Set()); }}>
-          {manual ? "الجرد الحالي" : `لم يتم الجرد (${Math.max(session.totalItems - session.countedItems, 0)})`}
+        <button type="button" role="tab" aria-selected={tab === "current"} className={tab === "current" ? "is-active" : undefined} onClick={() => setTab("current")}>
+          {manual ? "الجرد الحالي" : `لم يتم الجرد (${remaining})`}
         </button>
-        <button type="button" role="tab" aria-selected={tab === "counted"} className={tab === "counted" ? "is-active" : undefined} onClick={() => { setTab("counted"); setSavedHere(new Set()); }}>
-          تم الجرد ({session.countedItems})
+        <button type="button" role="tab" aria-selected={tab === "counted"} className={tab === "counted" ? "is-active" : undefined} onClick={() => setTab("counted")}>
+          تم الجرد ({counted})
         </button>
       </div>
+
+      {lastSaved ? (
+        <p className="inventory-hint inventory-last-saved" role="status">
+          تم حفظ عدّ «{lastSaved.label}»{pending.has(lastSaved.itemId) ? " · يُرسل للمركز..." : ""}
+        </p>
+      ) : null}
+      {pendingCount > 0 ? (
+        <p className={retrying ? "inventory-hint is-warning" : "inventory-hint"} role="status">
+          {retrying
+            ? `تعذر الوصول للمركز. سيُعاد حفظ ${pendingCount} صنف تلقائياً، لا تغلق الشاشة.`
+            : `جاري إرسال ${pendingCount} صنف للمركز...`}
+        </p>
+      ) : null}
 
       <div className="inventory-list">
         {loading ? <Waiting compact label="جاري تحميل الأصناف..." /> : null}
@@ -675,7 +816,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
         {!loading && !(manual && tab === "current") ? paging.visible.map((item) => (
           <article
             key={item.itemId}
-            className={["inventory-row", item.isCounted ? "is-selected" : "", savedId === item.itemId ? "is-saved" : ""].filter(Boolean).join(" ")}
+            className={["inventory-row", item.isCounted ? "is-selected" : "", lastSaved?.itemId === item.itemId ? "is-saved" : ""].filter(Boolean).join(" ")}
             aria-label={item.isCounted ? `${item.itemNumber} تم حفظ العد` : undefined}
           >
             <div className="inventory-row-name">
@@ -684,7 +825,9 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
             </div>
             {item.isCounted && editing !== item.itemId ? (
               <div className="inventory-counted">
-                {savedId === item.itemId ? <span className="inventory-saved">تم حفظ العد</span> : null}
+                {pending.has(item.itemId)
+                  ? <span className="inventory-saved is-pending">يُرسل للمركز...</span>
+                  : lastSaved?.itemId === item.itemId ? <span className="inventory-saved">تم حفظ العد</span> : null}
                 <span>المعدود: {formatQuantity(item.countedQuantity)}</span>
                 {canReview ? <span>المفترض: {formatQuantity(item.expectedQuantity)}</span> : null}
                 {canReview ? <span>الفارق: {formatDifference(item.difference)}</span> : null}
@@ -707,10 +850,12 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       <footer className="inventory-actions">
         {!allCounted ? (
           <small className="inventory-hint">
-            {manual ? "احفظ عدّ الأصناف المضافة لتفعيل «تثبيت الجرد»." : `احفظ عدّ كل الأصناف لتفعيل «تثبيت الجرد» (بقي ${remaining}).`}
+            {pendingCount > 0
+              ? `يُفعَّل «تثبيت الجرد» بعد وصول كل الحفظ للمركز (بقي ${pendingCount}).`
+              : manual ? "احفظ عدّ الأصناف المضافة لتفعيل «تثبيت الجرد»." : `احفظ عدّ كل الأصناف لتفعيل «تثبيت الجرد» (بقي ${remaining}).`}
           </small>
         ) : null}
-        <button type="button" className="ghost-button" disabled={finalizing} onClick={onSaveAndExit}>حفظ وخروج</button>
+        <button type="button" className="ghost-button" disabled={finalizing || pendingCount > 0} onClick={onSaveAndExit}>حفظ وخروج</button>
         <button type="button" className="primary-button" disabled={finalizing || !allCounted} onClick={finalize}>
           {finalizing ? "جاري التثبيت..." : "تثبيت الجرد"}
         </button>
