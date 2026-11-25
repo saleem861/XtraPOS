@@ -9,13 +9,13 @@ using XtraPOS.Api.Operations;
 namespace XtraPOS.Api.Catalog;
 
 /// <summary>
-/// قرار المالك (24 نوفمبر 2026): أي عملية تعدّل الكمية تُرحَّل فوراً للمركز عبر سجل الترحيلات،
-/// ليكون المركز متزامناً لحظياً بكميات الفروع.
+/// قرار المالك (24 نوفمبر 2026): أي عملية تعدّل الكمية تُرحَّل فوراً للمركز عبر سجل الترحيلات.
+/// قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية؛ رصيده = مجموع الفروق، ولا يُنسخ رصيد الفرع فوقه.
 ///
 /// كل حركة يكتبها <see cref="StockPostingService"/> تُربط داخل نفس المعاملة بسطر في BranchOperationLog
 /// من النوع <see cref="OperationType"/> (سطر واحد لكل مستند: البيعة، الجلسة، طلب التصحيح...).
 /// المرسِل يقرأ الحركات غير المرسلة، فيكتبها في المركز (BranchStockMovements) مرة واحدة لكل رقم حركة،
-/// ويحدّث BranchStockSnapshots، ثم يعلّم الحركات والسطر «تم».
+/// ويضيف فارقها إلى BranchStockSnapshots (إلا صدى تصحيح طُبّق على المركز أولاً)، ثم يعلّم الحركات والسطر «تم».
 ///
 /// هذا النوع لا يدخل في ترتيب السجل (رأس الطابور) لأن الحركات فروق مستقلة لا تعتمد على ترتيب غيرها،
 /// فلا تؤخر بيع الآجل ولا السداد.
@@ -154,7 +154,8 @@ public static class StockCentralRelay
         decimal QuantityDelta,
         decimal? ResultingQuantity,
         DateTime OccurredAt,
-        DateTime CreatedAt);
+        DateTime CreatedAt,
+        bool HistoryOnly);
 
     /// <summary>
     /// يرسل دفعة من الحركات غير المرسلة. المركز أولاً (مرة واحدة لكل رقم حركة)، ثم يُعلَّم الفرع؛
@@ -168,7 +169,7 @@ public static class StockCentralRelay
             SELECT TOP ({BatchSize}) movement.StockMovementID, movement.BranchID, movement.ItemID, item.ItemNumber,
                    movement.SourceType, movement.SourceDocumentID, movement.SourceLineID, movement.PostingMode,
                    movement.PreviousQuantity, movement.QuantityDelta, movement.ResultingQuantity,
-                   movement.OccurredAt, movement.CreatedAt
+                   movement.OccurredAt, movement.CreatedAt, CAST(ISNULL(movement.CentralHistoryOnly, 0) AS bit)
             FROM dbo.StockMovements AS movement
             INNER JOIN dbo.Items AS item ON item.ItemID = movement.ItemID
             WHERE movement.CentralRelayedAt IS NULL
@@ -192,7 +193,8 @@ public static class StockCentralRelay
                     reader.GetDecimal(9),
                     reader.IsDBNull(10) ? null : reader.GetDecimal(10),
                     reader.GetDateTime(11),
-                    reader.GetDateTime(12)));
+                    reader.GetDateTime(12),
+                    reader.GetBoolean(13)));
             }
         }
 
@@ -217,6 +219,14 @@ public static class StockCentralRelay
         return new RelayBatch(pending.Count, pending.Count == BatchSize);
     }
 
+    /// <summary>
+    /// قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية. كل حركة جديدة تُحفظ مرة واحدة لكل رقم حركة، ثم:
+    /// - حركة فرع عادية (بيع، مرتجع، شراء...): يُضاف فارقها إلى رصيد المركز، ولا يُنسخ رصيد الفرع فوقه.
+    /// - صدى تصحيح طُبّق على المركز أولاً (InventoryReconciliation ومعرّف مستندها طلب CentralAppliedAt): لا يُضاف ثانية.
+    /// - مبيعات سابقة أُرسلت لحساب السرعة فقط (CentralHistoryOnly): لا تُضاف.
+    /// رصيد المركز غير المعروف بعد يأخذ رصيد الفرع بعد آخر حركة كبداية، ومن بعدها الفروق فقط.
+    /// ثم تُعاد سرعة البيع لحظياً للأصناف التي بيعت.
+    /// </summary>
     private static async Task ApplyCentralAsync(SqlConnection central, IReadOnlyList<PendingMovement> pending, CancellationToken cancellationToken)
     {
         var table = new DataTable();
@@ -234,6 +244,7 @@ public static class StockCentralRelay
         table.Columns.Add("ResultingQuantity", typeof(decimal));
         table.Columns.Add("OccurredAt", typeof(DateTime));
         table.Columns.Add("CreatedAt", typeof(DateTime));
+        table.Columns.Add("HistoryOnly", typeof(bool));
         for (var index = 0; index < pending.Count; index++)
         {
             var movement = pending[index];
@@ -251,12 +262,18 @@ public static class StockCentralRelay
                 movement.QuantityDelta,
                 (object?)movement.ResultingQuantity ?? DBNull.Value,
                 movement.OccurredAt,
-                movement.CreatedAt);
+                movement.CreatedAt,
+                movement.HistoryOnly);
         }
 
         await using var transaction = (SqlTransaction)await central.BeginTransactionAsync(cancellationToken);
         try
         {
+            if (!await Inventory.CentralStock.IsReadyAsync(central, transaction, cancellationToken))
+            {
+                throw new InvalidOperationException(Inventory.CentralStock.NotReady);
+            }
+
             await using (var create = new SqlCommand(
                 """
                 CREATE TABLE #mov
@@ -274,7 +291,9 @@ public static class StockCentralRelay
                     QuantityDelta decimal(18, 4) NOT NULL,
                     ResultingQuantity decimal(18, 4) NULL,
                     OccurredAt datetime2(0) NOT NULL,
-                    CreatedAt datetime2(0) NOT NULL
+                    CreatedAt datetime2(0) NOT NULL,
+                    HistoryOnly bit NOT NULL,
+                    Origin nvarchar(10) COLLATE DATABASE_DEFAULT NULL
                 );
                 CREATE TABLE #new (StockMovementID uniqueidentifier NOT NULL PRIMARY KEY);
                 """,
@@ -290,54 +309,97 @@ public static class StockCentralRelay
                 await bulk.WriteToServerAsync(table, cancellationToken);
             }
 
-            // الرصيد بعد آخر حركة جديدة لكل صنف هو رصيد الفرع الفعلي، فيُكتب كما هو (ويصحّح أي فجوة سابقة).
-            // إن وصلت حركة أقدم من آخر ما طُبّق (ترتيب مختلف)، يُضاف فارقها فقط ولا يُكتب رصيدها القديم.
-            await using var apply = new SqlCommand(
+            var rated = new List<(Guid Branch, Guid Item)>();
+            await using (var apply = new SqlCommand(
                 """
+                UPDATE source
+                SET Origin = CASE
+                        WHEN source.HistoryOnly = 1 THEN N'History'
+                        WHEN source.SourceType = N'InventoryReconciliation'
+                             AND EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests AS request
+                                         WHERE request.RequestID = source.SourceDocumentID
+                                           AND request.BranchID = source.BranchID
+                                           AND request.CentralAppliedAt IS NOT NULL) THEN N'Echo'
+                        ELSE N'Branch' END
+                FROM #mov AS source;
+
                 INSERT INTO dbo.BranchStockMovements
                     (StockMovementID, BranchID, ItemID, ItemNumber, SourceType, SourceDocumentID, SourceLineID, PostingMode,
-                     PreviousQuantity, QuantityDelta, ResultingQuantity, OccurredAt, CreatedAt)
+                     PreviousQuantity, QuantityDelta, ResultingQuantity, OccurredAt, CreatedAt, Origin, AppliedToBalance)
                 OUTPUT inserted.StockMovementID INTO #new (StockMovementID)
                 SELECT source.StockMovementID, source.BranchID, source.ItemID, source.ItemNumber, source.SourceType,
                        source.SourceDocumentID, source.SourceLineID, source.PostingMode, source.PreviousQuantity,
-                       source.QuantityDelta, source.ResultingQuantity, source.OccurredAt, source.CreatedAt
+                       source.QuantityDelta, source.ResultingQuantity, source.OccurredAt, source.CreatedAt,
+                       source.Origin, CASE WHEN source.Origin = N'Branch' THEN 1 ELSE 0 END
                 FROM #mov AS source
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.BranchStockMovements AS existing WHERE existing.StockMovementID = source.StockMovementID);
 
-                ;WITH fresh AS
+                -- الفارق الفعلي: رصيد مطلق كتبه فرع لم يكن رصيده معروفاً ليس فارقاً (QuantityDelta فيه = الرصيد كله).
+                ;WITH applied AS
                 (
-                    SELECT source.*, ROW_NUMBER() OVER (PARTITION BY source.BranchID, source.ItemID ORDER BY source.Seq DESC) AS Position,
-                           SUM(source.QuantityDelta) OVER (PARTITION BY source.BranchID, source.ItemID) AS TotalDelta
+                    SELECT source.*,
+                           CASE WHEN source.PostingMode = N'Absolute' AND source.PreviousQuantity IS NULL THEN NULL
+                                ELSE source.QuantityDelta END AS EffectiveDelta,
+                           ROW_NUMBER() OVER (PARTITION BY source.BranchID, source.ItemID
+                                              ORDER BY CASE WHEN source.ResultingQuantity IS NULL THEN 1 ELSE 0 END, source.Seq DESC) AS Position
                     FROM #mov AS source
                     INNER JOIN #new AS added ON added.StockMovementID = source.StockMovementID
+                    WHERE source.Origin = N'Branch'
                 )
-                SELECT BranchID, ItemID, ItemNumber, ResultingQuantity, TotalDelta, CreatedAt
+                SELECT BranchID, ItemID,
+                       MAX(ItemNumber) AS ItemNumber,
+                       SUM(EffectiveDelta) AS TotalDelta,
+                       MAX(CASE WHEN Position = 1 THEN ResultingQuantity END) AS LatestResulting,
+                       MAX(CreatedAt) AS LatestAt
                 INTO #latest
-                FROM fresh
-                WHERE Position = 1;
+                FROM applied
+                GROUP BY BranchID, ItemID;
 
                 UPDATE target
                 SET OnHandQuantity = CASE
-                        WHEN (target.LastMovementAt IS NULL OR target.LastMovementAt <= latest.CreatedAt) AND latest.ResultingQuantity IS NOT NULL
-                            THEN latest.ResultingQuantity
-                        WHEN target.OnHandQuantity IS NOT NULL THEN target.OnHandQuantity + latest.TotalDelta
-                        ELSE target.OnHandQuantity
+                        WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL
+                            THEN target.OnHandQuantity + ISNULL(latest.TotalDelta, 0)
+                        ELSE COALESCE(latest.LatestResulting, target.OnHandQuantity)
                     END,
-                    IsQuantityInitialized = CASE WHEN latest.ResultingQuantity IS NOT NULL THEN 1 ELSE target.IsQuantityInitialized END,
-                    LastMovementAt = CASE WHEN target.LastMovementAt IS NULL OR target.LastMovementAt < latest.CreatedAt
-                                          THEN latest.CreatedAt ELSE target.LastMovementAt END,
-                    BalanceUpdatedAt = CASE WHEN target.BalanceUpdatedAt < latest.CreatedAt THEN latest.CreatedAt ELSE target.BalanceUpdatedAt END,
+                    IsQuantityInitialized = CASE
+                        WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL THEN 1
+                        WHEN latest.LatestResulting IS NOT NULL THEN 1
+                        ELSE target.IsQuantityInitialized END,
+                    LastMovementAt = CASE WHEN target.LastMovementAt IS NULL OR target.LastMovementAt < latest.LatestAt
+                                          THEN latest.LatestAt ELSE target.LastMovementAt END,
+                    BalanceUpdatedAt = CASE WHEN target.BalanceUpdatedAt < latest.LatestAt THEN latest.LatestAt ELSE target.BalanceUpdatedAt END,
                     ReceivedAt = SYSUTCDATETIME()
                 FROM dbo.BranchStockSnapshots AS target
                 INNER JOIN #latest AS latest ON latest.BranchID = target.BranchID AND latest.ItemID = target.ItemID;
 
                 INSERT INTO dbo.BranchStockSnapshots
                     (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, BalanceUpdatedAt, LastMovementAt)
-                SELECT latest.BranchID, latest.ItemID, latest.ItemNumber, latest.ResultingQuantity,
-                       CASE WHEN latest.ResultingQuantity IS NOT NULL THEN 1 ELSE 0 END, NULL, latest.CreatedAt, latest.CreatedAt
+                SELECT latest.BranchID, latest.ItemID, latest.ItemNumber, latest.LatestResulting,
+                       CASE WHEN latest.LatestResulting IS NOT NULL THEN 1 ELSE 0 END, NULL, latest.LatestAt, latest.LatestAt
                 FROM #latest AS latest
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.BranchStockSnapshots AS target
                                   WHERE target.BranchID = latest.BranchID AND target.ItemID = latest.ItemID);
+
+                -- أول بيع وصل المركز لكل فرع: أساس عدد أيام السرعة.
+                ;WITH sales AS
+                (
+                    SELECT source.BranchID, MIN(source.OccurredAt) AS FirstSale
+                    FROM #mov AS source
+                    INNER JOIN #new AS added ON added.StockMovementID = source.StockMovementID
+                    WHERE source.SourceType IN (N'Sale', N'SaleReturn')
+                    GROUP BY source.BranchID
+                )
+                MERGE dbo.BranchSnapshotStatus AS status
+                USING sales ON status.BranchID = sales.BranchID
+                WHEN MATCHED AND (status.FirstSaleAt IS NULL OR status.FirstSaleAt > sales.FirstSale)
+                    THEN UPDATE SET FirstSaleAt = sales.FirstSale
+                WHEN NOT MATCHED
+                    THEN INSERT (BranchID, LastPushAt, FirstSaleAt) VALUES (sales.BranchID, SYSUTCDATETIME(), sales.FirstSale);
+
+                SELECT DISTINCT source.BranchID, source.ItemID
+                FROM #mov AS source
+                INNER JOIN #new AS added ON added.StockMovementID = source.StockMovementID
+                WHERE source.SourceType IN (N'Sale', N'SaleReturn');
 
                 DROP TABLE #latest;
                 DROP TABLE #new;
@@ -345,8 +407,30 @@ public static class StockCentralRelay
                 """,
                 central,
                 transaction)
-            { CommandTimeout = 120 };
-            await apply.ExecuteNonQueryAsync(cancellationToken);
+            { CommandTimeout = 120 })
+            {
+                await using var reader = await apply.ExecuteReaderAsync(cancellationToken);
+                do
+                {
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        if (reader.FieldCount == 2) rated.Add((reader.GetGuid(0), reader.GetGuid(1)));
+                    }
+                }
+                while (await reader.NextResultAsync(cancellationToken));
+            }
+
+            // قرار المالك: السرعة الجديدة تُحسب لحظياً مع كل بيع.
+            foreach (var branch in rated.GroupBy(pair => pair.Branch))
+            {
+                await Inventory.CentralStock.RecomputeRatesAsync(
+                    central,
+                    transaction,
+                    branch.Key,
+                    branch.Select(pair => pair.Item).Distinct().ToList(),
+                    cancellationToken);
+            }
+
             await transaction.CommitAsync(cancellationToken);
         }
         catch

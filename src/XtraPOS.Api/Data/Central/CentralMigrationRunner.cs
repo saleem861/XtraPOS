@@ -102,6 +102,9 @@ public sealed class CentralMigrationRunner
     // Deferred item executed on 24 November 2026 («ابحث عن كل ما أجلناه، نفذ»). Columns only.
     public const string ShortageSubstituteMigrationId = "043_CentralShortageSubstitute";
     public const string ShortageSubstituteMigrationName = "Substitute item on a shortage delete request";
+    // Owner decision, 25 November 2026 («نفذ بدقة»): central is the quantity authority. Columns and one index. Back up first.
+    public const string QuantityAuthorityMigrationId = "044_CentralQuantityAuthority";
+    public const string QuantityAuthorityMigrationName = "Central quantity authority, counts posted on central first";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -148,6 +151,7 @@ public sealed class CentralMigrationRunner
         (ShortagesMigrationId, ShortagesMigrationName, "XtraPOS.Api.Data.Central.Migrations.041_CentralShortages.sql"),
         (StockMovementsMigrationId, StockMovementsMigrationName, "XtraPOS.Api.Data.Central.Migrations.042_CentralStockMovements.sql"),
         (ShortageSubstituteMigrationId, ShortageSubstituteMigrationName, "XtraPOS.Api.Data.Central.Migrations.043_CentralShortageSubstitute.sql"),
+        (QuantityAuthorityMigrationId, QuantityAuthorityMigrationName, "XtraPOS.Api.Data.Central.Migrations.044_CentralQuantityAuthority.sql"),
     ];
 
     private static readonly string ApplicationVersion =

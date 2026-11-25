@@ -9,7 +9,9 @@ namespace XtraPOS.Api.Inventory;
 
 /// <summary>
 /// «الجرد» من شاشة البيع (المرحلة 1 من وحدة الجرد والنواقص).
-/// - كل شيء على قاعدة الفرع: يعمل دون المركز.
+/// - قرار المالك (25 نوفمبر 2026): في النظام المركزي يجري كل جرد (أي نوع، وأي فرع، حتى فرع الجهاز) على المركز،
+///   ويُثبَّت الفارق على المركز أولاً (CentralStock)، والفرع يأخذه في أول مزامنة. بلا اتصال بالمركز يتوقف الجرد.
+/// - جهاز البيع المنفرد (بلا مركز): كل شيء على قاعدة الفرع.
 /// - الجرد على صنف مالك المخزون فقط (ItemUnits). الأصناف الأم (ParentItemID) والعبوات لا تُعدّ مباشرة.
 /// - كمية النظام تُقرأ لحظة حفظ العد، والتثبيت يرحّل الفرق عبر StockPostingService (InventoryCount).
 /// - التصنيف (مهم / صفحة) والجدول الزمني يُسحبان من المركز كل دقيقة (PullSettingsAsync).
@@ -412,9 +414,14 @@ public sealed class InventoryCountService(
     /// </summary>
     public async Task<object> FinalizeAsync(PosDeviceContext device, Guid sessionId, CancellationToken cancellationToken, Guid? branchId = null)
     {
+        if (await CentralConfiguredAsync(cancellationToken))
+        {
+            return await FinalizeCentralAsync(device, branchId, sessionId, cancellationToken);
+        }
+
         if (branchId is Guid other && other != Guid.Empty && other != device.BranchId)
         {
-            return await FinalizeRemoteAsync(device, other, sessionId, cancellationToken);
+            throw new InventoryException(StandaloneOtherBranch, StatusCodes.Status409Conflict);
         }
 
         var actor = device;
@@ -1018,20 +1025,27 @@ public sealed class InventoryCountService(
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// القاعدة التي يجري عليها الجرد: فرع الجهاز على قاعدته المحلية، وأي فرع آخر على المركز
-    /// (نفس الجداول، والرصيد من BranchStockSnapshots). التثبيت على فرع آخر يرسل طلبات تصحيح بالفارق ينفّذها ذلك الفرع.
+    /// القاعدة التي يجري عليها الجرد. في النظام المركزي: المركز دائماً، لأي فرع (نفس الجداول، والرصيد من
+    /// BranchStockSnapshots، وهو رصيد المركز المرجعي). جهاز منفرد بلا مركز: قاعدة الفرع.
     /// </summary>
     private sealed record Target(SqlConnection Connection, PosDeviceContext? Actor, bool Remote) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => Connection.DisposeAsync();
     }
 
-    private const string CentralRequired = "جرد فرع آخر يحتاج الاتصال بالمركز، والمركز غير متاح الآن.";
+    private const string CentralRequired = "الجرد يجري على المركز أولاً، والمركز غير متاح الآن. يتوقف الجرد حتى يعود الاتصال.";
+    private const string StandaloneOtherBranch = "جرد فرع آخر يحتاج نظاماً مركزياً. هذا الجهاز يعمل منفرداً.";
+
+    /// <summary>نظام مركزي = هذا الجهاز مربوط بمركز (حتى لو كان المركز غير متاح الآن).</summary>
+    internal async Task<bool> CentralConfiguredAsync(CancellationToken cancellationToken) =>
+        await endpoints.ReadSettingsAsync(DatabaseRole.Central, cancellationToken) is not null;
 
     private async Task<Target> OpenTargetAsync(PosDeviceContext device, Guid? branchId, CancellationToken cancellationToken)
     {
-        if (branchId is not Guid wanted || wanted == Guid.Empty || wanted == device.BranchId)
+        var wanted = branchId is Guid id && id != Guid.Empty ? id : device.BranchId;
+        if (!await CentralConfiguredAsync(cancellationToken))
         {
+            if (wanted != device.BranchId) throw new InventoryException(StandaloneOtherBranch, StatusCodes.Status409Conflict);
             return new Target(await OpenLocalAsync(cancellationToken), device, false);
         }
 
@@ -1045,7 +1059,8 @@ public sealed class InventoryCountService(
                     WHEN OBJECT_ID(N'dbo.InventorySessionItems', N'U') IS NULL
                       OR OBJECT_ID(N'dbo.BranchStockSnapshots', N'U') IS NULL
                       OR COL_LENGTH(N'dbo.InventorySessions', N'CustomInventoryID') IS NULL
-                      OR COL_LENGTH(N'dbo.InventoryCorrectionRequests', N'DeltaQuantity') IS NULL THEN -1
+                      OR COL_LENGTH(N'dbo.InventoryCorrectionRequests', N'DeltaQuantity') IS NULL
+                      OR COL_LENGTH(N'dbo.InventoryCorrectionRequests', N'CentralAppliedAt') IS NULL THEN -1
                     WHEN EXISTS (SELECT 1 FROM dbo.Branches WHERE BranchID = @branch AND BusinessID = @business AND IsActive = 1) THEN 1
                     ELSE 0 END;
                 """,
@@ -1054,8 +1069,8 @@ public sealed class InventoryCountService(
                 check.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = wanted;
                 check.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = device.BusinessId;
                 var state = Convert.ToInt32(await check.ExecuteScalarAsync(cancellationToken));
-                if (state == -1) throw new InventoryException("المركز لم يُحدَّث بعد لجرد فرع آخر (الترحيلات 040–042).", StatusCodes.Status503ServiceUnavailable);
-                if (state == 0) throw new InventoryException("الفرع غير موجود أو غير نشط.", StatusCodes.Status404NotFound);
+                if (state == -1) throw new InventoryException(CentralStock.NotReady, StatusCodes.Status503ServiceUnavailable);
+                if (state == 0) throw new InventoryException("الفرع غير موجود أو غير نشط في المركز.", StatusCodes.Status404NotFound);
             }
 
             return new Target(central, device with { BranchId = wanted }, true);
@@ -1126,14 +1141,14 @@ public sealed class InventoryCountService(
                 command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = device.BusinessId;
                 command.Parameters.Add("@current", SqlDbType.UniqueIdentifier).Value = device.BranchId;
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                var now = DateTime.UtcNow;
                 while (await reader.ReadAsync(cancellationToken))
                 {
                     var id = reader.GetGuid(0);
                     if (!seen.Add(id)) continue;
                     var last = reader.IsDBNull(2) ? (DateTime?)null : Utc(reader.GetDateTime(2));
                     var current = id == device.BranchId;
-                    rows.Add(new { branchId = id, branchName = reader.GetString(1), current, lastPushAt = last, stale = !current && InventoryRelayRules.IsStale(last, now) });
+                    // المركز هو المرجع للكمية: لا تُنتظر نسخة الفرع، فلا تنبيه قِدم.
+                    rows.Add(new { branchId = id, branchName = reader.GetString(1), current, lastPushAt = last, stale = false });
                 }
             }
             catch (SqlException exception)
@@ -1142,9 +1157,9 @@ public sealed class InventoryCountService(
                 notice = "تعذر قراءة فروع المركز. يظهر فرع هذا الجهاز فقط.";
             }
         }
-        else
+        else if (await CentralConfiguredAsync(cancellationToken))
         {
-            notice = "المركز غير متاح الآن. يظهر فرع هذا الجهاز فقط.";
+            notice = CentralRequired;
         }
 
         if (seen.Add(device.BranchId))
@@ -1157,15 +1172,15 @@ public sealed class InventoryCountService(
             rows.Insert(0, new { branchId = device.BranchId, branchName = name, current = true, lastPushAt = (DateTime?)null, stale = false });
         }
 
-        return new { branches = rows, notice };
+        return new { branches = rows, notice, central = await CentralConfiguredAsync(cancellationToken) };
     }
 
     /// <summary>
-    /// تثبيت جرد فرع آخر (قرار المالك: التصحيح عن بُعد بالفارق): لكل صنف معدود طلب تصحيح يحمل المفترضة
-    /// (رصيد الفرع لحظة العد) والمعدودة والفارق، ينفّذه ذلك الفرع بإضافة الفارق إلى رصيده الحالي.
-    /// معرّف الطلب = سطر الجرد، فإعادة التثبيت لا تكرر الطلب.
+    /// تثبيت الجرد في النظام المركزي (قرار المالك 25 نوفمبر 2026): لكل صنف معدود يُثبَّت الفارق على المركز أولاً
+    /// (المعدودة − المفترضة لحظة العد، مضافاً إلى رصيد المركز الحالي)، ويُكتب طلب تصحيح يأخذه الفرع في أول مزامنة.
+    /// معرّف الطلب والحركة المركزية = سطر الجرد، فإعادة التثبيت لا تكرر شيئاً. كل ذلك في معاملة واحدة على المركز.
     /// </summary>
-    private async Task<object> FinalizeRemoteAsync(PosDeviceContext device, Guid branchId, Guid sessionId, CancellationToken cancellationToken)
+    private async Task<object> FinalizeCentralAsync(PosDeviceContext device, Guid? branchId, Guid sessionId, CancellationToken cancellationToken)
     {
         await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
         var connection = target.Connection;
@@ -1173,6 +1188,7 @@ public sealed class InventoryCountService(
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         try
         {
+            await CentralStock.RequireReadyAsync(connection, transaction, cancellationToken);
             await using (var lockSession = new SqlCommand(
                 "SELECT Status FROM dbo.InventorySessions WITH (UPDLOCK, HOLDLOCK) WHERE SessionID = @id;",
                 connection,
@@ -1184,65 +1200,90 @@ public sealed class InventoryCountService(
 
             var session = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
             await RequireAllCountedAsync(connection, transaction, sessionId, cancellationToken);
-            var from = "فرع آخر";
+            var from = "هذا الفرع";
             await using (var origin = new SqlCommand("SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", connection, transaction))
             {
                 origin.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = device.BranchId;
                 if (await origin.ExecuteScalarAsync(cancellationToken) is string name && name.Length > 0) from = name;
             }
 
-            await using (var send = new SqlCommand(
+            var lines = new List<(Guid LineId, Guid ItemId, decimal Counted, decimal? System)>();
+            await using (var read = new SqlCommand(
                 """
-                INSERT INTO dbo.InventoryCorrectionRequests
-                    (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, ExpectedQuantity, DeltaQuantity,
-                     Reason, RequestedByUserID, RequestedByName)
-                SELECT line.SessionItemID, @branch, line.ItemID, line.ItemNumber, line.ItemName, line.CountedQuantity,
-                       CASE WHEN line.SystemQuantityKnown = 1 THEN line.SystemQuantityAtCount END,
-                       CASE WHEN line.SystemQuantityKnown = 1 THEN line.CountedQuantity - line.SystemQuantityAtCount END,
-                       @reason, @user, @userName
-                FROM dbo.InventorySessionItems AS line
-                WHERE line.SessionID = @id AND line.IsCounted = 1 AND line.CountedQuantity IS NOT NULL AND line.PostedAt IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests AS existing WHERE existing.RequestID = line.SessionItemID);
-
-                UPDATE dbo.InventorySessionItems
-                SET PostedAt = SYSUTCDATETIME(),
-                    QuantityBeforePosting = CASE WHEN SystemQuantityKnown = 1 THEN SystemQuantityAtCount END
-                WHERE SessionID = @id AND IsCounted = 1 AND CountedQuantity IS NOT NULL AND PostedAt IS NULL;
-                SELECT @@ROWCOUNT;
+                SELECT SessionItemID, ItemID, CountedQuantity,
+                       CASE WHEN SystemQuantityKnown = 1 THEN SystemQuantityAtCount END
+                FROM dbo.InventorySessionItems
+                WHERE SessionID = @id AND IsCounted = 1 AND CountedQuantity IS NOT NULL AND PostedAt IS NULL
+                ORDER BY ItemID;
                 """,
                 connection,
                 transaction))
             {
-                send.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                send.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
-                send.Parameters.Add("@reason", SqlDbType.NVarChar, 500).Value = Limit($"{InventoryTypes.Label(session.Type)} من جهاز في {from}", 500)!;
-                send.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
-                send.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
-                var posted = Convert.ToInt32(await send.ExecuteScalarAsync(cancellationToken));
+                read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    lines.Add((reader.GetGuid(0), reader.GetGuid(1), reader.GetDecimal(2), reader.IsDBNull(3) ? null : reader.GetDecimal(3)));
+                }
+            }
 
-                await using (var complete = new SqlCommand(
+            var reason = Limit($"{InventoryTypes.Label(session.Type)} من جهاز في {from}", 500)!;
+            foreach (var line in lines)
+            {
+                var result = await CentralStock.PostCorrectionAsync(
+                    connection,
+                    transaction,
+                    new CentralStock.CorrectionInput(
+                        actor.BranchId,
+                        line.ItemId,
+                        line.LineId,
+                        StockSourceTypes.InventoryCount,
+                        sessionId,
+                        line.Counted,
+                        line.System,
+                        reason,
+                        actor.UserId,
+                        actor.DisplayName),
+                    cancellationToken);
+
+                await using var mark = new SqlCommand(
                     """
-                    UPDATE dbo.InventorySessions
-                    SET Status = N'Completed', CompletedAt = SYSUTCDATETIME(), LastSavedAt = SYSUTCDATETIME(),
-                        PostedItems = (SELECT COUNT(*) FROM dbo.InventorySessionItems WHERE SessionID = @id AND PostedAt IS NOT NULL)
-                    WHERE SessionID = @id;
+                    UPDATE dbo.InventorySessionItems
+                    SET StockMovementID = @movement, PostedAt = SYSUTCDATETIME(),
+                        QuantityBeforePosting = @before, QuantityAfterPosting = @after
+                    WHERE SessionItemID = @line;
                     """,
                     connection,
-                    transaction))
-                {
-                    complete.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                    await complete.ExecuteNonQueryAsync(cancellationToken);
-                }
-
-                await UpdateCountersAsync(connection, transaction, sessionId, cancellationToken);
-                var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-                return new { session = summary, posted, remote = true };
+                    transaction);
+                mark.Parameters.Add("@movement", SqlDbType.UniqueIdentifier).Value = result.MovementId;
+                AddNullableDecimal(mark, "@before", result.Previous);
+                AddNullableDecimal(mark, "@after", result.Resulting);
+                mark.Parameters.Add("@line", SqlDbType.UniqueIdentifier).Value = line.LineId;
+                await mark.ExecuteNonQueryAsync(cancellationToken);
             }
+
+            await using (var complete = new SqlCommand(
+                """
+                UPDATE dbo.InventorySessions
+                SET Status = N'Completed', CompletedAt = SYSUTCDATETIME(), LastSavedAt = SYSUTCDATETIME(),
+                    PostedItems = (SELECT COUNT(*) FROM dbo.InventorySessionItems WHERE SessionID = @id AND PostedAt IS NOT NULL)
+                WHERE SessionID = @id;
+                """,
+                connection,
+                transaction))
+            {
+                complete.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                await complete.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await UpdateCountersAsync(connection, transaction, sessionId, cancellationToken);
+            var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new { session = summary, posted = lines.Count, remote = true, central = true };
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None);
+            if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
             throw;
         }
     }

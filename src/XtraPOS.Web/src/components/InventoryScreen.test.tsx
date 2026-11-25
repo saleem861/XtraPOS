@@ -190,9 +190,10 @@ describe("counting another branch", () => {
       if (url === "/api/inventory/branches") {
         return reply({
           notice: null,
+          central: true,
           branches: [
             { branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: null, stale: false },
-            { branchId: "b2", branchName: "فرع رام الله", current: false, lastPushAt: "2026-11-24T05:00:00Z", stale: true },
+            { branchId: "b2", branchName: "فرع رام الله", current: false, lastPushAt: "2026-11-24T05:00:00Z", stale: false },
           ],
         });
       }
@@ -207,7 +208,8 @@ describe("counting another branch", () => {
     render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^الجرد/ }));
     const other = await screen.findByRole("button", { name: /فرع رام الله/ });
-    expect(other.textContent).toContain("أقدم من 30 دقيقة");
+    expect(other.textContent).toContain("على المركز");
+    expect(other.textContent).not.toContain("أقدم من 30 دقيقة");
     await userEvent.click(other);
     const dialog = await screen.findByRole("dialog", { name: "تأكيد الفرع" });
     expect(within(dialog).getByText(/فرع رام الله.*المركز/)).toBeTruthy();

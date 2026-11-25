@@ -199,7 +199,7 @@ describe("inventory report across branches", () => {
     expect(within(branch).getAllByRole("option").map((option) => option.textContent)).toEqual(["فرع نابلس (هذا الفرع)", "فرع رام الله"]);
     await userEvent.selectOptions(branch, "br2");
     await userEvent.click(screen.getByRole("button", { name: "عرض" }));
-    expect(await screen.findByText(/النسخة أقدم من 30 دقيقة/)).toBeTruthy();
+    expect(await screen.findByText(/من المركز، وهو مرجع الكميات/)).toBeTruthy();
     expect(calls.some((url) => url.includes("branchId=br2"))).toBe(true);
 
     await userEvent.click(await screen.findByRole("button", { name: /جرد الأصناف المهمة/ }));

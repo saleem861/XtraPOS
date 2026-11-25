@@ -72,6 +72,29 @@ public sealed class InventoryRelayRulesTests
     }
 
     [Fact]
+    public void Central_posts_a_count_first_by_adding_the_difference_to_its_current_balance()
+    {
+        // قرار المالك: مفترض 7 لحظة العد، معدود 5، بيع 1 وصل المركز قبل التثبيت (المركز 6) → 6 + (−2) = 4.
+        var afterSale = InventoryRelayRules.PlanCentral(5m, 7m, 6m);
+        Assert.Equal(-2m, afterSale.Delta);
+        Assert.Equal(4m, afterSale.Resulting);
+
+        // بلا مفترضة معروفة (تصحيح «كمية صنف»): الفارق من رصيد المركز الآن.
+        var correction = InventoryRelayRules.PlanCentral(10m, null, 12m);
+        Assert.Equal(-2m, correction.Delta);
+        Assert.Equal(10m, correction.Resulting);
+
+        // رصيد المركز غير معروف: تُكتب المعدودة كما هي، بلا فارق، والفرع يكتبها كما هي أيضاً.
+        var unknown = InventoryRelayRules.PlanCentral(3m, 7m, null);
+        Assert.Null(unknown.Delta);
+        Assert.Equal(3m, unknown.Resulting);
+
+        // والفرع ينفّذ الطلب بالفارق نفسه على رصيده الحالي.
+        Assert.Equal(new InventoryRelayRules.CorrectionPlan(true, -2m), InventoryRelayRules.PlanCorrection(5m, afterSale.Delta, true));
+        Assert.Equal(new InventoryRelayRules.CorrectionPlan(false, 3m), InventoryRelayRules.PlanCorrection(3m, unknown.Delta, true));
+    }
+
+    [Fact]
     public void Movements_of_one_document_share_one_relay_log_row()
     {
         var branch = Guid.NewGuid();

@@ -199,18 +199,8 @@ function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStar
       userIds: type === "Manual" ? userIds : [],
       replaceDraft,
     };
-    const stale = options.branches.filter((branch) => branchIds.includes(branch.branchId) && branch.stale && !branch.current);
-    const go = () => { void onStart(request); };
-    if (stale.length > 0) {
-      onConfirm({
-        title: "نسخة فرع قديمة",
-        message: `نسخة ${stale.map((branch) => branch.branchName).join("، ")} على المركز أقدم من 30 دقيقة. قد لا تكون الأرصدة الحالية. هل تتابع؟`,
-        accept: "متابعة",
-        onAccept: go,
-      });
-      return;
-    }
-    go();
+    // قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية، فلا تُنتظر نسخة الفرع ولا تنبيه قِدم.
+    void onStart(request);
   }
 
   return (
@@ -251,9 +241,6 @@ function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStar
               onChange={() => setBranchIds((current) => current.includes(branch.branchId) ? current.filter((id) => id !== branch.branchId) : [...current, branch.branchId])}
             />
             {branch.branchName}
-            <small className={branch.stale && !branch.current ? "inventory-hint is-warning" : "inventory-hint"}>
-              {branch.lastPushAt ? `آخر نسخة ${formatDateTime(branch.lastPushAt)}` : "لم تصل نسخة بعد"}
-            </small>
           </label>
         ))}
       </section>
@@ -367,7 +354,6 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
         </div>
         <span className="inventory-progress">عولج {processed} من {data.items.length}</span>
       </header>
-      {header.branches.some((branch) => branch.stale) ? <p className="inventory-hint is-warning">بعض نسخ الفروع كانت أقدم من 30 دقيقة لحظة الحساب.</p> : null}
 
       <div className="inventory-tabs" role="tablist">
         {([["open", "النواقص الحالية"], ["processed", "المعالج"], ["all", "عرض الكل"]] as [RunFilter, string][]).map(([value, label]) => (
@@ -566,19 +552,21 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
     const difference = correctionDifference(branch.quantity, value);
     onConfirm({
       title: "تصحيح الكمية",
-      message: branch.current
-        ? `سيتغير رصيد هذا الفرع إلى ${formatQuantity(value)} فوراً. هل تريد المتابعة؟`
-        : difference === null
-          ? `رصيد ${branch.branchName} غير معروف على المركز، فسيُكتب الرصيد ${formatQuantity(value)} كما هو عند التنفيذ. هل تريد المتابعة؟`
-          : `المفترضة ${formatQuantity(branch.quantity)}، المعدودة ${formatQuantity(value)}، الفارق ${formatDifference(difference)}. سيُرسل الطلب إلى ${branch.branchName}، ويضيف الفرع الفارق إلى رصيده الحالي عند التنفيذ (خلال دقيقة إذا كان متصلاً)، فلا يضيع بيع حدث قبل المزامنة. هل تريد المتابعة؟`,
+      // قرار المالك (25 نوفمبر 2026): التصحيح لأي فرع، حتى فرع الجهاز، يُثبَّت على المركز أولاً بالفارق،
+      // ويأخذه الفرع في أول مزامنة بإضافته إلى رصيده الحالي.
+      message: difference === null
+        ? `رصيد ${branch.branchName} غير معروف على المركز، فسيُكتب ${formatQuantity(value)} على المركز كما هو، ويأخذه الفرع في أول مزامنة. هل تريد المتابعة؟`
+        : `المفترضة ${formatQuantity(branch.quantity)}، المعدودة ${formatQuantity(value)}، الفارق ${formatDifference(difference)}. يُثبَّت الفارق على المركز فوراً، ويأخذه ${branch.branchName} في أول مزامنة بإضافته إلى رصيده الحالي، فلا يضيع بيع حدث قبل المزامنة. هل تريد المتابعة؟`,
       accept: "تصحيح",
       onAccept: () => {
-        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim(), branch.current ? null : branch.quantity)).then((result) => {
+        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim(), branch.quantity)).then((result) => {
           if (!result) return;
           setQuantity("");
           setReason("");
           setRequestId(newRequestId());
-          onMessage(result.pending ? "أُرسل طلب التصحيح. يظهر «قيد التنفيذ في الفرع» حتى ينفّذه." : "تم تصحيح الكمية.");
+          onMessage(result.pending
+            ? "ثُبّت التصحيح على المركز. يظهر «قيد التنفيذ في الفرع» حتى يأخذه الفرع في أول مزامنة."
+            : "تم تصحيح الكمية.");
           void load();
         });
       },
