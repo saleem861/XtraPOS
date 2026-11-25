@@ -462,7 +462,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
         ) : null}
 
         {step === "audit" ? (
-          <AuditRequestsPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
+          <AuditRequestsPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} onRegisterBack={registerBack} />
         ) : null}
 
         {step === "efficiency" ? (

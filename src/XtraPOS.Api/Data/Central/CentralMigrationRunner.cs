@@ -105,6 +105,9 @@ public sealed class CentralMigrationRunner
     // Owner decision, 25 November 2026 («نفذ بدقة»): central is the quantity authority. Columns and one index. Back up first.
     public const string QuantityAuthorityMigrationId = "044_CentralQuantityAuthority";
     public const string QuantityAuthorityMigrationName = "Central quantity authority, counts posted on central first";
+    // Owner decision, 25 November 2026: the audit is on shortage processing, answered yes/no. Columns only. Back up first.
+    public const string AuditByTasksMigrationId = "045_CentralAuditByTasks";
+    public const string AuditByTasksMigrationName = "Receipt audit on processed shortage tasks, answered yes or no";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -152,6 +155,7 @@ public sealed class CentralMigrationRunner
         (StockMovementsMigrationId, StockMovementsMigrationName, "XtraPOS.Api.Data.Central.Migrations.042_CentralStockMovements.sql"),
         (ShortageSubstituteMigrationId, ShortageSubstituteMigrationName, "XtraPOS.Api.Data.Central.Migrations.043_CentralShortageSubstitute.sql"),
         (QuantityAuthorityMigrationId, QuantityAuthorityMigrationName, "XtraPOS.Api.Data.Central.Migrations.044_CentralQuantityAuthority.sql"),
+        (AuditByTasksMigrationId, AuditByTasksMigrationName, "XtraPOS.Api.Data.Central.Migrations.045_CentralAuditByTasks.sql"),
     ];
 
     private static readonly string ApplicationVersion =

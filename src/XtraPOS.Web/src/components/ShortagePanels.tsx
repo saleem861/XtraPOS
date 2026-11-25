@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MutableRefObject } from "react";
 import type { InventoryType } from "../api/inventory";
 import { newRequestId } from "../api/inventoryReview";
 import {
@@ -9,6 +9,7 @@ import {
   type FollowUpTab,
   type FollowUpView,
   type ItemBranchState,
+  type AuditCandidate,
   type ProcessingReport,
   type RunHeader,
   type PurchaseRow,
@@ -27,7 +28,6 @@ import {
   formatQuantity,
   normalizeDigits,
   parseCountInput,
-  parseOptionalInteger,
   parseOptionalQuantity,
   SHORTAGE_TYPES,
   togglePage,
@@ -84,6 +84,7 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
   const [options, setOptions] = useState<ShortageOptions | null>(null);
   const [runId, setRunId] = useState("");
   const [finished, setFinished] = useState<{ tasks: number; items: number } | null>(null);
+  const setupBack = useRef<(() => boolean) | null>(null);
 
   const loadOptions = useCallback(async () => {
     const value = await run("جاري تحميل الفروع...", () => client.options());
@@ -103,7 +104,7 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
     onRegisterBack(() => {
       if (runId) { setRunId(""); void loadOptions(); return true; }
       if (finished) { setFinished(null); return true; }
-      return false;
+      return setupBack.current?.() ?? false;
     });
     return () => onRegisterBack(null);
   }, [runId, finished, loadOptions, onRegisterBack]);
@@ -137,38 +138,66 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
     <ShortageSetup
       client={client}
       options={options}
+      backRef={setupBack}
       onConfirm={onConfirm}
       onMessage={onMessage}
       onResume={(id) => setRunId(id)}
       onStart={async (request) => {
-        const result = await run("جاري حساب النواقص من نسخ الفروع...", () => client.start(request));
+        const result = await run("جاري حساب الكميات المطلوبة...", () => client.start(request));
         if (result?.draft) setRunId(result.draft.runId);
       }}
     />
   );
 }
 
-function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStart }: {
+type SetupStep = "branches" | "type" | "pages" | "manual" | "custom" | "employees" | "days" | "resume";
+
+/**
+ * «معالجة النواقص» بتسلسل النظام القديم:
+ * اختيار الفروع ← نوع معالجة النواقص ← (الدوري: اختيار الصفحات / اليدوي: جرد يدوي أو الجرد المخصص)
+ * ← عدد أيام التوفير (− N +) ← «تثبيت ومتابعة» ← (معالجة مفتوحة: متابعة أو جديد).
+ */
+function ShortageSetup({ client, options, backRef, onConfirm, onMessage, onResume, onStart }: {
   client: ShortageClient;
   options: ShortageOptions;
+  backRef: MutableRefObject<(() => boolean) | null>;
   onConfirm: (confirmation: PanelConfirmation) => void;
   onMessage: (message: string) => void;
   onResume: (runId: string) => void;
   onStart: (request: Parameters<ShortageClient["start"]>[0]) => Promise<void>;
 }) {
+  const [step, setStep] = useState<SetupStep>("branches");
+  const [trail, setTrail] = useState<SetupStep[]>([]);
   const [type, setType] = useState<InventoryType>("Important");
-  const [branchIds, setBranchIds] = useState<string[]>(() => options.branches.map((branch) => branch.branchId));
-  const [pages, setPages] = useState<number[]>([1]);
-  const [days, setDays] = useState("7");
-  const [customId, setCustomId] = useState(options.customInventories[0]?.customInventoryId ?? "");
+  const [branchIds, setBranchIds] = useState<string[]>([]);
+  // كما في النظام القديم: صفحات اليوم محددة مسبقاً ويمكن تغييرها.
+  const [pages, setPages] = useState<number[]>(() => options.todayPages ?? []);
+  const [days, setDays] = useState(7);
+  const [customId, setCustomId] = useState("");
   // ملاحظة المالك: الافتراضي البارحة إلى اليوم، والموظفون فقط من نفّذ جرداً يدوياً في الفترة.
   const [manualFrom, setManualFrom] = useState(() => shiftDate(hebronToday(), -1));
   const [manualTo, setManualTo] = useState(() => hebronToday());
   const [userIds, setUserIds] = useState<string[]>([]);
   const [counters, setCounters] = useState<UserOption[] | null>(null);
 
+  function go(next: SetupStep) {
+    onMessage("");
+    setTrail((current) => [...current, step]);
+    setStep(next);
+  }
+
   useEffect(() => {
-    if (type !== "Manual") return undefined;
+    backRef.current = () => {
+      if (trail.length === 0) return false;
+      setStep(trail[trail.length - 1]);
+      setTrail((current) => current.slice(0, -1));
+      return true;
+    };
+    return () => { backRef.current = null; };
+  }, [backRef, trail]);
+
+  useEffect(() => {
+    if (step !== "employees") return undefined;
     if (!manualFrom || !manualTo) { setCounters([]); return undefined; }
     let stop = false;
     setCounters(null);
@@ -182,92 +211,128 @@ function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStar
       .catch((error: Error) => { if (!stop) { setCounters([]); onMessage(error.message); } });
     return () => { stop = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [type, manualFrom, manualTo, branchIds.join(","), client]);
+  }, [step, manualFrom, manualTo, branchIds.join(","), client]);
 
   function submit(replaceDraft: boolean) {
-    const supplyDays = parseOptionalInteger(days, 1, 365);
-    if (!supplyDays) { onMessage("أيام التوفير يجب أن تكون من 1 إلى 365."); return; }
-    if (branchIds.length === 0) { onMessage("يرجى اختيار فرع واحد على الأقل."); return; }
-    const request = {
+    if (days < 1 || days > 365) { onMessage("أيام التوفير يجب أن تكون من 1 إلى 365."); return; }
+    void onStart({
       shortageType: type,
       branchIds,
       pages: type === "Periodic" ? pages : [],
-      supplyDays,
+      supplyDays: days,
       customInventoryId: type === "Custom" ? customId || null : null,
       manualFrom: type === "Manual" ? manualFrom || null : null,
       manualTo: type === "Manual" ? manualTo || null : null,
       userIds: type === "Manual" ? userIds : [],
       replaceDraft,
-    };
-    // قرار المالك (25 نوفمبر 2026): المركز هو المرجع للكمية، فلا تُنتظر نسخة الفرع ولا تنبيه قِدم.
-    void onStart(request);
+    });
+  }
+
+  function chooseType(next: InventoryType) {
+    setType(next);
+    if (next === "Periodic") go("pages");
+    else if (next === "Manual") go("manual");
+    else go("days");
   }
 
   return (
     <div className="inventory-report">
-      {options.draft ? (
-        <section className="inventory-section" aria-label="معالجة غير مثبتة">
-          <strong>لديك معالجة غير مثبتة</strong>
-          <span>{options.draft.shortageTypeLabel} · {options.draft.supplyDays} يوم · عولج {options.draft.processedCount} من {options.draft.itemCount}</span>
-          <span className="inventory-hint">آخر حفظ: {formatDateTime(options.draft.lastSavedAt)}</span>
-          <button type="button" className="primary-button" onClick={() => onResume(options.draft!.runId)}>متابعة</button>
+      {step === "branches" ? (
+        <section className="inventory-section" aria-label="اختيار الفروع">
+          <strong>اختيار الفروع</strong>
+          <small className="inventory-hint">يمكن اختيار أكثر من فرع لمعالجة النواقص.</small>
+          <div className="inventory-checklist">
+            {options.branches.map((branch) => {
+              const picked = branchIds.includes(branch.branchId);
+              return (
+                <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
+                  <input
+                    type="checkbox"
+                    checked={picked}
+                    onChange={() => setBranchIds((current) => current.includes(branch.branchId) ? current.filter((id) => id !== branch.branchId) : [...current, branch.branchId])}
+                  />
+                  {branch.branchName}
+                </label>
+              );
+            })}
+          </div>
           <button
             type="button"
-            className="ghost-button"
-            onClick={() => onConfirm({ title: "معالجة جديدة", message: "ستُلغى المعالجة غير المثبتة ويُحسب من جديد. هل تريد المتابعة؟", accept: "جديد", onAccept: () => submit(true) })}
-          >
-            جديد
-          </button>
+            className="primary-button"
+            onClick={() => { if (branchIds.length === 0) { onMessage("يرجى اختيار فرع واحد على الأقل"); return; } go("type"); }}
+          >متابعة</button>
         </section>
       ) : null}
 
-      <section className="inventory-section" aria-label="نوع النواقص">
-        <strong>النوع</strong>
-        {SHORTAGE_TYPES.map((option) => (
-          <label key={option.value} className={type === option.value ? "inventory-pick is-selected" : "inventory-pick"}>
-            <input type="radio" name="shortage-type" checked={type === option.value} onChange={() => setType(option.value)} />
-            {option.label}
-          </label>
-        ))}
-      </section>
-
-      <section className="inventory-section" aria-label="الفروع">
-        <strong>الفروع</strong>
-        {options.branches.map((branch) => (
-          <label key={branch.branchId} className={branchIds.includes(branch.branchId) ? "inventory-pick is-selected" : "inventory-pick"}>
-            <input
-              type="checkbox"
-              checked={branchIds.includes(branch.branchId)}
-              onChange={() => setBranchIds((current) => current.includes(branch.branchId) ? current.filter((id) => id !== branch.branchId) : [...current, branch.branchId])}
-            />
-            {branch.branchName}
-          </label>
-        ))}
-      </section>
-
-      {type === "Periodic" ? (
-        <section className="inventory-section" aria-label="الصفحات">
-          <strong>الصفحات</strong>
-          {Array.from({ length: options.pageCount }, (_, index) => index + 1).map((page) => (
-            <button key={page} type="button" className={pages.includes(page) ? "inventory-page is-selected" : "inventory-page"} onClick={() => setPages((current) => togglePage(current, page))}>
-              {page}
+      {step === "type" ? (
+        <div className="inventory-menu" aria-label="نوع معالجة النواقص">
+          <strong>نوع معالجة النواقص</strong>
+          <p className="inventory-hint">اختر نوع الأصناف التي تريد حساب نواقصها.</p>
+          {SHORTAGE_TYPES.filter((option) => option.value !== "Custom").map((option) => (
+            <button key={option.value} type="button" className="inventory-card" onClick={() => chooseType(option.value)}>
+              <strong>{option.label}</strong>
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {step === "pages" ? (
+        <section className="inventory-section" aria-label="اختيار الصفحات">
+          <strong>اختيار الصفحات</strong>
+          <small className="inventory-hint">صفحات اليوم محددة مسبقاً ويمكن تغييرها يدوياً. يمكن اختيار أكثر من صفحة.</small>
+          <div className="inventory-page-grid">
+            {Array.from({ length: options.pageCount }, (_, index) => index + 1).map((page) => (
+              <button
+                key={page}
+                type="button"
+                className={pages.includes(page) ? "inventory-page is-selected" : "inventory-page"}
+                aria-pressed={pages.includes(page)}
+                onClick={() => setPages((current) => togglePage(current, page))}
+              >
+                {pages.includes(page) ? "✓ " : ""}الصفحة {page}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => { if (pages.length === 0) { onMessage("يرجى اختيار صفحة واحدة على الأقل"); return; } go("days"); }}
+          >متابعة</button>
         </section>
       ) : null}
 
-      {type === "Custom" ? (
-        <section className="inventory-section" aria-label="الجرد المخصص">
-          <label>الجرد المخصص
-            <select value={customId} onChange={(event) => setCustomId(event.target.value)}>
-              {options.customInventories.length === 0 ? <option value="">لا يوجد جرد مخصص</option> : null}
-              {options.customInventories.map((custom) => <option key={custom.customInventoryId} value={custom.customInventoryId}>{custom.name} ({custom.items})</option>)}
-            </select>
-          </label>
-        </section>
+      {step === "manual" ? (
+        <div className="inventory-menu" aria-label="الجرد اليدوي">
+          <strong>الجرد اليدوي</strong>
+          <button type="button" className="inventory-card" onClick={() => { setType("Manual"); go("employees"); }}>
+            <strong>جرد يدوي</strong>
+            <small>آخر عدّ مكتمل في الفترة للموظفين المختارين</small>
+          </button>
+          <button type="button" className="inventory-card" onClick={() => { setType("Custom"); go("custom"); }}>
+            <strong>الجرد المخصص</strong>
+            <small>{options.customInventories.length} جرد</small>
+          </button>
+        </div>
       ) : null}
 
-      {type === "Manual" ? (
+      {step === "custom" ? (
+        <div className="inventory-menu" aria-label="الجرد المخصص">
+          <p className="inventory-hint">{options.customInventories.length > 0 ? "اختيار اسم الجرد" : "لا يوجد جرد مخصص."}</p>
+          {options.customInventories.map((custom) => (
+            <button
+              key={custom.customInventoryId}
+              type="button"
+              className={customId === custom.customInventoryId ? "inventory-card is-selected" : "inventory-card"}
+              onClick={() => { setCustomId(custom.customInventoryId); go("days"); }}
+            >
+              <strong>{custom.name}</strong>
+              <small>{custom.items} صنف</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {step === "employees" ? (
         <section className="inventory-section" aria-label="الفترة والموظفون">
           <strong>الفترة والموظفون</strong>
           <label>من تاريخ<input type="date" value={manualFrom} onChange={(event) => setManualFrom(event.target.value)} /></label>
@@ -287,28 +352,73 @@ function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStar
             ))}
           </div>
           <small className="inventory-hint">تظهر فقط أسماء من نفّذ جرداً يدوياً في الفترة. بدون اختيار موظف = كلهم. الكمية = آخر عدّ مكتمل في الفترة.</small>
+          <button type="button" className="primary-button" onClick={() => go("days")}>متابعة</button>
         </section>
       ) : null}
 
-      <section className="inventory-section" aria-label="أيام التوفير">
-        <label>عدد أيام التوفير
-          <input inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value)} aria-label="عدد أيام التوفير" />
-        </label>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={() => options.draft
-            ? onConfirm({ title: "معالجة جديدة", message: "لديك معالجة غير مثبتة وستُلغى ويُحسب من جديد. هل تريد المتابعة؟", accept: "جديد", onAccept: () => submit(true) })
-            : submit(false)}
-        >
-          تثبيت ومتابعة
-        </button>
-      </section>
+      {step === "days" ? (
+        <section className="inventory-section inventory-days" aria-label="عدد أيام التوفير">
+          <strong>عدد أيام التوفير</strong>
+          <small className="inventory-hint">هذه القيمة تُستخدم فقط لهذا الحساب ولا تُحفظ في الإعدادات.</small>
+          <div className="inventory-stepper">
+            <button type="button" aria-label="إنقاص عدد الأيام" onClick={() => setDays((current) => Math.max(1, current - 1))}>−</button>
+            <output aria-label="عدد أيام التوفير">{days}</output>
+            <button type="button" aria-label="زيادة عدد الأيام" onClick={() => setDays((current) => Math.min(365, current + 1))}>+</button>
+          </div>
+          <button type="button" className="primary-button" onClick={() => (options.draft ? go("resume") : submit(false))}>تثبيت ومتابعة</button>
+        </section>
+      ) : null}
+
+      {step === "resume" && options.draft ? (
+        <div className="inventory-confirm-card" role="group" aria-label="معالجة النواقص">
+          <strong>معالجة النواقص</strong>
+          <small>اختر متابعة الحالة الحالية لهذا المسار، أو بدء معالجة جديدة.</small>
+          <small className="inventory-hint">
+            {options.draft.shortageTypeLabel} · {options.draft.supplyDays} يوم · عولج {options.draft.processedCount} من {options.draft.itemCount} · آخر حفظ {formatDateTime(options.draft.lastSavedAt)}
+          </small>
+          <div className="inventory-resume">
+            <button type="button" className="primary-button" onClick={() => onResume(options.draft!.runId)}>متابعة</button>
+            <button
+              type="button"
+              className="primary-button inventory-new"
+              onClick={() => onConfirm({
+                title: "بدء معالجة جديدة",
+                message: "سيتم إلغاء الإجراءات السابقة الخاصة بهذا المسار وإعادة عرض جميع الأصناف من جديد. هل تريد المتابعة؟",
+                accept: "تأكيد",
+                onAccept: () => submit(true),
+              })}
+            >جديد</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-type RunFilter = "open" | "processed" | "all";
+/** تبويبات شاشة المعالجة كما في النظام القديم. */
+type RunFilter = "open" | "purchase" | "warehouse" | "supplied" | "balance" | "delete" | "all";
+
+const RUN_TABS: [RunFilter, string][] = [
+  ["open", "النواقص الحالية"],
+  ["purchase", "مسؤول الشراء"],
+  ["warehouse", "المخزن"],
+  ["supplied", "تم التزويد"],
+  ["balance", "موازنة"],
+  ["delete", "حذف"],
+  ["all", "عرض الكل"],
+];
+
+function inRunTab(item: RunItem, filter: RunFilter): boolean {
+  switch (filter) {
+    case "open": return !item.isProcessed;
+    case "purchase": return (item.purchaseQuantity ?? 0) > 0;
+    case "warehouse": return (item.warehouseQuantity ?? 0) > 0;
+    case "supplied": return item.alreadySupplied;
+    case "balance": return (item.balanceDecision ?? 0) > 0;
+    case "delete": return item.deleteRequested;
+    default: return true;
+  }
+}
 
 function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDiscarded }: PanelProps & {
   runId: string;
@@ -331,7 +441,7 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
   const visible = useMemo(() => {
     const text = normalizeDigits(query.trim()).toLowerCase();
     return (data?.items ?? []).filter((item) =>
-      (filter === "all" || (filter === "open" ? !item.isProcessed : item.isProcessed))
+      inRunTab(item, filter)
       && (!text || item.itemNumber.toLowerCase().includes(text) || (item.itemName ?? "").toLowerCase().includes(text)));
   }, [data, filter, query]);
   const runPaging = usePaging(visible, `${filter}|${query}`);
@@ -356,8 +466,10 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
       </header>
 
       <div className="inventory-tabs" role="tablist">
-        {([["open", "النواقص الحالية"], ["processed", "المعالج"], ["all", "عرض الكل"]] as [RunFilter, string][]).map(([value, label]) => (
-          <button key={value} type="button" role="tab" aria-selected={filter === value} className={filter === value ? "is-active" : undefined} onClick={() => setFilter(value)}>{label}</button>
+        {RUN_TABS.map(([value, label]) => (
+          <button key={value} type="button" role="tab" aria-selected={filter === value} className={filter === value ? "is-active" : undefined} onClick={() => setFilter(value)}>
+            {label} ({data.items.filter((item) => inRunTab(item, value)).length})
+          </button>
         ))}
       </div>
       <form className="inventory-search" onSubmit={(event) => event.preventDefault()}>
@@ -515,7 +627,7 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
               <button type="button" className="primary-button" onClick={() => void save("quantities")}>حفظ</button>
               <button type="button" className="ghost-button" onClick={() => void save("supplied")}>تم التزويد</button>
               <button type="button" className="ghost-button" onClick={() => void save("delete")}>حذف</button>
-              {item.isProcessed ? <button type="button" className="ghost-button" onClick={() => void save("clear")}>مسح القرار</button> : null}
+              {item.isProcessed ? <button type="button" className="ghost-button" onClick={() => void save("clear")}>إعادة إلى النواقص</button> : null}
             </div>
           ) : null}
         </div>
@@ -1327,18 +1439,45 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
 // التدقيق (طلبات تأكيد الاستلام)
 // ======================================================================
 
-export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: PanelProps) {
+const AUDIT_TYPE_LABELS: Record<string, string> = { Purchase: "مسؤول الشراء", Warehouse: "المخزن", Balance: "موازنة" };
+
+type AuditStep = "date" | "employee" | "branch" | "recipient" | "items" | "requests";
+
+/**
+ * «التدقيق» كما في النظام القديم (قرار المالك): تدقيق على معالجة النواقص.
+ * التاريخ ← الموظف الذي تتم مراجعة معالجته ← الفرع ← المستلم ← الأصناف المنجزة (من 1 إلى 10، وصنف على الأقل من كل نوع متاح)
+ * ← «إنشاء طلب التدقيق والمتابعة». المستلم يجيب «هل استلمت هذا الصنف؟» بنعم أو لا من «تقرير الكفاءة».
+ */
+export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm, onRegisterBack }: PanelProps & { onRegisterBack?: (handler: BackHandler | null) => void }) {
   const run = useAction(onMessage, onBusy);
+  const [step, setStep] = useState<AuditStep>("date");
+  const [date, setDate] = useState(() => hebronToday());
+  const [employees, setEmployees] = useState<{ name: string; items: AuditCandidate[] }[] | null>(null);
+  const [employee, setEmployee] = useState("");
   const [branches, setBranches] = useState<{ branchId: string; branchName: string }[]>([]);
-  const [users, setUsers] = useState<UserOption[]>([]);
   const [branchId, setBranchId] = useState("");
+  const [users, setUsers] = useState<UserOption[]>([]);
   const [recipient, setRecipient] = useState("");
-  const [note, setNote] = useState("");
-  const [lines, setLines] = useState<{ code: string; expected: string }[]>([{ code: "", expected: "" }]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [created, setCreated] = useState<{ employee: string; branch: string; recipient: string; items: AuditCandidate[] } | null>(null);
   const [requests, setRequests] = useState<AuditRequest[]>([]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const requestsPaging = usePaging(requests, `${from}|${to}`);
+  const candidates = useMemo(() => employees?.find((entry) => entry.name === employee)?.items ?? [], [employees, employee]);
+  const types = useMemo(() => [...new Set(candidates.map((item) => item.taskType))], [candidates]);
+
+  useEffect(() => {
+    if (!onRegisterBack) return;
+    const previous: Partial<Record<AuditStep, AuditStep>> = { employee: "date", branch: "employee", recipient: "branch", items: "recipient", requests: "date" };
+    onRegisterBack(() => {
+      const back = previous[step];
+      if (!back) return false;
+      setStep(back);
+      return true;
+    });
+    return () => onRegisterBack(null);
+  }, [onRegisterBack, step]);
 
   const loadRequests = useCallback(async () => {
     const value = await run("جاري التحميل...", () => client.audits(from, to));
@@ -1347,75 +1486,172 @@ export function AuditRequestsPanel({ client, onMessage, onBusy, onConfirm }: Pan
 
   useEffect(() => {
     void run("جاري التحميل...", () => client.auditOptions("")).then((value) => { if (value) setBranches(distinctBy(value.branches, (branch) => branch.branchName)); });
-    void loadRequests();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [client, run]);
+
+  async function loadEmployees() {
+    if (!date) { onMessage("يرجى اختيار التاريخ."); return; }
+    const value = await run("جاري تحميل المعالجات...", () => client.auditCandidates(date));
+    if (!value) return;
+    setEmployees(distinctBy(value.employees, (entry) => entry.name));
+    setEmployee("");
+    setCreated(null);
+    setStep("employee");
+  }
 
   async function chooseBranch(id: string) {
     setBranchId(id);
     setRecipient("");
-    if (!id) { setUsers([]); return; }
     const value = await run("جاري تحميل الموظفين...", () => client.auditOptions(id));
-    if (value) setUsers(distinctBy(value.users, (user) => user.displayName));
+    if (!value) return;
+    setUsers(distinctBy(value.users, (user) => user.displayName));
+    setStep("recipient");
+  }
+
+  function toggle(taskId: string) {
+    setPicked((current) => {
+      if (current.includes(taskId)) return current.filter((id) => id !== taskId);
+      if (current.length >= 10) { onMessage("لا يمكن اختيار أكثر من 10 أصناف."); return current; }
+      return [...current, taskId];
+    });
   }
 
   async function create() {
-    const items = lines.filter((line) => line.code.trim()).map((line) => ({ code: line.code.trim(), expectedQuantity: parseCountInput(line.expected) }));
-    if (!branchId || !recipient) { onMessage("اختر الفرع والموظف."); return; }
-    if (items.length === 0 || items.length > 10) { onMessage("طلب التدقيق من صنف واحد إلى 10 أصناف."); return; }
-    if (items.some((item) => item.expectedQuantity === null)) { onMessage("أدخل الكمية المتوقعة لكل صنف."); return; }
-    const value = await run("جاري الإنشاء...", () => client.createAudit({ branchId, recipientUserId: recipient, note, items: items as { code: string; expectedQuantity: number }[] }));
+    const chosen = candidates.filter((item) => picked.includes(item.taskId));
+    if (chosen.length === 0) { onMessage("يرجى اختيار صنف واحد على الأقل."); return; }
+    if (types.some((type) => !chosen.some((item) => item.taskType === type))) {
+      onMessage("يجب اختيار صنف واحد على الأقل من كل نوع معالجة متاح.");
+      return;
+    }
+    const value = await run("جاري الإنشاء...", () => client.createTaskAudit({
+      processedDate: date, processedByName: employee, branchId, recipientUserId: recipient, taskIds: chosen.map((item) => item.taskId),
+    }));
     if (!value) return;
-    setLines([{ code: "", expected: "" }]);
-    setNote("");
-    await loadRequests();
-    onMessage("تم إنشاء طلب التدقيق. يظهر للموظف في «تقرير الكفاءة» ليرد عليه خلال 7 أيام.");
+    setCreated({
+      employee,
+      branch: branches.find((branch) => branch.branchId === branchId)?.branchName ?? "",
+      recipient: users.find((user) => user.userId === recipient)?.displayName ?? "",
+      items: chosen,
+    });
+    setPicked([]);
+    setStep("date");
   }
 
   return (
     <div className="inventory-report">
-      <section className="inventory-section" aria-label="طلب تدقيق جديد">
-        <strong>طلب تأكيد استلام جديد</strong>
-        <label>الفرع
-          <select value={branchId} onChange={(event) => void chooseBranch(event.target.value)}>
-            <option value="">اختر الفرع</option>
-            {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
-          </select>
-        </label>
-        <label>الموظف
-          <select value={recipient} onChange={(event) => setRecipient(event.target.value)}>
-            <option value="">اختر الموظف</option>
-            {users.map((user) => <option key={user.userId} value={user.userId}>{user.displayName}</option>)}
-          </select>
-        </label>
-        <label>ملاحظة<input value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} /></label>
-        {lines.map((line, index) => (
-          <div key={index} className="inventory-decision">
-            <label>رقم الصنف<input value={line.code} onChange={(event) => setLines((current) => current.map((entry, position) => position === index ? { ...entry, code: event.target.value } : entry))} aria-label={`رقم الصنف ${index + 1}`} /></label>
-            <label>الكمية المتوقعة<input inputMode="decimal" value={line.expected} onChange={(event) => setLines((current) => current.map((entry, position) => position === index ? { ...entry, expected: event.target.value } : entry))} aria-label={`الكمية المتوقعة ${index + 1}`} /></label>
-            {lines.length > 1 ? <button type="button" className="ghost-button" onClick={() => setLines((current) => current.filter((_, position) => position !== index))}>حذف</button> : null}
-          </div>
-        ))}
-        {lines.length < 10 ? <button type="button" className="ghost-button" onClick={() => setLines((current) => [...current, { code: "", expected: "" }])}>إضافة صنف</button> : null}
-        <button type="button" className="primary-button" onClick={() => void create()}>إنشاء الطلب</button>
-        <small className="inventory-hint">رابط واتساب العام غير مفعّل بعد (يحتاج عنواناً عاماً على HTTPS)؛ الموظف يرد من داخل XtraPOS.</small>
-      </section>
+      {step === "date" ? (
+        <section className="inventory-section" aria-label="تدقيق معالجة النواقص">
+          <strong>تدقيق معالجة النواقص</strong>
+          {created ? (
+            <div className="inventory-notice" role="status">
+              <strong>تم إنشاء طلب التدقيق.</strong>
+              <span>الموظف الذي تتم مراجعة معالجته: {created.employee}</span>
+              <span>الفرع: {created.branch} · المستلم: {created.recipient} · عدد الأصناف: {created.items.length}</span>
+              <span>{Object.entries(AUDIT_TYPE_LABELS).map(([type, label]) => `${label}: ${created.items.filter((item) => item.taskType === type).length}`).join(" · ")}</span>
+              <small className="inventory-hint">يرد المستلم من «تقرير الكفاءة» خلال 7 أيام. رابط واتساب العام غير مفعّل بعد (يحتاج عنواناً عاماً على HTTPS).</small>
+            </div>
+          ) : null}
+          <label>التاريخ<input type="date" value={date} onChange={(event) => setDate(event.target.value)} aria-label="التاريخ" /></label>
+          <button type="button" className="primary-button" onClick={() => void loadEmployees()}>متابعة</button>
+          <button type="button" className="link-button" onClick={() => { setStep("requests"); void loadRequests(); }}>طلبات التدقيق</button>
+        </section>
+      ) : null}
 
-      <DateRange from={from} to={to} onChange={(nextFrom, nextTo) => { setFrom(nextFrom); setTo(nextTo); }} onSubmit={() => void loadRequests()} />
-      <div className="inventory-list">
-        {requestsPaging.visible.map((request) => (
-          <AuditRequestView
-            key={request.requestId}
-            request={request}
-            onCancel={request.status === "Pending" ? () => onConfirm({
-              title: "إلغاء طلب التدقيق",
-              message: "سيُلغى الطلب ولن يظهر للموظف. هل تريد المتابعة؟",
-              accept: "إلغاء الطلب",
-              onAccept: () => { void run("جاري الإلغاء...", () => client.cancelAudit(request.requestId)).then(() => loadRequests()); },
-            }) : undefined}
-          />
-        ))}
-        <Pager {...requestsPaging} label="طلب" />
-      </div>
+      {step === "employee" ? (
+        <div className="inventory-menu" aria-label="الموظف">
+          <p className="inventory-hint">الموظف الذي تتم مراجعة معالجته · {date}</p>
+          {employees?.length === 0 ? <p className="inventory-hint">لا توجد أصناف منجزة قابلة للتدقيق في هذا اليوم.</p> : null}
+          {(employees ?? []).map((entry) => (
+            <button
+              key={entry.name}
+              type="button"
+              className={employee === entry.name ? "inventory-card is-selected" : "inventory-card"}
+              onClick={() => { setEmployee(entry.name); setPicked([]); setStep("branch"); }}
+            >
+              <strong>{entry.name}</strong>
+              <small>{entry.items.length} صنف</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {step === "branch" ? (
+        <div className="inventory-menu" aria-label="الفرع">
+          <p className="inventory-hint">الفرع المستلم</p>
+          {branches.map((branch) => (
+            <button
+              key={branch.branchId}
+              type="button"
+              className={branchId === branch.branchId ? "inventory-card is-selected" : "inventory-card"}
+              onClick={() => void chooseBranch(branch.branchId)}
+            >
+              <strong>{branch.branchName}</strong>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {step === "recipient" ? (
+        <div className="inventory-menu" aria-label="المستلم">
+          <p className="inventory-hint">المستلم</p>
+          {users.length === 0 ? <p className="inventory-hint">لا يوجد موظف لهذا الفرع.</p> : null}
+          {users.map((user) => (
+            <button
+              key={user.userId}
+              type="button"
+              className={recipient === user.userId ? "inventory-card is-selected" : "inventory-card"}
+              onClick={() => { setRecipient(user.userId); setStep("items"); }}
+            >
+              <strong>{user.displayName}</strong>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {step === "items" ? (
+        <section className="inventory-section" aria-label="الأصناف">
+          <strong>الأصناف</strong>
+          <small className="inventory-hint">من صنف إلى 10 أصناف، وصنف واحد على الأقل من كل نوع معالجة متاح. تم اختيار {picked.length}.</small>
+          {types.map((type) => (
+            <div key={type} className="inventory-checklist">
+              <strong>{AUDIT_TYPE_LABELS[type] ?? type}</strong>
+              {candidates.filter((item) => item.taskType === type).map((item) => {
+                const selected = picked.includes(item.taskId);
+                return (
+                  <label key={item.taskId} className={selected ? "inventory-select-row is-selected" : "inventory-select-row"}>
+                    <input type="checkbox" checked={selected} onChange={() => toggle(item.taskId)} aria-label={`تحديد ${item.itemNumber}`} />
+                    <span className="inventory-number">{item.itemNumber}</span>
+                    <span>{item.itemName || "صنف بدون اسم"}</span>
+                    {item.quantity !== null ? <small>{formatQuantity(item.quantity)}</small> : null}
+                  </label>
+                );
+              })}
+            </div>
+          ))}
+          <button type="button" className="primary-button" onClick={() => void create()}>إنشاء طلب التدقيق والمتابعة</button>
+        </section>
+      ) : null}
+
+      {step === "requests" ? (
+        <>
+          <DateRange from={from} to={to} onChange={(nextFrom, nextTo) => { setFrom(nextFrom); setTo(nextTo); }} onSubmit={() => void loadRequests()} />
+          <div className="inventory-list">
+            {requests.length === 0 ? <p className="inventory-hint">لا توجد طلبات تدقيق في هذه الفترة.</p> : null}
+            {requestsPaging.visible.map((request) => (
+              <AuditRequestView
+                key={request.requestId}
+                request={request}
+                onCancel={request.status === "Pending" ? () => onConfirm({
+                  title: "إلغاء طلب التدقيق",
+                  message: "سيُلغى الطلب ولن يظهر للموظف. هل تريد المتابعة؟",
+                  accept: "إلغاء الطلب",
+                  onAccept: () => { void run("جاري الإلغاء...", () => client.cancelAudit(request.requestId)).then(() => loadRequests()); },
+                }) : undefined}
+              />
+            ))}
+            <Pager {...requestsPaging} label="طلب" />
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1430,13 +1666,17 @@ function AuditRequestView({ request, onCancel }: { request: AuditRequest; onCanc
   return (
     <article className={request.status === "Answered" && (request.score ?? 0) < 10 ? "inventory-row is-mismatch" : "inventory-row"}>
       <div className="inventory-row-name">
-        <strong>{request.recipientName ?? "—"} · {request.branchName ?? "—"}</strong>
-        <small>{formatDateTime(request.createdAt)} · {request.createdByName ?? "—"}{request.note ? ` · ${request.note}` : ""}</small>
+        <strong>المستلم: {request.recipientName ?? "—"} · الفرع: {request.branchName ?? "—"}</strong>
+        {request.processedByName ? <small>الموظف الذي تمت مراجعة معالجته: {request.processedByName}{request.processedDate ? ` · ${request.processedDate}` : ""}</small> : null}
+        <small>تاريخ إنشاء الطلب: {formatDateTime(request.createdAt)} · {request.createdByName ?? "—"}{request.note ? ` · ${request.note}` : ""}</small>
         <ul className="inventory-history">
           {request.items.map((item) => (
             <li key={item.requestItemId}>
-              {item.itemNumber} {item.itemName ?? ""}: المتوقع {formatQuantity(item.expectedQuantity)}
-              {item.receivedQuantity !== null ? ` · المستلم ${formatQuantity(item.receivedQuantity)}` : ""}
+              {item.taskType ? `${AUDIT_TYPE_LABELS[item.taskType] ?? item.taskType}: ` : ""}{item.itemNumber} {item.itemName ?? ""}
+              {item.received === true ? " · تم الاستلام" : item.received === false ? " · لم يتم الاستلام" : ""}
+              {item.received == null && item.receivedQuantity !== null
+                ? ` · المتوقع ${formatQuantity(item.expectedQuantity)} · المستلم ${formatQuantity(item.receivedQuantity)}`
+                : ""}
             </li>
           ))}
         </ul>
@@ -1453,10 +1693,11 @@ function AuditRequestView({ request, onCancel }: { request: AuditRequest; onCanc
 // تقرير الكفاءة (والرد على طلبات التدقيق)
 // ======================================================================
 
-export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
+export function EfficiencyPanel({ client, onMessage, onBusy, onConfirm }: PanelProps) {
   const run = useAction(onMessage, onBusy);
   const [pending, setPending] = useState<AuditRequest[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  /** كما في النظام القديم: «هل استلمت هذا الصنف؟» نعم/لا لكل صنف. */
+  const [answers, setAnswers] = useState<Record<string, boolean>>({});
   const [rows, setRows] = useState<EfficiencyRow[]>([]);
   const [ownOnly, setOwnOnly] = useState(true);
   const [from, setFrom] = useState("");
@@ -1477,13 +1718,22 @@ export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
 
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function answer(request: AuditRequest) {
-    const items = request.items.map((item) => ({ requestItemId: item.requestItemId, receivedQuantity: parseCountInput(answers[item.requestItemId] ?? "") }));
-    if (items.some((item) => item.receivedQuantity === null)) { onMessage("أدخل الكمية المستلمة لكل الأصناف."); return; }
-    const value = await run("جاري الإرسال...", () => client.answerAudit(request.requestId, items as { requestItemId: string; receivedQuantity: number }[]));
-    if (!value) return;
-    await load();
-    onMessage(`تم الرد. درجتك ${value.score} من 10.`);
+  function answer(request: AuditRequest) {
+    const unanswered = request.items.filter((item) => answers[item.requestItemId] === undefined).length;
+    if (unanswered > 0) { onMessage(`أجب عن كل الأصناف بنعم أو لا (بقي ${unanswered}).`); return; }
+    onConfirm({
+      title: "تثبيت وإرسال الرد",
+      message: "هل أنت متأكد من إرسال الإجابات؟ بعد التثبيت لن تتمكن من تعديلها.",
+      accept: "تثبيت وإرسال الرد",
+      onAccept: () => {
+        const items = request.items.map((item) => ({ requestItemId: item.requestItemId, received: answers[item.requestItemId] }));
+        void run("جاري الإرسال...", () => client.answerAuditYesNo(request.requestId, items)).then(async (value) => {
+          if (!value) return;
+          await load();
+          onMessage("تم إرسال ردك بنجاح.");
+        });
+      },
+    });
   }
 
   return (
@@ -1494,17 +1744,27 @@ export function EfficiencyPanel({ client, onMessage, onBusy }: PanelProps) {
           {pending.map((request) => (
             <div key={request.requestId} className="inventory-audit-start">
               <span>{request.createdByName ?? "—"} · {formatDateTime(request.createdAt)}{request.note ? ` · ${request.note}` : ""}</span>
+              <small className="inventory-hint">
+                تمت الإجابة عن {request.items.filter((item) => answers[item.requestItemId] !== undefined).length} من {request.items.length}
+              </small>
               {request.items.map((item) => (
-                <label key={item.requestItemId}>{item.itemNumber} {item.itemName ?? ""}: الكمية المستلمة
-                  <input
-                    inputMode="decimal"
-                    value={answers[item.requestItemId] ?? ""}
-                    onChange={(event) => setAnswers((current) => ({ ...current, [item.requestItemId]: event.target.value }))}
-                    aria-label={`الكمية المستلمة ${item.itemNumber}`}
-                  />
-                </label>
+                <div key={item.requestItemId} className="inventory-yes-no" role="group" aria-label={`هل استلمت ${item.itemNumber}؟`}>
+                  <span>{item.itemNumber} {item.itemName ?? ""} · هل استلمت هذا الصنف؟</span>
+                  <button
+                    type="button"
+                    className={answers[item.requestItemId] === true ? "ghost-button is-selected" : "ghost-button"}
+                    aria-pressed={answers[item.requestItemId] === true}
+                    onClick={() => setAnswers((current) => ({ ...current, [item.requestItemId]: true }))}
+                  >نعم، استلمته</button>
+                  <button
+                    type="button"
+                    className={answers[item.requestItemId] === false ? "ghost-button is-selected" : "ghost-button"}
+                    aria-pressed={answers[item.requestItemId] === false}
+                    onClick={() => setAnswers((current) => ({ ...current, [item.requestItemId]: false }))}
+                  >لا، لم أستلمه</button>
+                </div>
               ))}
-              <button type="button" className="primary-button" onClick={() => void answer(request)}>إرسال الرد</button>
+              <button type="button" className="primary-button" onClick={() => answer(request)}>تثبيت وإرسال الرد</button>
             </div>
           ))}
         </section>

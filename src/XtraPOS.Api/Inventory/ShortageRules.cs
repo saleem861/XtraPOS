@@ -160,6 +160,29 @@ public static class ShortageRules
         return Math.Round(matched * 10m / items.Count, 1, MidpointRounding.AwayFromZero);
     }
 
+    /// <summary>درجة تدقيق نعم/لا من 10 (كما في النظام القديم): نسبة الأصناف التي أكّد المستلم استلامها.</summary>
+    public static decimal AuditYesNoScore(int received, int total) =>
+        total <= 0 ? 0m : Math.Round(received * 10m / total, 1, MidpointRounding.AwayFromZero);
+
+    /// <summary>أنواع المعالجة التي يُدقَّق عليها (الحذف لا يُسلَّم للفرع).</summary>
+    public static readonly string[] AuditTaskTypes = [ShortageTaskTypes.Purchase, ShortageTaskTypes.Warehouse, ShortageTaskTypes.Balance];
+
+    /// <summary>
+    /// قاعدة النظام القديم: من صنف إلى 10 أصناف، وصنف واحد على الأقل من كل نوع معالجة متاح لهذا الموظف في هذا اليوم.
+    /// </summary>
+    public static void RequireAuditSelection(IReadOnlyCollection<string> chosenTypes, IReadOnlyCollection<string> availableTypes)
+    {
+        if (chosenTypes.Count is < AuditMinItems or > AuditMaxItems)
+        {
+            throw new InventoryException("طلب التدقيق من صنف واحد إلى 10 أصناف.");
+        }
+
+        if (availableTypes.Any(type => !chosenTypes.Contains(type)))
+        {
+            throw new InventoryException("يجب اختيار صنف واحد على الأقل من كل نوع معالجة متاح.");
+        }
+    }
+
     public static (DateOnly From, DateOnly To) Range(DateOnly? from, DateOnly? to, DateOnly today, int defaultDays)
     {
         var end = to ?? today;

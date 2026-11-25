@@ -54,8 +54,18 @@ describe("shortage processing", () => {
 
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
-    await userEvent.click(await screen.findByRole("button", { name: "تثبيت ومتابعة" }));
-    expect(calls.find((call) => call.url === "/api/shortages/runs")?.body).toMatchObject({ shortageType: "Important", branchIds: ["br"], supplyDays: 7 });
+    // تسلسل النظام القديم: اختيار الفروع ← نوع معالجة النواقص ← عدد أيام التوفير (− N +) ← تثبيت ومتابعة.
+    await userEvent.click(await screen.findByRole("button", { name: "متابعة" }));
+    expect(await screen.findByText("يرجى اختيار فرع واحد على الأقل")).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: "فرع نابلس" }));
+    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: "الأصناف المهمة" }));
+    expect(screen.getByText("هذه القيمة تُستخدم فقط لهذا الحساب ولا تُحفظ في الإعدادات.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "إنقاص عدد الأيام" }));
+    expect(screen.getByLabelText("عدد أيام التوفير", { selector: "output" }).textContent).toBe("6");
+    await userEvent.click(screen.getByRole("button", { name: "زيادة عدد الأيام" }));
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت ومتابعة" }));
+    await vi.waitFor(() => expect(calls.find((call) => call.url === "/api/shortages/runs")?.body).toMatchObject({ shortageType: "Important", branchIds: ["br"], supplyDays: 7 }));
 
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
     expect(within(row).getByText(/مطلوب شراء 4/)).toBeTruthy();
@@ -65,7 +75,7 @@ describe("shortage processing", () => {
     expect((within(row).getByRole("textbox", { name: "شراء 650" }) as HTMLInputElement).value).toBe("4");
     await userEvent.click(within(row).getByRole("button", { name: "حفظ" }));
     expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ purchaseQuantity: 4, balanceQuantity: 6, delete: false });
-    await userEvent.click(screen.getByRole("tab", { name: "المعالج" }));
+    await userEvent.click(screen.getByRole("tab", { name: "مسؤول الشراء (1)" }));
     expect(await screen.findByText(/القرار: شراء 4/)).toBeTruthy();
   });
 });
@@ -135,13 +145,54 @@ describe("receipt audits", () => {
 
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Efficiency"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^تقرير الكفاءة/ }));
-    const input = await screen.findByRole("textbox", { name: "الكمية المستلمة 650" });
+    // كما في النظام القديم: «هل استلمت هذا الصنف؟» نعم/لا، ثم «تثبيت وإرسال الرد» بتأكيد.
+    const question = await screen.findByRole("group", { name: "هل استلمت 650؟" });
     expect(screen.queryByText(/المتوقع/)).toBeNull();
     expect(screen.getByText("تعرض الشاشة تقاريرك فقط.")).toBeTruthy();
-    await userEvent.type(input, "5");
-    await userEvent.click(screen.getByRole("button", { name: "إرسال الرد" }));
-    expect(calls.find((call) => call.url === "/api/shortages/audits/q1/answer")?.body).toEqual({ items: [{ requestItemId: "x1", receivedQuantity: 5 }] });
-    expect(await screen.findByText("تم الرد. درجتك 10 من 10.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت وإرسال الرد" }));
+    expect(await screen.findByText(/أجب عن كل الأصناف بنعم أو لا/)).toBeTruthy();
+    await userEvent.click(within(question).getByRole("button", { name: "نعم، استلمته" }));
+    expect(within(question).getByRole("button", { name: "نعم، استلمته" }).className).toContain("is-selected");
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت وإرسال الرد" }));
+    const dialog = await screen.findByRole("dialog", { name: "تثبيت وإرسال الرد" });
+    expect(within(dialog).getByText(/لن تتمكن من تعديلها/)).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "تثبيت وإرسال الرد" }));
+    await vi.waitFor(() => expect(calls.find((call) => call.url === "/api/shortages/audits/q1/answer")?.body).toEqual({ items: [{ requestItemId: "x1", received: true }] }));
+    expect(await screen.findByText("تم إرسال ردك بنجاح.")).toBeTruthy();
+  });
+
+  it("creates an audit on processed shortage tasks: date, employee, branch, recipient, then items with one of each type", async () => {
+    const calls: { method: string; url: string; body?: unknown }[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push({ method: init?.method ?? "GET", url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url.startsWith("/api/shortages/audits/candidates")) {
+        return reply({ date: "2026-11-24", employees: [{ name: "سلام", items: [
+          { taskId: "t1", itemId: "i1", itemNumber: "650", itemName: "فحم سريع", taskType: "Purchase", quantity: 4 },
+          { taskId: "t2", itemId: "i2", itemNumber: "224", itemName: "رأس", taskType: "Warehouse", quantity: 2 },
+        ] }] });
+      }
+      if (url === "/api/shortages/audits/options") return reply({ branches: [{ branchId: "br", branchName: "فرع نابلس", current: true }], users: [] });
+      if (url === "/api/shortages/audits/options?branchId=br") return reply({ branches: [], users: [{ userId: "u1", displayName: "أحمد", employeeNumber: null }] });
+      if (url === "/api/shortages/audits") return reply({ requestId: "q9" });
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Audit"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^التدقيق/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: /سلام/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /فرع نابلس/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /أحمد/ }));
+    expect(await screen.findByText("مسؤول الشراء")).toBeTruthy();
+    expect(screen.getByText("المخزن")).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: "تحديد 650" }));
+    await userEvent.click(screen.getByRole("button", { name: "إنشاء طلب التدقيق والمتابعة" }));
+    expect(await screen.findByText("يجب اختيار صنف واحد على الأقل من كل نوع معالجة متاح.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: "تحديد 224" }));
+    await userEvent.click(screen.getByRole("button", { name: "إنشاء طلب التدقيق والمتابعة" }));
+    await vi.waitFor(() => expect(calls.find((call) => call.method === "POST" && call.url === "/api/shortages/audits")?.body)
+      .toMatchObject({ processedByName: "سلام", branchId: "br", recipientUserId: "u1", taskIds: ["t1", "t2"] }));
+    expect(await screen.findByText("تم إنشاء طلب التدقيق.")).toBeTruthy();
   });
 });
 
@@ -266,7 +317,10 @@ describe("manual shortages", () => {
     }));
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
-    await userEvent.click(await screen.findByRole("radio", { name: "الجرد اليدوي" }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "فرع نابلس" }));
+    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: "الجرد اليدوي" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
 
     const from = screen.getByLabelText("من تاريخ") as HTMLInputElement;
     const to = screen.getByLabelText("إلى تاريخ") as HTMLInputElement;

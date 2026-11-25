@@ -110,6 +110,19 @@ public sealed class ShortageRulesTests
     }
 
     [Fact]
+    public void Yes_no_audit_scores_the_share_received_and_needs_one_item_of_each_available_type()
+    {
+        Assert.Equal(10m, ShortageRules.AuditYesNoScore(3, 3));
+        Assert.Equal(6.7m, ShortageRules.AuditYesNoScore(2, 3));
+        Assert.Equal(0m, ShortageRules.AuditYesNoScore(0, 0));
+
+        ShortageRules.RequireAuditSelection(["Purchase", "Warehouse"], ["Purchase", "Warehouse"]);
+        Assert.Throws<InventoryException>(() => ShortageRules.RequireAuditSelection(["Purchase", "Purchase"], ["Purchase", "Balance"]));
+        Assert.Throws<InventoryException>(() => ShortageRules.RequireAuditSelection([], ["Purchase"]));
+        Assert.Throws<InventoryException>(() => ShortageRules.RequireAuditSelection(Enumerable.Repeat("Purchase", 11).ToList(), ["Purchase"]));
+    }
+
+    [Fact]
     public void Item_search_text_is_matched_literally_inside_like()
     {
         Assert.Equal("فحم", ShortageRules.EscapeLike("فحم"));

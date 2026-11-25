@@ -43,6 +43,8 @@ export interface ShortageOptions {
   users: UserOption[];
   draft: RunHeader | null;
   pageCount: number;
+  /** صفحات جدول اليوم (كما في النظام القديم: محددة مسبقاً ويمكن تغييرها). */
+  todayPages?: number[];
 }
 
 export interface StartShortageRequest {
@@ -213,7 +215,27 @@ export interface AuditRequest {
   expiresAt: string;
   answeredAt: string | null;
   score: number | null;
-  items: { requestItemId: string; itemNumber: string; itemName: string | null; expectedQuantity: number | null; receivedQuantity: number | null }[];
+  /** تدقيق معالجة النواقص (كما في النظام القديم): الموظف الذي تمت مراجعة معالجته ويوم المعالجة. */
+  processedByName?: string | null;
+  processedDate?: string | null;
+  items: {
+    requestItemId: string;
+    itemNumber: string;
+    itemName: string | null;
+    expectedQuantity: number | null;
+    receivedQuantity: number | null;
+    taskType?: string | null;
+    received?: boolean | null;
+  }[];
+}
+
+export interface AuditCandidate {
+  taskId: string;
+  itemId: string;
+  itemNumber: string;
+  itemName: string | null;
+  taskType: "Purchase" | "Warehouse" | "Balance";
+  quantity: number | null;
 }
 
 export interface EfficiencyRow {
@@ -329,6 +351,13 @@ export function createShortageClient(session: DeviceSession) {
     audits: (from: string, to: string) => get<{ requests: AuditRequest[] }>(`/api/shortages/audits?${range(from, to)}`, "تعذر تحميل طلبات التدقيق."),
     cancelAudit: (requestId: string) => send<{ cancelled: boolean }>(`/api/shortages/audits/${encodeURIComponent(requestId)}/cancel`, {}, "تعذر إلغاء الطلب."),
     myAudits: (from: string, to: string) => get<{ requests: AuditRequest[] }>(`/api/shortages/audits/mine?${range(from, to)}`, "تعذر تحميل طلباتك."),
+    auditCandidates: (date: string) =>
+      get<{ date: string; employees: { name: string; items: AuditCandidate[] }[] }>(
+        `/api/shortages/audits/candidates?date=${encodeURIComponent(date)}`, "تعذر تحميل أصناف التدقيق."),
+    createTaskAudit: (body: { processedDate: string; processedByName: string; branchId: string; recipientUserId: string; taskIds: string[] }) =>
+      send<{ requestId: string }>("/api/shortages/audits", body, "تعذر إنشاء طلب التدقيق."),
+    answerAuditYesNo: (requestId: string, items: { requestItemId: string; received: boolean }[]) =>
+      send<{ score: number }>(`/api/shortages/audits/${encodeURIComponent(requestId)}/answer`, { items }, "تعذر إرسال الرد."),
     answerAudit: (requestId: string, items: { requestItemId: string; receivedQuantity: number }[]) =>
       send<{ score: number }>(`/api/shortages/audits/${encodeURIComponent(requestId)}/answer`, { items }, "تعذر إرسال الرد."),
     efficiency: (from: string, to: string) =>

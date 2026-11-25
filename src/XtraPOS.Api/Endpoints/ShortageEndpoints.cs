@@ -80,6 +80,8 @@ public static class ShortageEndpoints
         group.MapPost("/custom-inventories/{customInventoryId:guid}/delete", (Guid customInventoryId, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Define], token, caller => service.DeleteCustomInventoryAsync(caller.Context, customInventoryId, token)));
 
+        group.MapGet("/audits/candidates", (DateOnly? date, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
+            Run(http, auth, permissions, [Audit], token, caller => service.AuditCandidatesAsync(caller.Context, date, token)));
         group.MapGet("/audits/options", (Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Audit], token, caller => service.AuditOptionsAsync(caller.Context, branchId, token)));
         group.MapPost("/audits", (ShortageAdminService.AuditRequestBody? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>

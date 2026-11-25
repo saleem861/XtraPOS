@@ -335,6 +335,74 @@ public sealed class ShortageAdminService(ShortageService shortages)
         public Guid? RecipientUserId { get; set; }
         public string? Note { get; set; }
         public List<AuditRequestItem>? Items { get; set; }
+
+        /// <summary>تدقيق معالجة النواقص (كما في النظام القديم): يوم المعالجة، والموظف، والمهام المختارة.</summary>
+        public DateOnly? ProcessedDate { get; set; }
+        public string? ProcessedByName { get; set; }
+        public List<Guid>? TaskIds { get; set; }
+    }
+
+    private sealed record AuditTask(Guid TaskId, Guid ItemId, string ItemNumber, string? ItemName, string TaskType, decimal? Quantity, string ProcessedBy);
+
+    /// <summary>
+    /// المهام المنجزة في يوم (شراء، مخزن، موازنة) مجمّعة بالموظف الذي أنجزها، لاختيار أصناف التدقيق.
+    /// المهمة التي دخلت تدقيقاً غير ملغى لا تظهر ثانية.
+    /// </summary>
+    private static async Task<List<AuditTask>> AuditTasksAsync(SqlConnection central, SqlTransaction? transaction, Guid business, DateOnly day, CancellationToken cancellationToken)
+    {
+        var tasks = new List<AuditTask>();
+        await using var command = new SqlCommand(
+            """
+            SELECT task.TaskID, task.ItemID, task.ItemNumber, task.ItemName, task.TaskType, task.Quantity, task.CompletedByName
+            FROM dbo.ShortageTasks AS task
+            WHERE task.BusinessID = @business AND task.Status = N'Done'
+              AND task.TaskType IN (N'Purchase', N'Warehouse', N'Balance')
+              AND task.CompletedAt >= @from AND task.CompletedAt < @to
+              AND NULLIF(LTRIM(RTRIM(task.CompletedByName)), N'') IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM dbo.ShortageAuditRequestItems AS line
+                              INNER JOIN dbo.ShortageAuditRequests AS request ON request.RequestID = line.RequestID
+                              WHERE line.TaskID = task.TaskID AND request.Status <> N'Cancelled')
+            ORDER BY task.CompletedByName, task.TaskType, task.ItemNumber;
+            """,
+            central,
+            transaction);
+        Id(command, "@business", business);
+        command.Parameters.Add("@from", SqlDbType.DateTime2).Value = InventoryCalendar.StartOfDayUtc(day);
+        command.Parameters.Add("@to", SqlDbType.DateTime2).Value = InventoryCalendar.StartOfDayUtc(day.AddDays(1));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            tasks.Add(new AuditTask(reader.GetGuid(0), reader.GetGuid(1), reader.GetString(2), Str(reader, 3), reader.GetString(4), Dec(reader, 5), reader.GetString(6).Trim()));
+        }
+
+        return tasks;
+    }
+
+    /// <summary>«التدقيق» كما في النظام القديم: التاريخ ← الموظف الذي تتم مراجعة معالجته ← أصنافه المنجزة.</summary>
+    public async Task<object> AuditCandidatesAsync(PosDeviceContext actor, DateOnly? date, CancellationToken cancellationToken)
+    {
+        var day = date ?? InventoryCalendar.Today();
+        await using var central = await shortages.CentralAsync(cancellationToken);
+        var tasks = await AuditTasksAsync(central, null, actor.BusinessId, day, cancellationToken);
+        return new
+        {
+            date = day.ToString("yyyy-MM-dd"),
+            employees = tasks
+                .GroupBy(task => task.ProcessedBy, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new
+                {
+                    name = group.First().ProcessedBy,
+                    items = group.Select(task => new
+                    {
+                        taskId = task.TaskId,
+                        itemId = task.ItemId,
+                        itemNumber = task.ItemNumber,
+                        itemName = task.ItemName,
+                        taskType = task.TaskType,
+                        quantity = task.Quantity,
+                    }),
+                }),
+        };
     }
 
     public sealed class AuditRequestItem
@@ -346,7 +414,12 @@ public sealed class ShortageAdminService(ShortageService shortages)
     public async Task<object> CreateAuditRequestAsync(PosDeviceContext actor, AuditRequestBody body, CancellationToken cancellationToken)
     {
         var branch = body.BranchId ?? throw new InventoryException("يرجى اختيار الفرع.");
-        var recipient = body.RecipientUserId ?? throw new InventoryException("يرجى اختيار الموظف.");
+        var recipient = body.RecipientUserId ?? throw new InventoryException("يرجى اختيار المستلم.");
+        if (body.TaskIds is { Count: > 0 })
+        {
+            return await CreateTaskAuditAsync(actor, body, branch, recipient, cancellationToken);
+        }
+
         var lines = (body.Items ?? []).Where(line => !string.IsNullOrWhiteSpace(line.Code)).ToList();
         if (lines.Count is < ShortageRules.AuditMinItems or > ShortageRules.AuditMaxItems)
         {
@@ -429,6 +502,94 @@ public sealed class ShortageAdminService(ShortageService shortages)
     }
 
     /// <summary>
+    /// «إنشاء طلب التدقيق والمتابعة» كما في النظام القديم: من صنف إلى 10 من المهام المنجزة للموظف في ذلك اليوم،
+    /// وصنف على الأقل من كل نوع معالجة متاح، والمستلم يجيب «هل استلمت هذا الصنف؟» نعم/لا.
+    /// </summary>
+    private async Task<object> CreateTaskAuditAsync(PosDeviceContext actor, AuditRequestBody body, Guid branch, Guid recipient, CancellationToken cancellationToken)
+    {
+        var day = body.ProcessedDate ?? throw new InventoryException("يرجى اختيار التاريخ.");
+        var processedBy = body.ProcessedByName?.Trim();
+        if (string.IsNullOrEmpty(processedBy)) throw new InventoryException("يرجى اختيار الموظف الذي تتم مراجعة معالجته.");
+        var wanted = body.TaskIds!.Distinct().ToList();
+
+        await using var central = await shortages.CentralAsync(cancellationToken);
+        var branchName = (await BranchesAsync(central, actor, cancellationToken)).FirstOrDefault(row => row.BranchId == branch)?.BranchName
+            ?? throw new InventoryException("الفرع غير موجود أو غير نشط.");
+        string recipientName;
+        await using (var read = new SqlCommand("SELECT DisplayName FROM dbo.Users WHERE UserID = @user AND IsActive = 1;", central))
+        {
+            Id(read, "@user", recipient);
+            recipientName = await read.ExecuteScalarAsync(cancellationToken) as string ?? throw new InventoryException("المستلم غير موجود أو موقوف.");
+        }
+
+        var requestId = Guid.NewGuid();
+        await using var transaction = (SqlTransaction)await central.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        try
+        {
+            var mine = (await AuditTasksAsync(central, transaction, actor.BusinessId, day, cancellationToken))
+                .Where(task => string.Equals(task.ProcessedBy, processedBy, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var chosen = mine.Where(task => wanted.Contains(task.TaskId)).ToList();
+            if (chosen.Count != wanted.Count) throw new InventoryException("بعض الأصناف المختارة ليست من معالجة هذا الموظف في هذا اليوم، أو دخلت تدقيقاً سابقاً.");
+            ShortageRules.RequireAuditSelection(
+                chosen.Select(task => task.TaskType).ToList(),
+                mine.Select(task => task.TaskType).Distinct().ToList());
+
+            await ExecuteAsync(central, transaction,
+                """
+                INSERT INTO dbo.ShortageAuditRequests
+                    (RequestID, BusinessID, BranchID, BranchName, RecipientUserID, RecipientName, Note, CreatedByName, ExpiresAt,
+                     ProcessedByName, ProcessedDate)
+                VALUES (@id, @business, @branch, @branchName, @recipient, @recipientName, @note, @by, DATEADD(DAY, @days, SYSUTCDATETIME()),
+                        @processedBy, @day);
+                """,
+                command =>
+                {
+                    Id(command, "@id", requestId);
+                    Id(command, "@business", actor.BusinessId);
+                    Id(command, "@branch", branch);
+                    Text(command, "@branchName", branchName, 200);
+                    Id(command, "@recipient", recipient);
+                    Text(command, "@recipientName", recipientName, 200);
+                    Text(command, "@note", body.Note, 500);
+                    Text(command, "@by", actor.DisplayName, 200);
+                    command.Parameters.Add("@days", SqlDbType.Int).Value = ShortageRules.AuditValidDays;
+                    Text(command, "@processedBy", processedBy, 200);
+                    command.Parameters.Add("@day", SqlDbType.Date).Value = day.ToDateTime(TimeOnly.MinValue);
+                },
+                cancellationToken);
+            foreach (var task in chosen)
+            {
+                await ExecuteAsync(central, transaction,
+                    """
+                    INSERT INTO dbo.ShortageAuditRequestItems (RequestItemID, RequestID, ItemID, ItemNumber, ItemName, ExpectedQuantity, TaskID, TaskType)
+                    VALUES (NEWID(), @id, @item, @number, @name, @expected, @task, @type);
+                    """,
+                    command =>
+                    {
+                        Id(command, "@id", requestId);
+                        Id(command, "@item", task.ItemId);
+                        Text(command, "@number", task.ItemNumber, 100);
+                        Text(command, "@name", task.ItemName, 500);
+                        Num(command, "@expected", task.Quantity ?? 0m);
+                        Id(command, "@task", task.TaskId);
+                        Text(command, "@type", task.TaskType, 20);
+                    },
+                    cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        return new { requestId };
+    }
+
+    /// <summary>
     /// طلبات التدقيق. mineOnly: طلبات هذا الموظف فقط (ليرد عليها، أو ليرى درجاته).
     /// التوقعات تبقى مخفية عن المستلم حتى يرد، فالرد أعمى.
     /// </summary>
@@ -440,7 +601,8 @@ public sealed class ShortageAdminService(ShortageService shortages)
         var requests = new List<(Guid Id, Guid Recipient, string Status, object Row)>();
         await using (var command = new SqlCommand(
             """
-            SELECT RequestID, BranchName, RecipientUserID, RecipientName, Note, Status, CreatedByName, CreatedAt, ExpiresAt, AnsweredAt, Score
+            SELECT RequestID, BranchName, RecipientUserID, RecipientName, Note, Status, CreatedByName, CreatedAt, ExpiresAt, AnsweredAt, Score,
+                   ProcessedByName, ProcessedDate
             FROM dbo.ShortageAuditRequests
             WHERE BusinessID = @business AND (@user IS NULL OR RecipientUserID = @user)
               AND (Status = N'Pending' OR (CreatedAt >= @from AND CreatedAt < @to))
@@ -473,13 +635,16 @@ public sealed class ShortageAdminService(ShortageService shortages)
                     expiresAt = expires,
                     answeredAt = UtcOrNull(reader, 9),
                     score = Dec(reader, 10),
+                    processedByName = Str(reader, 11),
+                    processedDate = reader.IsDBNull(12) ? null : DateOnly.FromDateTime(reader.GetDateTime(12)).ToString("yyyy-MM-dd"),
                 }));
             }
         }
 
         await using (var command = new SqlCommand(
             """
-            SELECT line.RequestID, line.RequestItemID, line.ItemNumber, line.ItemName, line.ExpectedQuantity, line.ReceivedQuantity, request.Status
+            SELECT line.RequestID, line.RequestItemID, line.ItemNumber, line.ItemName, line.ExpectedQuantity, line.ReceivedQuantity, request.Status,
+                   line.TaskType, line.Received
             FROM dbo.ShortageAuditRequestItems AS line
             INNER JOIN dbo.ShortageAuditRequests AS request ON request.RequestID = line.RequestID
             WHERE request.BusinessID = @business AND (@user IS NULL OR request.RecipientUserID = @user)
@@ -503,6 +668,8 @@ public sealed class ShortageAdminService(ShortageService shortages)
                     // المستلم لا يرى المتوقع قبل أن يرد.
                     expectedQuantity = answered || !mineOnly ? reader.GetDecimal(4) : (decimal?)null,
                     receivedQuantity = Dec(reader, 5),
+                    taskType = Str(reader, 7),
+                    received = reader.IsDBNull(8) ? (bool?)null : reader.GetBoolean(8),
                 });
             }
         }
@@ -527,6 +694,9 @@ public sealed class ShortageAdminService(ShortageService shortages)
     {
         public Guid? RequestItemId { get; set; }
         public decimal? ReceivedQuantity { get; set; }
+
+        /// <summary>كما في النظام القديم: «هل استلمت هذا الصنف؟» نعم/لا.</summary>
+        public bool? Received { get; set; }
     }
 
     public async Task<object> AnswerAuditAsync(PosDeviceContext actor, Guid requestId, List<AuditAnswer>? answers, CancellationToken cancellationToken)
@@ -557,7 +727,42 @@ public sealed class ShortageAdminService(ShortageService shortages)
                 while (await reader.ReadAsync(cancellationToken)) expected[reader.GetGuid(0)] = reader.GetDecimal(1);
             }
 
-            var given = (answers ?? []).Where(answer => answer.RequestItemId is not null).ToDictionary(answer => answer.RequestItemId!.Value, answer => answer.ReceivedQuantity);
+            var all = (answers ?? []).Where(answer => answer.RequestItemId is not null).ToList();
+            if (all.Count > 0 && all.All(answer => answer.Received is not null))
+            {
+                // نعم/لا: الإجابة على كل الأصناف، والدرجة نسبة ما أكّد استلامه.
+                var yesNo = all.ToDictionary(answer => answer.RequestItemId!.Value, answer => answer.Received!.Value);
+                if (expected.Keys.Any(key => !yesNo.ContainsKey(key))) throw new InventoryException("أجب عن كل الأصناف بنعم أو لا.");
+                foreach (var (lineId, quantity) in expected)
+                {
+                    await ExecuteAsync(central, transaction,
+                        "UPDATE dbo.ShortageAuditRequestItems SET Received = @received, ReceivedQuantity = @quantity WHERE RequestItemID = @line;",
+                        command =>
+                        {
+                            Id(command, "@line", lineId);
+                            command.Parameters.Add("@received", SqlDbType.Bit).Value = yesNo[lineId];
+                            Num(command, "@quantity", yesNo[lineId] ? quantity : 0m);
+                        },
+                        cancellationToken);
+                }
+
+                var yesScore = ShortageRules.AuditYesNoScore(yesNo.Values.Count(value => value), expected.Count);
+                await ExecuteAsync(central, transaction,
+                    "UPDATE dbo.ShortageAuditRequests SET Status = N'Answered', AnsweredAt = SYSUTCDATETIME(), Score = @score WHERE RequestID = @id;",
+                    command =>
+                    {
+                        Id(command, "@id", requestId);
+                        var parameter = command.Parameters.Add("@score", SqlDbType.Decimal);
+                        parameter.Precision = 4;
+                        parameter.Scale = 1;
+                        parameter.Value = yesScore;
+                    },
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new { score = yesScore };
+            }
+
+            var given = all.ToDictionary(answer => answer.RequestItemId!.Value, answer => answer.ReceivedQuantity);
             if (expected.Keys.Any(key => !given.ContainsKey(key))) throw new InventoryException("أدخل الكمية المستلمة لكل الأصناف.");
             var scored = new List<(decimal, decimal)>();
             foreach (var (lineId, quantity) in expected)
