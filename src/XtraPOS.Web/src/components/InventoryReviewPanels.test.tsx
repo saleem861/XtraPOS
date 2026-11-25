@@ -113,37 +113,62 @@ describe("inventory report and supervisor audit", () => {
 });
 
 describe("item processing", () => {
-  it("shows the stock owner, its classification and the branch quantity", async () => {
+  const branchQuantities = {
+    itemId: "i1",
+    branches: [
+      { branchId: "br", branchName: "فرع نابلس", current: true, quantity: 12, dailySalesRate: null, snapshotAt: null, lastCountedQuantity: null, lastCountedAt: null, lastCountedBy: null, pendingCorrection: null, pendingSince: null, pendingExpected: null, pendingDelta: null },
+      { branchId: "br2", branchName: "فرع رام الله", current: false, quantity: 3.5, dailySalesRate: null, snapshotAt: null, lastCountedQuantity: null, lastCountedAt: null, lastCountedBy: null, pendingCorrection: null, pendingSince: null, pendingExpected: null, pendingDelta: null },
+    ],
+  };
+
+  it("offers «كمية صنف» and «تغيير تصنيف الصنف»; the quantity shows every branch on central with its own correction and the total", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => {
       if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url.startsWith("/api/shortages/custom-inventories/items")) return reply({ truncated: false, items: [] });
       if (url.startsWith("/api/inventory/items/lookup")) return reply(itemView);
+      if (url === "/api/shortages/items/i1/branches") return reply(branchQuantities);
       return reply({});
     }));
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.Classify", "Inventory.CorrectQuantity"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^معالجة الأصناف/ }));
+    expect(screen.getByRole("button", { name: "تغيير تصنيف الصنف" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "كمية صنف" }));
     await userEvent.type(screen.getByRole("textbox", { name: "رقم الصنف" }), "1300{Enter}");
-    expect(await screen.findByText("معسل فرنسي وقية")).toBeTruthy();
+    expect(await screen.findByText(/معسل فرنسي وقية/)).toBeTruthy();
     expect(screen.getByText(/تم تحويل 1300/)).toBeTruthy();
-    expect(screen.getByText("الكمية الحالية في الفرع: 12")).toBeTruthy();
-    expect((screen.getByRole("checkbox", { name: /صنف مهم/ }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByRole("button", { name: "تصحيح الكمية" })).toBeTruthy();
+    expect(await screen.findByText("فرع نابلس (هذا الفرع)")).toBeTruthy();
+    expect(screen.getByText("فرع رام الله")).toBeTruthy();
+    expect(screen.getByText("15.5")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "تصحيح فرع رام الله" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "تحديث" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /صنف مهم/ })).toBeNull();
+
+    // «رجوع» يعود خطوة: من الصنف إلى البحث، ثم إلى الزرّين، ومنهما إلى التصنيف.
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    await userEvent.click(screen.getByRole("button", { name: "رجوع" }));
+    await userEvent.click(await screen.findByRole("button", { name: "تغيير تصنيف الصنف" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "رقم الصنف" }), "1300{Enter}");
+    expect((await screen.findByRole("checkbox", { name: /صنف مهم/ }) as HTMLInputElement).checked).toBe(true);
   });
 
   it("refuses a correction without a reason before calling the server", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url.startsWith("/api/shortages/custom-inventories/items")) return reply({ truncated: false, items: [{ itemId: "i1", itemNumber: "1360", itemName: "معسل فرنسي وقية" }] });
       if (url.startsWith("/api/inventory/items/lookup")) return reply(itemView);
+      if (url === "/api/shortages/items/i1/branches") return reply(branchQuantities);
       return reply({});
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.CorrectQuantity"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^معالجة الأصناف/ }));
+    await userEvent.click(screen.getByRole("button", { name: "كمية صنف" }));
     await userEvent.type(screen.getByRole("textbox", { name: "رقم الصنف" }), "1360{Enter}");
-    await userEvent.type(await screen.findByRole("textbox", { name: "الكمية الصحيحة" }), "10");
-    await userEvent.click(screen.getByRole("button", { name: "تصحيح الكمية" }));
+    await userEvent.click(await screen.findByRole("button", { name: "تصحيح فرع نابلس" }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "الكمية الصحيحة فرع نابلس" }), "10");
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت التصحيح" }));
     expect(await screen.findByText("يرجى كتابة سبب التصحيح.")).toBeTruthy();
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/quantity"))).toBe(false);
-    expect(screen.queryByRole("button", { name: "حفظ التصنيف" })).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/corrections"))).toBe(false);
   });
 });
 

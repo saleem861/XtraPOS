@@ -71,6 +71,16 @@ describe("shortage processing", () => {
 });
 
 describe("follow-up", () => {
+  it("shows the open follow-up count on the menu button, as in the legacy app", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/shortages/tasks/open-count") return reply({ open: 333 });
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.FollowUp"]} onBack={() => undefined} />);
+    expect(await screen.findByRole("button", { name: "متابعة النواقص (333)" })).toBeTruthy();
+  });
+
   const view = (tab: string) => ({
     tab, from: "2026-11-10", to: "2026-11-24", counts: { purchase: 0, warehouse: 0, balance: 0, delete: 1, done: 0 },
     rows: tab === "Delete" ? [{
@@ -194,26 +204,38 @@ describe("define inventory", () => {
     }));
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Inventory.Define"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^تحديد جرد/ }));
+    // تسلسل النظام القديم: اختيار الفروع ← التالي ← اختيار الأصناف ← تثبيت ← اسم الجرد.
+    const branchStep = await screen.findByRole("region", { name: "اختيار الفروع" });
+    expect((within(branchStep).getByRole("button", { name: "التالي" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(await within(branchStep).findByRole("checkbox", { name: "فرع نابلس" }));
+    expect(within(branchStep).getByRole("checkbox", { name: "فرع نابلس" }).closest("label")?.className).toContain("is-selected");
+    await userEvent.click(within(branchStep).getByRole("button", { name: "التالي" }));
+
     await userEvent.type(await screen.findByRole("textbox", { name: "اكتب اسم أو رقم الصنف" }), "فحم");
     await userEvent.click(screen.getByRole("button", { name: "بحث" }));
     expect(await screen.findByText(/صفحة 1 من 2/)).toBeTruthy();
+    expect(screen.getByText("تم تحديد 0 صنفاً")).toBeTruthy();
 
-    await userEvent.click(screen.getByRole("button", { name: "تحديد الكل (12)" }));
-    expect(screen.getByText("أصناف الجرد (12)")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "تحديد الكل" }));
+    expect(screen.getByText("تم تحديد 12 صنفاً")).toBeTruthy();
     const first = screen.getByRole("checkbox", { name: "تحديد 650" });
     expect((first as HTMLInputElement).checked).toBe(true);
     expect(first.closest("label")?.className).toContain("is-selected");
-    await userEvent.click(screen.getByRole("button", { name: "إلغاء الكل" }));
-    expect(screen.getByText("أصناف الجرد (0)")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "إلغاء تحديد الكل" }));
+    expect(screen.getByText("تم تحديد 0 صنفاً")).toBeTruthy();
     await userEvent.click(screen.getByRole("checkbox", { name: "تحديد 651" }));
     expect(screen.getByRole("checkbox", { name: "تحديد 651" }).closest("label")?.className).toContain("is-selected");
 
-    await userEvent.type(screen.getByRole("textbox", { name: "اسم الجرد المخصص" }), "جرد الفحم");
-    await userEvent.click(screen.getByRole("checkbox", { name: "فرع نابلس" }));
-    await userEvent.click(screen.getByRole("button", { name: "حفظ" }));
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت" }));
+    const name = await screen.findByRole("textbox", { name: "اسم الجرد" });
+    expect(name.getAttribute("placeholder")).toBe("مثال: نكهات Lume");
+    await userEvent.type(name, "جرد الفحم");
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت الجرد" }));
     await vi.waitFor(() => expect(calls.find((call) => call.method === "POST" && call.url === "/api/shortages/custom-inventories")?.body)
       .toMatchObject({ name: "جرد الفحم", branchIds: ["br"], itemCodes: ["651"] }));
 
+    // «الجرود المحددة»: توقيف أو حذف (المستعمل يُوقف ويختفي).
+    await userEvent.click(await screen.findByRole("button", { name: "الجرود المحددة (1)" }));
     const table = screen.getByRole("table", { name: "الجرود المخصصة" });
     await userEvent.click(within(table).getByRole("button", { name: "حذف" }));
     const dialog = await screen.findByRole("dialog", { name: "حذف الجرد المخصص" });

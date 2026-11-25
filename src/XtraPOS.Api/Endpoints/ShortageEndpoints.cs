@@ -49,11 +49,13 @@ public static class ShortageEndpoints
         group.MapPost("/runs/{runId:guid}/discard", (Guid runId, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [Process], token, caller => service.DiscardAsync(caller.Context, runId, token)));
         group.MapGet("/items/{itemId:guid}/branches", (Guid itemId, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
-            Run(http, auth, permissions, [Process, FollowUp], token, caller => service.ItemBranchesAsync(caller.Context, itemId, token)));
+            Run(http, auth, permissions, [Process, FollowUp, "Inventory.CorrectQuantity", "Inventory.Classify"], token, caller => service.ItemBranchesAsync(caller.Context, itemId, token)));
         group.MapPost("/items/{itemId:guid}/corrections", (Guid itemId, CorrectionBody? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, ["Inventory.CorrectQuantity"], token, caller => service.CorrectAsync(
                 caller.Context, body?.BranchId ?? Guid.Empty, itemId, body?.RequestId ?? Guid.Empty, body?.Quantity, body?.Reason, token, body?.ExpectedQuantity)));
 
+        group.MapGet("/tasks/open-count", (HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
+            Run(http, auth, permissions, [FollowUp], token, caller => service.OpenTaskCountAsync(caller.Context, token)));
         group.MapGet("/tasks", (string? tab, DateOnly? from, DateOnly? to, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [FollowUp, Approve], token, caller => service.TasksAsync(caller.Context, tab, from, to, token)));
         group.MapPost("/tasks/actions", (ShortageService.TaskActionRequest? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
@@ -72,7 +74,7 @@ public static class ShortageEndpoints
         group.MapPost("/custom-inventories", (ShortageAdminService.CustomInventoryRequest? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Define], token, caller => service.SaveCustomInventoryAsync(caller.Context, body ?? new(), token)));
         group.MapGet("/custom-inventories/items", (string? q, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
-            Run(http, auth, permissions, [Define], token, caller => service.SearchItemsAsync(caller.Context, q, token)));
+            Run(http, auth, permissions, [Define, "Inventory.CorrectQuantity", "Inventory.Classify"], token, caller => service.SearchItemsAsync(caller.Context, q, token)));
         group.MapPost("/custom-inventories/{customInventoryId:guid}/active", (Guid customInventoryId, ActiveBody? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>
             Run(http, auth, permissions, [Define], token, caller => service.SetCustomInventoryActiveAsync(caller.Context, customInventoryId, body?.IsActive ?? false, token)));
         group.MapPost("/custom-inventories/{customInventoryId:guid}/delete", (Guid customInventoryId, HttpContext http, AuthService auth, PermissionService permissions, ShortageAdminService service, CancellationToken token) =>

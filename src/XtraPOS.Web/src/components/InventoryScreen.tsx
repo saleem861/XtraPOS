@@ -104,6 +104,18 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [busy, setBusy] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const customInventories = useMemo(() => distinctBy(config?.customInventories, (custom) => custom.name), [config]);
+  const canFollowUp = hasPermission(permissions, "Shortages.FollowUp");
+  const [openTasks, setOpenTasks] = useState<number | null>(null);
+
+  // كما في النظام القديم: «متابعة النواقص (N)» بعدد المهام المفتوحة، يُحدَّث كلما عادت القائمة.
+  useEffect(() => {
+    if (step !== "menu" || !canFollowUp) return;
+    let cancelled = false;
+    void shortageClient.openTaskCount()
+      .then((count) => { if (!cancelled) setOpenTasks(count); })
+      .catch(() => { if (!cancelled) setOpenTasks(null); });
+    return () => { cancelled = true; };
+  }, [step, canFollowUp, shortageClient]);
 
   useEffect(() => {
     let cancelled = false;
@@ -278,7 +290,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
                   else if (card.id in PANEL_TITLES) setStep(card.id as Step);
                 }}
               >
-                <strong>{card.label}</strong>
+                <strong>{card.id === "followUp" && openTasks !== null ? `${card.label} (${openTasks})` : card.label}</strong>
                 {card.available ? null : <small>قريباً</small>}
               </button>
             ))}
@@ -421,6 +433,8 @@ export function InventoryScreen({ session, permissions, onBack }: {
         {step === "items" ? (
           <ItemProcessingPanel
             client={reviewClient}
+            shortageClient={shortageClient}
+            onRegisterBack={registerBack}
             canClassify={hasPermission(permissions, "Inventory.Classify")}
             canCorrect={hasPermission(permissions, "Inventory.CorrectQuantity")}
             onMessage={setMessage}
@@ -430,7 +444,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
         ) : null}
 
         {step === "define" ? (
-          <DefineInventoryPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} />
+          <DefineInventoryPanel client={shortageClient} onMessage={setMessage} onBusy={setBusy} onConfirm={setConfirmation} onRegisterBack={registerBack} />
         ) : null}
 
         {step === "shortages" ? (

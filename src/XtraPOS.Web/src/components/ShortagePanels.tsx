@@ -617,6 +617,98 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
   );
 }
 
+/**
+ * «كمية صنف» كما في النظام القديم: بطاقة لكل فرع فيها رصيده على المركز وزر «تصحيح»، ثم «إجمالي الكمية المتاحة» و«تحديث».
+ * التصحيح يُثبَّت على المركز أولاً بالفارق (المفترضة = الرصيد الظاهر)، ويأخذه الفرع في أول مزامنة.
+ */
+export function BranchQuantities({ client, itemId, canCorrect, onMessage, onBusy, onConfirm }: PanelProps & { itemId: string; canCorrect: boolean }) {
+  const run = useAction(onMessage, onBusy);
+  const [branches, setBranches] = useState<ItemBranchState[] | null>(null);
+  const [target, setTarget] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [reason, setReason] = useState("");
+  const [requestId, setRequestId] = useState(() => newRequestId());
+
+  const load = useCallback(async () => {
+    const value = await run("جاري تحميل الكميات...", () => client.itemBranches(itemId));
+    if (value) setBranches(distinctBy(value.branches, (branch) => branch.branchName));
+  }, [client, itemId, run]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  function open(branchId: string) {
+    setTarget((current) => (current === branchId ? "" : branchId));
+    setQuantity("");
+    setReason("");
+    setRequestId(newRequestId());
+  }
+
+  function correct(branch: ItemBranchState) {
+    const value = parseCountInput(quantity.trim() === "" ? "0" : quantity);
+    if (value === null) { onMessage("أدخل الكمية الصحيحة. الصفر مسموح والسالبة غير مسموحة."); return; }
+    if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
+    const difference = correctionDifference(branch.quantity, value);
+    onConfirm({
+      title: "تصحيح الكمية",
+      message: difference === null
+        ? `رصيد ${branch.branchName} غير معروف على المركز، فسيُكتب ${formatQuantity(value)} على المركز كما هو، ويأخذه الفرع في أول مزامنة. هل تريد المتابعة؟`
+        : `المفترضة ${formatQuantity(branch.quantity)}، المعدودة ${formatQuantity(value)}، الفارق ${formatDifference(difference)}. يُثبَّت الفارق على المركز فوراً، ويأخذه ${branch.branchName} في أول مزامنة بإضافته إلى رصيده الحالي. هل تريد المتابعة؟`,
+      accept: "تصحيح",
+      onAccept: () => {
+        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim(), branch.quantity)).then((result) => {
+          if (!result) return;
+          setTarget("");
+          setQuantity("");
+          setReason("");
+          setRequestId(newRequestId());
+          onMessage("");
+          void load();
+        });
+      },
+    });
+  }
+
+  if (!branches) return null;
+  const total = branches.reduce((sum, branch) => sum + (branch.quantity ?? 0), 0);
+  return (
+    <div className="inventory-branch-quantities" aria-label="كميات الفروع">
+      {branches.map((branch) => (
+        <article key={branch.branchId} className={target === branch.branchId ? "inventory-branch-card is-selected" : "inventory-branch-card"}>
+          <div className="inventory-branch-head">
+            <span>{branch.branchName}{branch.current ? " (هذا الفرع)" : ""}</span>
+            <strong>{branch.quantity === null ? "غير معروفة" : formatQuantity(branch.quantity)}</strong>
+          </div>
+          {branch.pendingCorrection !== null ? (
+            <small className="inventory-hint">
+              {branch.pendingDelta === null
+                ? `قيد التنفيذ في الفرع (${formatQuantity(branch.pendingCorrection)})`
+                : `قيد التنفيذ في الفرع: الفارق ${formatDifference(branch.pendingDelta)}`}
+            </small>
+          ) : null}
+          {canCorrect ? (
+            <button type="button" className="primary-button" aria-label={`تصحيح ${branch.branchName}`} onClick={() => open(branch.branchId)}>تصحيح</button>
+          ) : null}
+          {target === branch.branchId ? (
+            <div className="inventory-decision">
+              <label>الكمية الصحيحة<CountQuantityField label={`الكمية الصحيحة ${branch.branchName}`} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => correct(branch)} /></label>
+              <p className="inventory-hint" aria-label="فارق التصحيح">
+                المفترضة {formatQuantity(branch.quantity)} · الفارق {formatDifference(correctionDifference(branch.quantity, parseCountInput(quantity.trim() === "" ? "0" : quantity)))}
+              </p>
+              <label>سبب التصحيح<input value={reason} maxLength={500} aria-label={`سبب التصحيح ${branch.branchName}`} onChange={(event) => { setReason(event.target.value); setRequestId(newRequestId()); }} /></label>
+              <div className="inventory-row-actions">
+                <button type="button" className="primary-button" onClick={() => correct(branch)}>تثبيت التصحيح</button>
+                <button type="button" className="ghost-button" onClick={() => setTarget("")}>إلغاء</button>
+              </div>
+            </div>
+          ) : null}
+        </article>
+      ))}
+      <p className="inventory-total"><span>إجمالي الكمية المتاحة:</span> <strong>{formatQuantity(total)}</strong></p>
+      <button type="button" className="primary-button" onClick={() => void load()}>تحديث</button>
+    </div>
+  );
+}
+
 // ======================================================================
 // متابعة النواقص
 // ======================================================================
@@ -941,12 +1033,16 @@ type DefineDraft = { id: string | null; name: string; isActive: boolean; branchI
 const EMPTY_DRAFT: DefineDraft = { id: null, name: "", isActive: true, branchIds: [], items: [] };
 
 /**
- * «تحديد جرد» (ملاحظة المالك): خانة «اكتب اسم أو رقم الصنف» وزر «بحث»، كل الأصناف المطابقة بمربع تحديد،
- * و«تحديد الكل» / «إلغاء الكل». المحدد يُضاف إلى أصناف الجرد ويبقى عبر عمليات البحث.
- * جدول الجرود: «تفعيل/توقيف» و«حذف» (المستعمل يُوقف ويختفي، وغير المستعمل يُحذف).
+ * «تحديد جرد» بتسلسل النظام القديم: «اختيار الفروع» (تحديد الكل / إلغاء تحديد الكل، التالي) ←
+ * «اختيار الأصناف» (اكتب اسم أو رقم الصنف، بحث، مسح، تحديد الكل / إلغاء تحديد الكل، «تم تحديد N صنفاً»، صفحات، تثبيت) ←
+ * «تثبيت الجرد» باسم الجرد. المحدد يبقى عبر عمليات البحث.
+ * ملاحظة المالك: «الجرود المحددة» فيها «تفعيل/توقيف» و«حذف» (المستعمل يُوقف ويختفي، وغير المستعمل يُحذف).
  */
-export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: PanelProps) {
+type DefineStep = "branches" | "items" | "name" | "list";
+
+export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onRegisterBack }: PanelProps & { onRegisterBack?: (handler: BackHandler | null) => void }) {
   const run = useAction(onMessage, onBusy);
+  const [step, setStep] = useState<DefineStep>("branches");
   const [list, setList] = useState<CustomInventory[]>([]);
   const [branches, setBranches] = useState<{ branchId: string; branchName: string; current: boolean }[]>([]);
   const [editing, setEditing] = useState<DefineDraft>(EMPTY_DRAFT);
@@ -969,6 +1065,26 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: P
     void run("جاري التحميل...", () => client.customInventories()).then((value) => { if (value) apply(value); });
   }, [client, run]);
 
+  // «رجوع» في الهيدر يرجع خطوة داخل المعالج أولاً.
+  useEffect(() => {
+    if (!onRegisterBack) return;
+    onRegisterBack(() => {
+      if (step === "items") { setStep("branches"); return true; }
+      if (step === "name") { setStep("items"); return true; }
+      if (step === "list") { setStep("branches"); return true; }
+      return false;
+    });
+    return () => onRegisterBack(null);
+  }, [onRegisterBack, step]);
+
+  function restart() {
+    setEditing(EMPTY_DRAFT);
+    setResults(null);
+    setQuery("");
+    setSearched("");
+    setStep("branches");
+  }
+
   async function search(event?: FormEvent) {
     event?.preventDefault();
     const text = normalizeDigits(query.trim());
@@ -989,7 +1105,7 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: P
     }));
   }
 
-  /** «تحديد الكل» و«إلغاء الكل» على كل نتائج البحث الحالية (كل الصفحات). */
+  /** «تحديد الكل» و«إلغاء تحديد الكل» على كل نتائج البحث الحالية (كل الصفحات). */
   function selectAll(selected: boolean) {
     const found = results ?? [];
     setEditing((current) => {
@@ -1002,24 +1118,30 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: P
     });
   }
 
+  function toggleBranch(branchId: string) {
+    setEditing((current) => ({
+      ...current,
+      branchIds: current.branchIds.includes(branchId) ? current.branchIds.filter((id) => id !== branchId) : [...current.branchIds, branchId],
+    }));
+  }
+
   async function save() {
-    if (!editing.name.trim()) { onMessage("اسم الجرد المخصص مطلوب."); return; }
+    if (!editing.name.trim()) { onMessage("يرجى إدخال اسم الجرد."); return; }
     if (editing.branchIds.length === 0) { onMessage("يرجى اختيار فرع واحد على الأقل."); return; }
-    if (editing.items.length === 0) { onMessage("يرجى إضافة صنف واحد على الأقل."); return; }
+    if (editing.items.length === 0) { onMessage("يرجى تحديد صنف واحد على الأقل."); return; }
     setNotice("");
+    const name = editing.name.trim();
     const value = await run("جاري الحفظ...", () => client.saveCustomInventory({
       customInventoryId: editing.id,
-      name: editing.name.trim(),
+      name,
       isActive: editing.isActive,
       branchIds: editing.branchIds,
       itemCodes: editing.items.map((item) => item.itemNumber),
     }));
     if (!value) return;
     apply(value);
-    setEditing(EMPTY_DRAFT);
-    setResults(null);
-    setQuery("");
-    setNotice("تم الحفظ. يظهر في «الجرد» على أجهزة الفروع المختارة خلال دقيقة.");
+    restart();
+    setNotice(`تم تثبيت «${name}». يظهر في «الجرد ← الجرد المخصص» على أجهزة الفروع المختارة خلال دقيقة.`);
   }
 
   async function setActive(entry: CustomInventory, active: boolean) {
@@ -1053,106 +1175,150 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm }: P
   return (
     <div className="inventory-report">
       {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}
-      <section className="inventory-section" aria-label="جرد مخصص">
-        <strong>{editing.id ? "تعديل جرد مخصص" : "جرد مخصص جديد"}</strong>
-        <label>الاسم<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} aria-label="اسم الجرد المخصص" /></label>
-        <label className={editing.isActive ? "inventory-pick is-selected" : "inventory-pick"}>
-          <input type="checkbox" checked={editing.isActive} onChange={(event) => setEditing({ ...editing, isActive: event.target.checked })} />نشط
-        </label>
-        <div className="inventory-checklist">
-          {branches.map((branch) => {
-            const picked = editing.branchIds.includes(branch.branchId);
-            return (
-              <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
-                <input
-                  type="checkbox"
-                  checked={picked}
-                  onChange={() => setEditing((current) => ({
-                    ...current,
-                    branchIds: current.branchIds.includes(branch.branchId) ? current.branchIds.filter((id) => id !== branch.branchId) : [...current.branchIds, branch.branchId],
-                  }))}
-                />
-                {branch.branchName}
-              </label>
-            );
-          })}
-        </div>
 
-        <form className="inventory-search" onSubmit={(event) => void search(event)}>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب اسم أو رقم الصنف" aria-label="اكتب اسم أو رقم الصنف" />
-          <button type="submit" className="primary-button">بحث</button>
-        </form>
-        {results ? (
-          <div className="inventory-list" aria-label="نتائج البحث">
-            {results.length === 0 ? <p className="inventory-hint">لا توجد أصناف مطابقة لـ «{searched}».</p> : (
-              <div className="inventory-row-actions">
-                <button type="button" className="ghost-button" disabled={allFound} onClick={() => selectAll(true)}>تحديد الكل ({results.length})</button>
-                <button type="button" className="ghost-button" onClick={() => selectAll(false)}>إلغاء الكل</button>
-                {truncated ? <small className="inventory-hint">تظهر أول {results.length} نتيجة. ضيّق البحث لرؤية المزيد.</small> : null}
-              </div>
-            )}
-            {resultsPaging.visible.map((item) => {
-              const picked = chosen.has(item.itemId);
+      {step === "branches" ? (
+        <section className="inventory-section" aria-label="اختيار الفروع">
+          <strong>{editing.id ? `تعديل «${editing.name}» · اختيار الفروع` : "اختيار الفروع"}</strong>
+          <div className="inventory-row-actions">
+            <button type="button" className="ghost-button" onClick={() => setEditing((current) => ({ ...current, branchIds: branches.map((branch) => branch.branchId) }))}>تحديد الكل</button>
+            <button type="button" className="ghost-button" onClick={() => setEditing((current) => ({ ...current, branchIds: [] }))}>إلغاء تحديد الكل</button>
+          </div>
+          <div className="inventory-checklist">
+            {branches.map((branch) => {
+              const picked = editing.branchIds.includes(branch.branchId);
               return (
-                <label key={item.itemId} className={picked ? "inventory-select-row is-selected" : "inventory-select-row"}>
-                  <input type="checkbox" checked={picked} onChange={() => toggle(item)} aria-label={`تحديد ${item.itemNumber}`} />
-                  <span className="inventory-number">{item.itemNumber}</span>
-                  <span>{item.itemName || "صنف بدون اسم"}</span>
+                <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
+                  <input type="checkbox" checked={picked} onChange={() => toggleBranch(branch.branchId)} />
+                  {branch.branchName}
                 </label>
               );
             })}
-            <Pager {...resultsPaging} />
           </div>
-        ) : null}
+          <button
+            type="button"
+            className="primary-button"
+            disabled={editing.branchIds.length === 0}
+            onClick={() => { setNotice(""); setStep("items"); }}
+          >التالي</button>
+          <button type="button" className="link-button" onClick={() => { setNotice(""); setStep("list"); }}>الجرود المحددة ({list.length})</button>
+        </section>
+      ) : null}
 
-        <strong>أصناف الجرد ({editing.items.length})</strong>
-        {editing.items.length === 0 ? <p className="inventory-hint">ابحث عن الأصناف وحدّدها لإضافتها. العبوة تتحول لصنف الوحدة الأساسية.</p> : null}
-        <div className="inventory-list" aria-label="أصناف الجرد">
-          {pickedPaging.visible.map((item) => (
-            <div key={item.itemId} className="inventory-select-row is-selected">
-              <span className="inventory-number">{item.itemNumber}</span>
-              <span>{item.itemName || "صنف بدون اسم"}</span>
-              <button type="button" className="ghost-button" aria-label={`إزالة ${item.itemNumber}`} onClick={() => toggle(item)}>إزالة</button>
+      {step === "items" ? (
+        <section className="inventory-section" aria-label="اختيار الأصناف">
+          <strong>اختيار الأصناف</strong>
+          <form className="inventory-search" onSubmit={(event) => void search(event)}>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب اسم أو رقم الصنف" aria-label="اكتب اسم أو رقم الصنف" />
+            {query ? <button type="button" className="ghost-button" onClick={() => { setQuery(""); setResults(null); setSearched(""); }}>مسح</button> : null}
+            <button type="submit" className="primary-button">بحث</button>
+          </form>
+          <div className="inventory-row-actions">
+            <button type="button" className="ghost-button" disabled={!results?.length || allFound} onClick={() => selectAll(true)}>تحديد الكل</button>
+            <button type="button" className="ghost-button" disabled={!results?.length} onClick={() => selectAll(false)}>إلغاء تحديد الكل</button>
+          </div>
+          <p className="inventory-hint" role="status">تم تحديد {editing.items.length} صنفاً</p>
+          {results ? (
+            <div className="inventory-list" aria-label="نتائج البحث">
+              {results.length === 0 ? <p className="inventory-hint">لا توجد أصناف مطابقة لـ «{searched}».</p> : null}
+              {truncated ? <small className="inventory-hint">تظهر أول {results.length} نتيجة. ضيّق البحث لرؤية المزيد.</small> : null}
+              {resultsPaging.visible.map((item) => {
+                const picked = chosen.has(item.itemId);
+                return (
+                  <label key={item.itemId} className={picked ? "inventory-select-row is-selected" : "inventory-select-row"}>
+                    <input type="checkbox" checked={picked} onChange={() => toggle(item)} aria-label={`تحديد ${item.itemNumber}`} />
+                    <span className="inventory-number">{item.itemNumber}</span>
+                    <span>{item.itemName || "صنف بدون اسم"}</span>
+                  </label>
+                );
+              })}
+              <Pager {...resultsPaging} />
             </div>
-          ))}
-          <Pager {...pickedPaging} />
-        </div>
+          ) : null}
+          {editing.items.length > 0 ? (
+            <details className="inventory-picked">
+              <summary>الأصناف المحددة ({editing.items.length})</summary>
+              <div className="inventory-list" aria-label="أصناف الجرد">
+                {pickedPaging.visible.map((item) => (
+                  <div key={item.itemId} className="inventory-select-row is-selected">
+                    <span className="inventory-number">{item.itemNumber}</span>
+                    <span>{item.itemName || "صنف بدون اسم"}</span>
+                    <button type="button" className="ghost-button" aria-label={`إزالة ${item.itemNumber}`} onClick={() => toggle(item)}>إزالة</button>
+                  </div>
+                ))}
+                <Pager {...pickedPaging} />
+              </div>
+            </details>
+          ) : null}
+          <button
+            type="button"
+            className="primary-button"
+            disabled={editing.items.length === 0}
+            onClick={() => { setNotice(""); setStep("name"); }}
+          >تثبيت</button>
+        </section>
+      ) : null}
 
-        <div className="inventory-row-actions">
-          <button type="button" className="primary-button" onClick={() => void save()}>حفظ</button>
-          {editing.id ? <button type="button" className="ghost-button" onClick={() => { setEditing(EMPTY_DRAFT); setResults(null); }}>جديد</button> : null}
-        </div>
-      </section>
+      {step === "name" ? (
+        <section className="inventory-section" aria-label="تثبيت الجرد">
+          <strong>تثبيت الجرد</strong>
+          <label>
+            اسم الجرد
+            <input
+              value={editing.name}
+              onChange={(event) => setEditing({ ...editing, name: event.target.value })}
+              placeholder="مثال: نكهات Lume"
+              aria-label="اسم الجرد"
+              autoFocus
+            />
+          </label>
+          <p className="inventory-hint">{editing.branchIds.length} فرع · {editing.items.length} صنف</p>
+          <div className="inventory-row-actions">
+            <button type="button" className="primary-button" onClick={() => void save()}>تثبيت الجرد</button>
+            <button type="button" className="ghost-button" onClick={() => setStep("items")}>رجوع</button>
+          </div>
+        </section>
+      ) : null}
 
-      <table className="inventory-table" aria-label="الجرود المخصصة">
-        <thead><tr><th>الاسم</th><th>الأصناف</th><th>الفروع</th><th>الحالة</th><th>إجراءات</th></tr></thead>
-        <tbody>
-          {list.length === 0 ? <tr><td colSpan={5}>لا يوجد جرد مخصص بعد.</td></tr> : null}
-          {listPaging.visible.map((entry) => (
-            <tr key={entry.customInventoryId} className={editing.id === entry.customInventoryId ? "is-selected" : undefined}>
-              <td>
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => { setEditing({ id: entry.customInventoryId, name: entry.name, isActive: entry.isActive, branchIds: entry.branchIds, items: entry.items }); setResults(null); setNotice(""); }}
-                >
-                  {entry.name}
-                </button>
-              </td>
-              <td>{entry.items.length}</td>
-              <td>{entry.branchNames.join("، ")}</td>
-              <td>{entry.isActive ? "نشط" : <span className="inventory-badge">موقوف</span>}</td>
-              <td>
-                <div className="inventory-row-actions">
-                  <button type="button" className="ghost-button" onClick={() => void setActive(entry, !entry.isActive)}>{entry.isActive ? "توقيف" : "تفعيل"}</button>
-                  <button type="button" className="ghost-button" onClick={() => remove(entry)}>حذف</button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <Pager {...listPaging} label="جرد" />
+      {step === "list" ? (
+        <section className="inventory-section" aria-label="الجرود المحددة">
+          <strong>الجرود المحددة</strong>
+          <table className="inventory-table" aria-label="الجرود المخصصة">
+            <thead><tr><th>الاسم</th><th>الأصناف</th><th>الفروع</th><th>الحالة</th><th>إجراءات</th></tr></thead>
+            <tbody>
+              {list.length === 0 ? <tr><td colSpan={5}>لا يوجد جرد مخصص بعد.</td></tr> : null}
+              {listPaging.visible.map((entry) => (
+                <tr key={entry.customInventoryId} className={editing.id === entry.customInventoryId ? "is-selected" : undefined}>
+                  <td>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setEditing({ id: entry.customInventoryId, name: entry.name, isActive: entry.isActive, branchIds: entry.branchIds, items: entry.items });
+                        setResults(null);
+                        setNotice("");
+                        setStep("branches");
+                      }}
+                    >
+                      {entry.name}
+                    </button>
+                  </td>
+                  <td>{entry.items.length}</td>
+                  <td>{entry.branchNames.join("، ")}</td>
+                  <td>{entry.isActive ? "نشط" : <span className="inventory-badge">موقوف</span>}</td>
+                  <td>
+                    <div className="inventory-row-actions">
+                      <button type="button" className="ghost-button" onClick={() => void setActive(entry, !entry.isActive)}>{entry.isActive ? "توقيف" : "تفعيل"}</button>
+                      <button type="button" className="ghost-button" onClick={() => remove(entry)}>حذف</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Pager {...listPaging} label="جرد" />
+          <button type="button" className="primary-button" onClick={restart}>جرد مخصص جديد</button>
+        </section>
+      ) : null}
     </div>
   );
 }

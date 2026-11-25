@@ -1,5 +1,6 @@
 import type { DeviceSession } from "../types/setup";
 import { deviceHeaders, SetupClientError } from "./client";
+import { BACKGROUND_HEADER } from "../components/waitingActivity";
 import type { InventoryType } from "./inventory";
 
 export interface ShortageBranchOption {
@@ -290,6 +291,13 @@ export function createShortageClient(session: DeviceSession) {
       get<{ itemId: string; branches: ItemBranchState[] }>(`/api/shortages/items/${encodeURIComponent(itemId)}/branches`, "تعذر تحميل كميات الفروع."),
     correct: (itemId: string, branchId: string, requestId: string, quantity: number, reason: string, expectedQuantity: number | null = null) =>
       send<{ applied: boolean; pending: boolean }>(`/api/shortages/items/${encodeURIComponent(itemId)}/corrections`, { branchId, requestId, quantity, expectedQuantity, reason }, "تعذر تصحيح الكمية."),
+    /** عدد مهام المتابعة المفتوحة لزر «متابعة النواقص (N)»، طلب خلفي بلا «يرجى الانتظار». */
+    openTaskCount: async () => {
+      const response = await fetch("/api/shortages/tasks/open-count", { headers: { ...headers, [BACKGROUND_HEADER]: "1" } });
+      if (!response.ok) return null;
+      const open = ((await response.json()) as { open?: unknown }).open;
+      return typeof open === "number" ? open : null;
+    },
     tasks: (tab: FollowUpTab, from: string, to: string) =>
       get<FollowUpView>(`/api/shortages/tasks?tab=${tab}&${range(from, to)}`, "تعذر تحميل متابعة النواقص."),
     taskAction: (body: { action: string; taskId?: string; itemId?: string; supplyRequestId?: string | null; supplierId?: string; quantity?: number }) =>

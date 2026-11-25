@@ -682,6 +682,17 @@ public sealed class ShortageService(InventoryCountService counting)
     // متابعة النواقص
     // ------------------------------------------------------------------
 
+    /// <summary>كما في النظام القديم: عدد مهام المتابعة المفتوحة على زر «متابعة النواقص (N)».</summary>
+    public async Task<object> OpenTaskCountAsync(PosDeviceContext actor, CancellationToken cancellationToken)
+    {
+        await using var central = await CentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT COUNT(*) FROM dbo.ShortageTasks WHERE BusinessID = @business AND Status = N'Open';",
+            central);
+        Id(command, "@business", actor.BusinessId);
+        return new { open = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) };
+    }
+
     public async Task<object> TasksAsync(PosDeviceContext actor, string? tab, DateOnly? from, DateOnly? to, CancellationToken cancellationToken)
     {
         var (start, end) = ShortageRules.Range(from, to, InventoryCalendar.Today(), ShortageRules.FollowUpDefaultDays);

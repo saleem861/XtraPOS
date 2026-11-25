@@ -732,3 +732,60 @@
   color: var(--muted);
   font-weight: 400;
 }
+
+.inventory-section .link-button {
+  align-self: center;
+  border: 0;
+  background: none;
+  color: var(--navy);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inventory-picked summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 6px 0;
+}
+
+/* «كمية صنف» كما في النظام القديم: بطاقة لكل فرع ورصيده و«تصحيح». */
+.inventory-branch-quantities {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inventory-branch-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+}
+
+.inventory-branch-card > .primary-button {
+  align-self: flex-start;
+}
+
+.inventory-branch-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inventory-branch-head strong {
+  font-size: 22px;
+}
+
+.inventory-total {
+  margin: 6px 0;
+  font-size: 17px;
+}
+
+.inventory-panel-title {
+  font-size: 19px;
+}
