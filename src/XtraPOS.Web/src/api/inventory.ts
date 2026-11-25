@@ -1,5 +1,6 @@
 import type { DeviceSession } from "../types/setup";
 import { deviceHeaders, SetupClientError } from "./client";
+import { BACKGROUND_HEADER } from "../components/waitingActivity";
 
 export type InventoryType = "Important" | "Periodic" | "Manual" | "Custom";
 
@@ -11,8 +12,8 @@ export interface InventoryConfiguration {
   defaultPage: number | null;
   importantItems: number;
   pageItems: { page: number; items: number }[];
-  /** الجرد المخصص لهذا الفرع كما نزل من المركز («تحديد جرد»). */
-  customInventories?: { customInventoryId: string; name: string; items: number }[];
+  /** الجرد المخصص لهذا الفرع كما نزل من المركز («تحديد جرد»)، وحالته في كل فرع مخصص له (كما في النظام القديم). */
+  customInventories?: { customInventoryId: string; name: string; items: number; branches?: { branchName: string; completed: boolean }[] }[];
 }
 
 export interface InventorySession {
@@ -68,9 +69,14 @@ async function readJson<T>(response: Response, fallback: string): Promise<T> {
     } catch {
       message = response.status === 403 ? "ليست لديك صلاحية الجرد." : fallback;
     }
-    throw new SetupClientError(message);
+    throw Object.assign(new SetupClientError(message), { status: response.status });
   }
   return (await response.json()) as T;
+}
+
+/** رمز الاستجابة لخطأ من الخادم (4xx خطأ في الطلب لا يُعاد، 5xx أو انقطاع يُعاد). */
+export function errorStatus(error: unknown): number | undefined {
+  return typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
 }
 
 export interface InventoryBranch {
@@ -128,10 +134,11 @@ export function createInventoryClient(session: DeviceSession, branchId = "") {
       const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/lookup${query(params)}`, { headers });
       return readJson<InventoryLookup>(response, "الصنف غير موجود.");
     },
-    async count(sessionId: string, itemId: string, quantity: number) {
+    /** ملاحظة المالك: الحفظ في الخلفية، فلا يظهر «يرجى الانتظار» لكل صنف. */
+    async count(sessionId: string, itemId: string, quantity: number, background = false) {
       const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/count`, {
         method: "PUT",
-        headers: json,
+        headers: background ? { ...json, [BACKGROUND_HEADER]: "1" } : json,
         body: JSON.stringify({ itemId, quantity, ...(remote ? { branchId: remote } : {}) }),
       });
       return readJson<{ session: InventorySession; item: InventoryItem | null }>(response, "تعذر حفظ العد. حاول مرة أخرى.");

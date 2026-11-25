@@ -46,7 +46,25 @@ public sealed class ShortageService(InventoryCountService counting)
 
         var users = await UsersAsync(central, null, cancellationToken);
         var draft = await DraftAsync(central, actor, cancellationToken);
-        return new { branches, customInventories = customs, users, draft, pageCount = InventoryCountRules.PeriodicPageCount };
+
+        // كما في النظام القديم: «صفحات اليوم محددة مسبقاً ويمكن تغييرها».
+        var todayPages = new List<int>();
+        await using (var schedule = new SqlCommand(
+            """
+            IF OBJECT_ID(N'dbo.InventorySchedule', N'U') IS NOT NULL
+                SELECT DISTINCT InventoryPage FROM dbo.InventorySchedule
+                WHERE DayOfWeek = @day AND IsEnabled = 1 AND InventoryPage BETWEEN 1 AND @pages
+                ORDER BY InventoryPage;
+            """,
+            central))
+        {
+            schedule.Parameters.Add("@day", SqlDbType.TinyInt).Value = (byte)InventoryCalendar.LocalNow().DayOfWeek;
+            schedule.Parameters.Add("@pages", SqlDbType.Int).Value = InventoryCountRules.PeriodicPageCount;
+            await using var reader = await schedule.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) todayPages.Add(Convert.ToInt32(reader.GetValue(0)));
+        }
+
+        return new { branches, customInventories = customs, users, draft, pageCount = InventoryCountRules.PeriodicPageCount, todayPages };
     }
 
     /// <summary>
@@ -681,6 +699,17 @@ public sealed class ShortageService(InventoryCountService counting)
     // ------------------------------------------------------------------
     // متابعة النواقص
     // ------------------------------------------------------------------
+
+    /// <summary>كما في النظام القديم: عدد مهام المتابعة المفتوحة على زر «متابعة النواقص (N)».</summary>
+    public async Task<object> OpenTaskCountAsync(PosDeviceContext actor, CancellationToken cancellationToken)
+    {
+        await using var central = await CentralAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            "SELECT COUNT(*) FROM dbo.ShortageTasks WHERE BusinessID = @business AND Status = N'Open';",
+            central);
+        Id(command, "@business", actor.BusinessId);
+        return new { open = (int)(await command.ExecuteScalarAsync(cancellationToken) ?? 0) };
+    }
 
     public async Task<object> TasksAsync(PosDeviceContext actor, string? tab, DateOnly? from, DateOnly? to, CancellationToken cancellationToken)
     {

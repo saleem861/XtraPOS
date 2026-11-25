@@ -656,3 +656,182 @@
     padding-bottom: 40vh;
   }
 }
+
+/* تسلسل النظام القديم: بطاقة «تم اختيار الفرع» و«تم اختيار نوع الجرد» في الوسط. */
+.inventory-confirm-card {
+  width: 100%;
+  max-width: 420px;
+  margin: 24px auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 20px;
+  border: 1px solid var(--xp-border);
+  border-radius: 16px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  text-align: center;
+}
+
+.inventory-confirm-card > strong {
+  font-size: 21px;
+}
+
+.inventory-confirm-card > small {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.inventory-confirm-card > .primary-button {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.inventory-resume {
+  width: 100%;
+  max-width: 420px;
+  margin: 12px auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  text-align: center;
+}
+
+.inventory-resume .primary-button:disabled {
+  opacity: 0.5;
+}
+
+.inventory-resume .link-button {
+  margin-top: 6px;
+  border: 0;
+  background: none;
+  color: var(--navy);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inventory-custom-branches {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inventory-card:has(.inventory-custom-branches) {
+  flex-wrap: wrap;
+}
+
+.inventory-last-saved {
+  margin: 4px 0;
+  color: var(--xp-save);
+}
+
+.inventory-saved.is-pending {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.inventory-section .link-button {
+  align-self: center;
+  border: 0;
+  background: none;
+  color: var(--navy);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inventory-picked summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 6px 0;
+}
+
+/* «كمية صنف» كما في النظام القديم: بطاقة لكل فرع ورصيده و«تصحيح». */
+.inventory-branch-quantities {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inventory-branch-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+}
+
+.inventory-branch-card > .primary-button {
+  align-self: flex-start;
+}
+
+.inventory-branch-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inventory-branch-head strong {
+  font-size: 22px;
+}
+
+.inventory-total {
+  margin: 6px 0;
+  font-size: 17px;
+}
+
+.inventory-panel-title {
+  font-size: 19px;
+}
+
+/* «هل استلمت هذا الصنف؟» نعم/لا. */
+.inventory-yes-no {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.inventory-yes-no > span {
+  flex-basis: 100%;
+}
+
+.inventory-yes-no .ghost-button.is-selected {
+  background: var(--navy);
+  color: #fff;
+}
+
+/* «عدد أيام التوفير»: − N + كما في النظام القديم. */
+.inventory-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin: 8px 0;
+}
+
+.inventory-stepper button {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font-size: 24px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.inventory-stepper output {
+  min-width: 48px;
+  text-align: center;
+  font-size: 28px;
+  font-weight: 700;
+}

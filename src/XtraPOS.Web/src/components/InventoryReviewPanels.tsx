@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import type { InventoryType } from "../api/inventory";
 import {
-  newRequestId,
   type AuditLine,
   type AuditMode,
   type AuditView,
@@ -32,6 +31,8 @@ import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { Waiting } from "./Waiting";
 import { distinctBy } from "../distinct";
+import type { ShortageClient } from "../api/shortages";
+import { BranchQuantities } from "./ShortagePanels";
 
 export interface PanelConfirmation {
   title: string;
@@ -488,23 +489,44 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
 // معالجة الأصناف: التصنيف و«كمية صنف»
 // ======================================================================
 
-export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage, onBusy, onConfirm }: {
+type ItemMode = "choose" | "quantity" | "classify";
+type FoundItem = { itemId: string; itemNumber: string; itemName: string | null };
+
+/**
+ * «معالجة الأصناف» كما في النظام القديم: زرّان «كمية صنف» و«تغيير تصنيف الصنف».
+ * كلاهما يبدأ بالبحث برقم الصنف أو الاسم أو الباركود، ثم قائمة النتائج، ثم الصنف.
+ * «كمية صنف»: رصيد كل فرع على المركز مع «تصحيح» لكل فرع، و«إجمالي الكمية المتاحة» و«تحديث».
+ */
+export function ItemProcessingPanel({ client, shortageClient, canClassify, canCorrect, onMessage, onBusy, onConfirm, onRegisterBack }: {
   client: InventoryReviewClient;
+  shortageClient: ShortageClient;
   canClassify: boolean;
   canCorrect: boolean;
   onMessage: (message: string) => void;
   onBusy: (label: string) => void;
   onConfirm: (confirmation: PanelConfirmation) => void;
+  onRegisterBack?: (handler: BackHandler | null) => void;
 }) {
+  const [mode, setMode] = useState<ItemMode>("choose");
   const [code, setCode] = useState("");
+  const [results, setResults] = useState<FoundItem[] | null>(null);
   const [item, setItem] = useState<ItemProcessing | null>(null);
   const [important, setImportant] = useState(false);
   const [page, setPage] = useState("");
   const [supplyDays, setSupplyDays] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [reason, setReason] = useState("");
-  const [correctionId, setCorrectionId] = useState(() => newRequestId());
   const [notice, setNotice] = useState("");
+  const resultsPaging = usePaging(results ?? EMPTY, code);
+
+  // «رجوع» في الهيدر: من الصنف إلى النتائج، ومن البحث إلى الزرّين.
+  useEffect(() => {
+    if (!onRegisterBack) return;
+    onRegisterBack(() => {
+      if (item) { setItem(null); setNotice(""); return true; }
+      if (mode !== "choose") { setMode("choose"); setResults(null); setCode(""); setNotice(""); return true; }
+      return false;
+    });
+    return () => onRegisterBack(null);
+  }, [onRegisterBack, item, mode]);
 
   function show(next: ItemProcessing) {
     setItem(next);
@@ -513,25 +535,41 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
     setSupplyDays(next.supplyDays ? String(next.supplyDays) : "");
   }
 
-  async function find(event: FormEvent) {
-    event.preventDefault();
-    const text = code.trim();
-    if (!text) return;
+  async function open(text: string) {
     onMessage("");
     setNotice("");
     onBusy("جاري البحث عن الصنف...");
     try {
       show(await client.item(text));
-      setQuantity("");
-      setReason("");
-      setCorrectionId(newRequestId());
-      setCode("");
     } catch (error) {
       setItem(null);
       onMessage((error as Error).message);
     } finally {
       onBusy("");
     }
+  }
+
+  async function find(event: FormEvent) {
+    event.preventDefault();
+    const text = code.trim();
+    if (!text) return;
+    onMessage("");
+    setNotice("");
+    setItem(null);
+    onBusy("جاري البحث...");
+    let found: FoundItem[] = [];
+    try {
+      found = distinctBy((await shortageClient.searchItems(text)).items, (entry) => entry.itemNumber);
+    } catch {
+      found = [];
+    } finally {
+      onBusy("");
+    }
+    // رقم واحد مطابق أو باركود: يفتح الصنف مباشرة.
+    const exact = found.find((entry) => entry.itemNumber === text);
+    if (exact || found.length === 1) { setResults(found); void open((exact ?? found[0]).itemNumber); return; }
+    if (found.length === 0) { setResults(null); void open(text); return; }
+    setResults(found);
   }
 
   async function saveClassification() {
@@ -552,103 +590,91 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
     }
   }
 
-  function correct() {
-    if (!item) return;
-    const value = parseCountInput(quantity.trim() === "" ? "0" : quantity);
-    if (value === null) { onMessage("أدخل الكمية الصحيحة. الصفر مسموح والسالبة غير مسموحة."); return; }
-    if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
-    const before = item.quantityKnown ? formatQuantity(item.onHandQuantity) : "غير معروفة";
-    onConfirm({
-      title: "تصحيح الكمية",
-      message: `سيتم تغيير رصيد ${item.itemName ?? item.itemNumber} في هذا الفرع من ${before} إلى ${formatQuantity(value)}. في النظام المركزي يُثبَّت التصحيح على المركز أولاً، ويأخذ الفرع الفارق في أول مزامنة. هل تريد المتابعة؟`,
-      accept: "تصحيح",
-      onAccept: () => {
-        void (async () => {
-          onMessage("");
-          setNotice("");
-          onBusy("جاري تصحيح الكمية...");
-          try {
-            show(await client.correctQuantity(item.itemId, correctionId, value, reason.trim()));
-            setQuantity("");
-            setReason("");
-            setCorrectionId(newRequestId());
-            setNotice("تم تصحيح الكمية.");
-          } catch (error) {
-            onMessage((error as Error).message);
-          } finally {
-            onBusy("");
-          }
-        })();
-      },
-    });
+  if (mode === "choose") {
+    return (
+      <div className="inventory-menu" aria-label="معالجة الأصناف">
+        <button type="button" className="inventory-card" onClick={() => setMode("quantity")}><strong>كمية صنف</strong></button>
+        <button type="button" className="inventory-card" onClick={() => setMode("classify")}><strong>تغيير تصنيف الصنف</strong></button>
+      </div>
+    );
   }
 
   return (
     <div className="inventory-items">
+      <strong className="inventory-panel-title">{mode === "quantity" ? "كمية صنف" : "تغيير تصنيف الصنف"}</strong>
       <form className="inventory-search" onSubmit={(event) => void find(event)}>
-        <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="رقم الصنف / باركود" aria-label="رقم الصنف" />
-        <button type="submit" className="ghost-button">بحث</button>
+        <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="بحث برقم الصنف أو الاسم أو الباركود" aria-label="رقم الصنف" />
+        <button type="submit" className="primary-button">بحث</button>
       </form>
 
       {notice ? <p className="inventory-notice" role="status">{notice}</p> : null}
-      {!item ? <p className="inventory-hint">اكتب رقم الصنف أو امسح الباركود ثم اضغط «بحث».</p> : null}
+      {!item && !results ? <p className="inventory-hint">اكتب رقم الصنف أو اسمه أو امسح الباركود ثم اضغط «بحث».</p> : null}
+
+      {!item && results && results.length > 1 ? (
+        <div className="inventory-list" aria-label="نتائج البحث">
+          {resultsPaging.visible.map((entry) => (
+            <button key={entry.itemId} type="button" className="inventory-card" onClick={() => void open(entry.itemNumber)}>
+              <strong>{entry.itemNumber}</strong>
+              <small>{entry.itemName || "صنف بدون اسم"}</small>
+            </button>
+          ))}
+          <Pager {...resultsPaging} />
+        </div>
+      ) : null}
 
       {item ? (
         <>
           <article className="inventory-row">
             <div className="inventory-row-name">
-              <span className="inventory-number">{item.itemNumber}</span>
-              <strong>{item.itemName || "صنف بدون اسم"}</strong>
+              <span className="inventory-number">رقم الصنف: {item.itemNumber}</span>
+              <strong>اسم الصنف: {item.itemName || "صنف بدون اسم"}</strong>
               {item.convertedFromPackage ? <small>تم تحويل {item.scannedItemNumber} إلى وحدة الجرد الأساسية.</small> : null}
             </div>
           </article>
 
-          <section className="inventory-section" aria-label="التصنيف">
-            <strong>التصنيف</strong>
-            <label className="inventory-pick">
-              <input type="checkbox" checked={important} disabled={!canClassify} onChange={(event) => setImportant(event.target.checked)} />
-              صنف مهم
-            </label>
-            <label>صفحة الجرد الدوري
-              <select value={page} disabled={!canClassify} onChange={(event) => setPage(event.target.value)}>
-                <option value="">بلا صفحة</option>
-                {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>الصفحة {value}</option>)}
-              </select>
-            </label>
-            <label>أيام التزويد
-              <input inputMode="numeric" value={supplyDays} disabled={!canClassify} onChange={(event) => setSupplyDays(event.target.value)} aria-label="أيام التزويد" />
-            </label>
-            {item.classifiedAt ? <small className="inventory-hint">آخر تعديل: {item.classifiedBy ?? "—"} · {formatDateTime(item.classifiedAt)}</small> : null}
-            {canClassify ? <button type="button" className="primary-button" onClick={() => void saveClassification()}>حفظ التصنيف</button> : null}
-          </section>
-
-          <section className="inventory-section" aria-label="كمية صنف">
-            <strong>كمية صنف</strong>
-            <span>الكمية الحالية في الفرع: {item.quantityKnown ? formatQuantity(item.onHandQuantity) : "غير معروفة"}</span>
-            {canCorrect ? (
-              <>
-                <label>الكمية الصحيحة
-                  <CountQuantityField label="الكمية الصحيحة" value={quantity} onChange={(next) => { setQuantity(next); setCorrectionId(newRequestId()); }} onEnter={correct} />
-                </label>
-                <label>سبب التصحيح
-                  <input value={reason} maxLength={500} onChange={(event) => { setReason(event.target.value); setCorrectionId(newRequestId()); }} aria-label="سبب التصحيح" />
-                </label>
-                <button type="button" className="primary-button" onClick={correct}>تصحيح الكمية</button>
-              </>
-            ) : null}
-            {item.corrections.length > 0 ? (
-              <ul className="inventory-history" aria-label="آخر التصحيحات">
-                {item.corrections.map((entry) => (
-                  <li key={`${entry.correctedAt}-${entry.newQuantity}`}>
-                    {formatDateTime(entry.correctedAt)} · {entry.userName ?? "—"}: {formatQuantity(entry.previousQuantity)} ← {formatQuantity(entry.newQuantity)}
-                    {entry.deltaQuantity !== null && entry.deltaQuantity !== undefined
-                      ? ` · المفترضة ${formatQuantity(entry.expectedQuantity)}، المعدودة ${formatQuantity(entry.countedQuantity)}، الفارق ${formatDifference(entry.deltaQuantity)}`
-                      : ""} ({entry.reason})
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </section>
+          {mode === "quantity" ? (
+            <section className="inventory-section" aria-label="كمية صنف">
+              <BranchQuantities
+                client={shortageClient}
+                itemId={item.itemId}
+                canCorrect={canCorrect}
+                onMessage={onMessage}
+                onBusy={onBusy}
+                onConfirm={onConfirm}
+              />
+              {item.corrections.length > 0 ? (
+                <ul className="inventory-history" aria-label="آخر التصحيحات">
+                  {item.corrections.map((entry) => (
+                    <li key={`${entry.correctedAt}-${entry.newQuantity}`}>
+                      {formatDateTime(entry.correctedAt)} · {entry.userName ?? "—"}: {formatQuantity(entry.previousQuantity)} ← {formatQuantity(entry.newQuantity)}
+                      {entry.deltaQuantity !== null && entry.deltaQuantity !== undefined
+                        ? ` · المفترضة ${formatQuantity(entry.expectedQuantity)}، المعدودة ${formatQuantity(entry.countedQuantity)}، الفارق ${formatDifference(entry.deltaQuantity)}`
+                        : ""} ({entry.reason})
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          ) : (
+            <section className="inventory-section" aria-label="التصنيف">
+              <strong>التصنيف</strong>
+              <label className="inventory-pick">
+                <input type="checkbox" checked={important} disabled={!canClassify} onChange={(event) => setImportant(event.target.checked)} />
+                صنف مهم
+              </label>
+              <label>صفحة الجرد الدوري
+                <select value={page} disabled={!canClassify} onChange={(event) => setPage(event.target.value)}>
+                  <option value="">بلا صفحة</option>
+                  {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>الصفحة {value}</option>)}
+                </select>
+              </label>
+              <label>أيام التزويد
+                <input inputMode="numeric" value={supplyDays} disabled={!canClassify} onChange={(event) => setSupplyDays(event.target.value)} aria-label="أيام التزويد" />
+              </label>
+              {item.classifiedAt ? <small className="inventory-hint">آخر تعديل: {item.classifiedBy ?? "—"} · {formatDateTime(item.classifiedAt)}</small> : null}
+              {canClassify ? <button type="button" className="primary-button" onClick={() => void saveClassification()}>حفظ التصنيف</button> : null}
+            </section>
+          )}
         </>
       ) : null}
       <DesktopKeyboard />
