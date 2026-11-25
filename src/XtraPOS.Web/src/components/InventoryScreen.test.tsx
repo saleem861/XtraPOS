@@ -223,3 +223,49 @@ describe("counting another branch", () => {
     await vi.waitFor(() => expect(calls.some((call) => call.includes("/items?branchId=b2"))).toBe(true));
   });
 });
+
+describe("counting rules from the owner's notes", () => {
+  it("defaults to a faded zero, highlights a saved item in place, and enables posting only when everything is counted", async () => {
+    const bodies: unknown[] = [];
+    let counted = 0;
+    const lines = [item({ itemId: "i1", itemNumber: "650" }), item({ itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة" })];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/inventory/configuration")) {
+        return reply({ businessDate: "2026-11-23", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: 7, importantItems: 2, pageItems: [] });
+      }
+      if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: null });
+      const current = { ...openSession, countedItems: counted, uncountedItems: 2 - counted };
+      if (url === "/api/inventory/sessions") return reply({ session: current, resumed: false });
+      if (url.includes("/items")) return reply({ session: current, items: lines });
+      if (url.includes("/count")) {
+        const body = JSON.parse(String(init?.body)) as { itemId: string; quantity: number };
+        bodies.push(body);
+        counted += 1;
+        const saved = { ...lines.find((line) => line.itemId === body.itemId)!, isCounted: true, countedQuantity: body.quantity };
+        return reply({ session: { ...openSession, countedItems: counted, uncountedItems: 2 - counted }, item: saved });
+      }
+      return reply({});
+    }));
+    render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
+    await openImportantCount();
+
+    const first = await screen.findByRole("textbox", { name: "الكمية الفعلية فحم سريع" });
+    expect(first.getAttribute("placeholder")).toBe("0");
+    expect((first as HTMLInputElement).value).toBe("");
+    const post = screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement;
+    expect(post.disabled).toBe(true);
+    expect(screen.getByText(/بقي 2/)).toBeTruthy();
+
+    const firstRow = first.closest("article") as HTMLElement;
+    await userEvent.click(within(firstRow).getByRole("button", { name: "حفظ" }));
+    await vi.waitFor(() => expect(bodies[0]).toMatchObject({ itemId: "i1", quantity: 0 }));
+    const saved = await screen.findByLabelText("650 تم حفظ العد");
+    expect(saved.className).toContain("is-selected");
+    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(true);
+
+    const second = screen.getByRole("textbox", { name: "الكمية الفعلية رأس أرجيلة" });
+    await userEvent.type(second, "3");
+    await userEvent.click(within(second.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
+    await vi.waitFor(() => expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(false));
+  });
+});

@@ -460,12 +460,27 @@ public sealed class BranchAgentWorker(
         return true;
     }
 
+    /// <summary>
+    /// شاشة البيع تسأل كل ثانية؛ قراءة بطيئة من الخادم لا تُنتظر أكثر من ثانيتين (تُعاد في الثانية التالية)،
+    /// فلا تتراكم الطلبات ولا يبقى مؤشر الانتظار ظاهراً.
+    /// </summary>
     public async Task<SharedCounterView?> ReadCounterAsync(string token, CancellationToken cancellationToken)
     {
-        using var response = await SendMembershipAsync(HttpMethod.Get, "api/branch-agent/membership/counter/" + Uri.EscapeDataString(token), null, cancellationToken);
-        if (response is null || response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
-        return await response.Content.ReadFromJsonAsync<SharedCounterView>(Json, cancellationToken);
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(CounterReadTimeout);
+        try
+        {
+            using var response = await SendMembershipAsync(HttpMethod.Get, "api/branch-agent/membership/counter/" + Uri.EscapeDataString(token), null, limit.Token);
+            if (response is null || response.StatusCode == HttpStatusCode.NotFound || !response.IsSuccessStatusCode) return null;
+            return await response.Content.ReadFromJsonAsync<SharedCounterView>(Json, limit.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
     }
+
+    private static readonly TimeSpan CounterReadTimeout = TimeSpan.FromSeconds(2);
 
     public async Task ClearCounterAsync(string token, CancellationToken cancellationToken)
     {

@@ -92,4 +92,13 @@ public sealed class InventoryCountRulesTests
         Assert.Empty(InventoryEndpoints.ParsePages(null));
         Assert.Equal(new[] { 3, -1 }, InventoryEndpoints.ParsePages("3,x"));
     }
+
+    [Fact]
+    public void Posting_needs_every_item_counted()
+    {
+        Assert.False(InventoryCountRules.CanFinalize(0, 0));
+        Assert.False(InventoryCountRules.CanFinalize(46, 45));
+        Assert.True(InventoryCountRules.CanFinalize(46, 46));
+        Assert.True(InventoryCountRules.CanFinalize(3, 3));
+    }
 }

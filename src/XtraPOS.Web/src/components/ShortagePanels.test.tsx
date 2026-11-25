@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { correctionDifference, parseItemCodes, parseOptionalQuantity } from "../inventory/inventoryRules";
@@ -220,5 +220,43 @@ describe("define inventory", () => {
     expect(within(dialog).getByText(/سيُوقف ويختفي/)).toBeTruthy();
     await userEvent.click(within(dialog).getByRole("button", { name: "حذف" }));
     await vi.waitFor(() => expect(calls.some((call) => call.url === "/api/shortages/custom-inventories/c1/delete")).toBe(true));
+  });
+});
+
+describe("manual shortages", () => {
+  it("defaults to yesterday..today and lists only the employees who did a manual count in the period", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      urls.push(url);
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url === "/api/shortages/options") {
+        return reply({
+          branches: [{ branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: "2026-11-24T05:59:00Z", stale: false }],
+          customInventories: [], draft: null, pageCount: 12,
+          users: [{ userId: "u1", displayName: "سامر" }, { userId: "u2", displayName: "رنا" }],
+        });
+      }
+      if (url.startsWith("/api/shortages/manual-counters?")) {
+        const params = new URL(url, "http://x").searchParams;
+        return reply({ from: params.get("from"), to: params.get("to"), users: params.get("from") === "2026-01-01" ? [] : [{ userId: "u2", displayName: "رنا", employeeNumber: null, sessions: 2 }] });
+      }
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
+    await userEvent.click(await screen.findByRole("radio", { name: "الجرد اليدوي" }));
+
+    const from = screen.getByLabelText("من تاريخ") as HTMLInputElement;
+    const to = screen.getByLabelText("إلى تاريخ") as HTMLInputElement;
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Hebron", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    expect(to.value).toBe(today);
+    expect(new Date(`${today}T00:00:00Z`).getTime() - new Date(`${from.value}T00:00:00Z`).getTime()).toBe(86_400_000);
+
+    expect(await screen.findByRole("checkbox", { name: "رنا" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "سامر" })).toBeNull();
+    expect(urls.some((url) => url.startsWith("/api/shortages/manual-counters?") && url.includes("branchIds=br"))).toBe(true);
+
+    fireEvent.change(from, { target: { value: "2026-01-01" } });
+    expect(await screen.findByText("لا يوجد موظف نفّذ جرداً يدوياً في هذه الفترة.")).toBeTruthy();
   });
 });

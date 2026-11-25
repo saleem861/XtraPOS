@@ -437,6 +437,7 @@ public sealed class InventoryCountService(
             }
 
             await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, token);
+            await RequireAllCountedAsync(connection, transaction, sessionId, token);
             var lines = new List<(Guid LineId, Guid ItemId, decimal Counted, decimal? System, bool Known)>();
             await using (var read = new SqlCommand(
                 """
@@ -1077,6 +1078,29 @@ public sealed class InventoryCountService(
         ? "AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS assigned WHERE assigned.CustomInventoryID = inventory.CustomInventoryID AND assigned.BranchID = @branch)"
         : "";
 
+    /// <summary>قاعدة المالك: لا يُثبَّت أي جرد قبل حفظ عدّ كل أصنافه (اليدوي: كل ما أُضيف، وكله معدود عند إضافته).</summary>
+    private static async Task RequireAllCountedAsync(SqlConnection connection, SqlTransaction transaction, Guid sessionId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT COUNT(*), SUM(CASE WHEN IsCounted = 1 AND CountedQuantity IS NOT NULL THEN 1 ELSE 0 END)
+            FROM dbo.InventorySessionItems WHERE SessionID = @id;
+            """,
+            connection,
+            transaction);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        var total = reader.GetInt32(0);
+        var counted = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+        if (!InventoryCountRules.CanFinalize(total, counted))
+        {
+            throw new InventoryException(total == 0
+                ? "لا توجد أصناف معدودة لتثبيتها."
+                : $"احفظ عدّ كل الأصناف قبل تثبيت الجرد (بقي {total - counted}).");
+        }
+    }
+
     /// <summary>الفروع التي يمكن جردها: فرع الجهاز دائماً، وفروع المركز النشطة (غير المخازن) إن كان متاحاً.</summary>
     public async Task<object> BranchesAsync(PosDeviceContext device, CancellationToken cancellationToken)
     {
@@ -1159,6 +1183,7 @@ public sealed class InventoryCountService(
             }
 
             var session = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
+            await RequireAllCountedAsync(connection, transaction, sessionId, cancellationToken);
             var from = "فرع آخر";
             await using (var origin = new SqlCommand("SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", connection, transaction))
             {

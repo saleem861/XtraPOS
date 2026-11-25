@@ -26,6 +26,13 @@ public static class ShortageEndpoints
 
         group.MapGet("/options", (HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [Process], token, caller => service.OptionsAsync(caller.Context, token)));
+        group.MapGet("/manual-counters", (DateOnly? from, DateOnly? to, string? branchIds, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
+            Run(http, auth, permissions, [Process], token, caller => service.ManualCountersAsync(
+                caller.Context,
+                from,
+                to,
+                (branchIds ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(part => Guid.TryParse(part, out var id) ? id : Guid.Empty).Where(id => id != Guid.Empty).ToList(),
+                token)));
         group.MapPost("/runs", (ShortageService.StartRequest? body, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>
             Run(http, auth, permissions, [Process], token, caller => service.StartAsync(caller.Context, body ?? new(), token)));
         group.MapGet("/runs/{runId:guid}", (Guid runId, HttpContext http, AuthService auth, PermissionService permissions, ShortageService service, CancellationToken token) =>

@@ -50,6 +50,10 @@ public sealed record ShortageDecision(decimal? Purchase, decimal? Warehouse, dec
 /// </summary>
 public static class ShortageRules
 {
+    /// <summary>نص بحث آمن داخل LIKE مع ESCAPE N'!': يهرب ! و% و_ و[ فتُطابق حرفياً.</summary>
+    public static string EscapeLike(string text) =>
+        text.Replace("!", "!!").Replace("%", "!%").Replace("_", "!_").Replace("[", "![");
+
     public const int MinSupplyDays = 1;
     public const int MaxSupplyDays = 365;
     public const int FollowUpDefaultDays = 15;

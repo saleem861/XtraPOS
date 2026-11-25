@@ -31,9 +31,26 @@ export function registerLocalWait() {
   };
 }
 
+function requestUrl(input: RequestInfo | URL) {
+  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+}
+
 function isApiRequest(input: RequestInfo | URL) {
-  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const url = requestUrl(input);
   return url.startsWith("/api/") || url.includes(`${window.location.origin}/api/`);
+}
+
+/** ترويسة تعلّم طلباً دورياً في الخلفية، فلا يُعدّ انتظاراً يراه المستخدم مهما كان توقيته. */
+export const BACKGROUND_HEADER = "X-XtraPOS-Background";
+
+/** طلبات دورية معروفة (استطلاع رمز العضوية كل ثانية) لا تُعدّ أبداً، حتى لو بدأت بعد ضغطة مباشرة. */
+const BACKGROUND_PATHS = ["/api/pos/membership-counter", "/health"];
+
+export function isBackgroundRequest(input: RequestInfo | URL, init?: RequestInit) {
+  const url = requestUrl(input);
+  if (BACKGROUND_PATHS.some((path) => url.startsWith(path) || url.includes(`${window.location.origin}${path}`))) return true;
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  return headers.get(BACKGROUND_HEADER) === "1";
 }
 
 // يلفّ fetch مرة واحدة ويعيد دالة الإزالة.
@@ -43,7 +60,7 @@ export function installWaitingActivity() {
   window.addEventListener("keydown", markInteraction, true);
   const original = window.fetch;
   const wrapped: typeof window.fetch = (input, init) => {
-    const counted = Date.now() - lastInteraction <= INTERACTION_WINDOW_MS && isApiRequest(input);
+    const counted = Date.now() - lastInteraction <= INTERACTION_WINDOW_MS && isApiRequest(input) && !isBackgroundRequest(input, init);
     if (!counted) return original(input, init);
     userRequests += 1;
     emit();
