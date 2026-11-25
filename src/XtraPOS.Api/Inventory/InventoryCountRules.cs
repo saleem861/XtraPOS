@@ -43,6 +43,9 @@ public static class InventorySessionStatuses
 /// </summary>
 public static class InventoryCountRules
 {
+    /// <summary>قاعدة المالك: «تثبيت الجرد» بعد حفظ عدّ كل الأصناف، وفي الجلسة صنف واحد على الأقل.</summary>
+    public static bool CanFinalize(int totalItems, int countedItems) => totalItems > 0 && countedItems >= totalItems;
+
     public const int PeriodicPageCount = 12;
     public static readonly TimeOnly PeriodCutoff = new(16, 0);
     public const decimal MaxCountedQuantity = 1_000_000m;

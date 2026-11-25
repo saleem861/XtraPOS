@@ -612,3 +612,47 @@
   gap: 6px;
   flex-wrap: wrap;
 }
+
+/* قاعدة المالك: الكمية الافتراضية صفر باهت */
+.inventory-qty-input::placeholder {
+  color: #b8c2cf;
+  opacity: 1;
+}
+
+/* لوحة أرقام الكمية في الجرد على اللابتوب (مثل لوحة البيع)، ثابتة أسفل الشاشة ما دام المربع مُركَّزاً */
+.inventory-numpad {
+  position: fixed;
+  inset-inline-start: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(360px, 92vw);
+  padding: 10px;
+  border: 1px solid var(--xp-border);
+  border-radius: 14px;
+  background: var(--xp-surface);
+  box-shadow: 0 10px 30px rgba(15, 30, 60, 0.18);
+}
+
+.inventory-numpad .pos-side-pad {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.inventory-numpad .pos-side-pad button {
+  min-height: 48px;
+  font-size: 18px;
+}
+
+/* الصف المحفوظ يُظلَّل؛ وفي الموبايل تبقى مساحة أسفل القائمة ليُرفع المربع فوق لوحة الجهاز */
+.inventory-row.is-selected {
+  border-color: var(--xp-primary);
+  background: #e3efff;
+}
+
+@media (pointer: coarse) {
+  .inventory-count .inventory-list {
+    padding-bottom: 40vh;
+  }
+}

@@ -48,6 +48,49 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         return new { branches, customInventories = customs, users, draft, pageCount = InventoryCountRules.PeriodicPageCount };
     }
 
+    /// <summary>
+    /// ملاحظة المالك: في «الجرد اليدوي» تظهر فقط أسماء من نفّذ جرداً يدوياً مكتملاً في الفترة (وفي الفروع المختارة)،
+    /// ويُعاد حسابها عند كل تغيير للفترة. الافتراضي: البارحة إلى اليوم.
+    /// </summary>
+    public async Task<object> ManualCountersAsync(PosDeviceContext actor, DateOnly? from, DateOnly? to, IReadOnlyCollection<Guid>? branchIds, CancellationToken cancellationToken)
+    {
+        var today = InventoryCalendar.Today();
+        var (start, end) = ShortageRules.Range(from ?? today.AddDays(-1), to ?? today, today, 1);
+        await using var central = await CentralAsync(cancellationToken);
+        var branches = string.Join(",", (branchIds ?? []).Distinct().Select(id => id.ToString("D")));
+        await using var command = new SqlCommand(
+            """
+            SELECT countSession.UserID, MAX(countSession.UserName), MAX(users.EmployeeNumber), COUNT(*)
+            FROM dbo.InventorySessions AS countSession
+            LEFT JOIN dbo.Users AS users ON users.UserID = countSession.UserID
+            WHERE countSession.BusinessID = @business
+              AND countSession.InventoryType = N'Manual' AND countSession.Status = N'Completed'
+              AND countSession.BusinessDate BETWEEN @from AND @to
+              AND (@branches = N'' OR countSession.BranchID IN (SELECT TRY_CONVERT(uniqueidentifier, value) FROM STRING_SPLIT(@branches, N',')))
+            GROUP BY countSession.UserID
+            ORDER BY MAX(countSession.UserName);
+            """,
+            central);
+        Id(command, "@business", actor.BusinessId);
+        command.Parameters.Add("@from", SqlDbType.Date).Value = start.ToDateTime(TimeOnly.MinValue);
+        command.Parameters.Add("@to", SqlDbType.Date).Value = end.ToDateTime(TimeOnly.MinValue);
+        command.Parameters.Add("@branches", SqlDbType.NVarChar, -1).Value = branches;
+        var users = new List<object>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            users.Add(new
+            {
+                userId = reader.GetGuid(0),
+                displayName = Str(reader, 1) ?? "موظف",
+                employeeNumber = Str(reader, 2),
+                sessions = reader.GetInt32(3),
+            });
+        }
+
+        return new { from = start.ToString("yyyy-MM-dd"), to = end.ToString("yyyy-MM-dd"), users };
+    }
+
     public sealed class StartRequest
     {
         public string? ShortageType { get; set; }
@@ -73,7 +116,7 @@ public sealed class ShortageService(InventoryCountService counting, InventoryRev
         DateOnly? manualFrom = null, manualTo = null;
         if (type == InventoryTypes.Manual)
         {
-            (manualFrom, manualTo) = ShortageRules.Range(request.ManualFrom, request.ManualTo, InventoryCalendar.Today(), 7);
+            (manualFrom, manualTo) = ShortageRules.Range(request.ManualFrom, request.ManualTo, InventoryCalendar.Today(), 2);
         }
 
         await using var central = await CentralAsync(cancellationToken);

@@ -108,4 +108,12 @@ public sealed class ShortageRulesTests
         Assert.Throws<InventoryException>(() => ShortageRules.ValidateDecision(new ShortageDecision(5m, null, null, false, false, null, "650")));
         Assert.Null(ShortageRules.ValidateDecision(new ShortageDecision(null, null, null, true, false, null, "  ")).Substitute);
     }
+
+    [Fact]
+    public void Item_search_text_is_matched_literally_inside_like()
+    {
+        Assert.Equal("فحم", ShortageRules.EscapeLike("فحم"));
+        Assert.Equal("50!%", ShortageRules.EscapeLike("50%"));
+        Assert.Equal("a!_b![c!!", ShortageRules.EscapeLike("a_b[c!"));
+    }
 }

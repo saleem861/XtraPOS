@@ -274,6 +274,10 @@ export function createShortageClient(session: DeviceSession) {
     readJson<T>(await fetch(url, { method, headers: json, body: JSON.stringify(body ?? {}) }), fallback);
   return {
     options: () => get<ShortageOptions>("/api/shortages/options", "تعذر تحميل خيارات النواقص."),
+    manualCounters: (from: string, to: string, branchIds: string[]) => {
+      const params = new URLSearchParams({ from, to, branchIds: branchIds.join(",") });
+      return get<{ from: string; to: string; users: (UserOption & { sessions: number })[] }>(`/api/shortages/manual-counters?${params}`, "تعذر تحميل الموظفين.");
+    },
     start: (request: StartShortageRequest) =>
       send<{ resumed: boolean; draft: RunHeader | null }>("/api/shortages/runs", request, "تعذر حساب النواقص."),
     run: (runId: string) => get<{ run: RunHeader; items: RunItem[] }>(`/api/shortages/runs/${encodeURIComponent(runId)}`, "تعذر تحميل المعالجة."),

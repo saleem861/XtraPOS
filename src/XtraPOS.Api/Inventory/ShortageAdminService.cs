@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
+using XtraPOS.Api.Catalog;
 using XtraPOS.Api.Security;
 using static XtraPOS.Api.Inventory.ShortageService;
 
@@ -107,21 +108,44 @@ public sealed class ShortageAdminService(ShortageService shortages)
         if (text.Length > 100) text = text[..100];
         const int limit = 500;
         await using var central = await shortages.CentralAsync(cancellationToken);
+        // ملاحظة المالك: تظهر الأصناف التي «تحتوي» النص في الاسم أو الرقم (تشابه لا تطابق)،
+        // والعبوة تظهر بصنف وحدتها الداخلية (مالك المخزون). المحرف «!» للهروب من % و_ و[.
         await using var command = new SqlCommand(
             $"""
+            WITH matched AS
+            (
+                SELECT TOP (3000) item.ItemID
+                FROM dbo.Items AS item
+                WHERE item.IsActive = 1
+                  AND (item.ItemNumber LIKE @contains ESCAPE N'!' OR item.ItemName LIKE @contains ESCAPE N'!'
+                       OR item.ItemNumber LIKE @digits ESCAPE N'!')
+            ),
+            owners AS
+            (
+                SELECT DISTINCT COALESCE(unit.InternalUnitItemID, matched.ItemID) AS ItemID
+                FROM matched
+                OUTER APPLY (SELECT TOP (1) link.InternalUnitItemID
+                             FROM dbo.ItemUnits AS link
+                             WHERE link.ItemID = matched.ItemID AND link.IsActive = 1
+                               AND link.InternalUnitItemID IS NOT NULL AND link.InternalUnitItemID <> matched.ItemID) AS unit
+            )
             SELECT TOP ({limit + 1}) item.ItemID, item.ItemNumber, item.ItemName
-            FROM dbo.Items AS item
+            FROM owners
+            INNER JOIN dbo.Items AS item ON item.ItemID = owners.ItemID
             WHERE item.IsActive = 1
-              AND (item.ItemNumber LIKE @prefix ESCAPE N'' OR item.ItemName LIKE @contains ESCAPE N'')
               AND {InventoryRelayRules.StockOwnerSql("item")}
-            ORDER BY CASE WHEN item.ItemNumber = @exact THEN 0 WHEN item.ItemNumber LIKE @prefix ESCAPE N'' THEN 1 ELSE 2 END,
+            ORDER BY CASE WHEN item.ItemNumber = @exact THEN 0
+                          WHEN item.ItemNumber LIKE @prefix ESCAPE N'!' THEN 1
+                          WHEN item.ItemName LIKE @prefix ESCAPE N'!' THEN 2 ELSE 3 END,
                      item.ItemNumber;
             """,
             central);
-        var escaped = text.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
+        var escaped = ShortageRules.EscapeLike(text);
+        var digits = ShortageRules.EscapeLike(ArabicSearchNormalizer.NormalizeDigits(text));
         Text(command, "@exact", text, 100);
-        Text(command, "@prefix", escaped + "%", 202);
-        Text(command, "@contains", "%" + escaped + "%", 204);
+        Text(command, "@prefix", escaped + "%", 210);
+        Text(command, "@contains", "%" + escaped + "%", 220);
+        Text(command, "@digits", "%" + digits + "%", 220);
         var rows = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

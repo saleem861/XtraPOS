@@ -35,7 +35,9 @@ import {
 import type { BackHandler, PanelConfirmation } from "./InventoryReviewPanels";
 import { Waiting } from "./Waiting";
 import { distinctBy } from "../distinct";
+import { hebronToday, shiftDate } from "../cart/heldDraftFilters";
 import { Pager, usePaging } from "./Pager";
+import { CountQuantityField } from "./CountQuantityField";
 
 /** مرجع ثابت لقائمة فارغة. */
 const EMPTY: never[] = [];
@@ -133,6 +135,7 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
   if (!options) return <Waiting compact label="جاري التحميل..." />;
   return (
     <ShortageSetup
+      client={client}
       options={options}
       onConfirm={onConfirm}
       onMessage={onMessage}
@@ -145,7 +148,8 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
   );
 }
 
-function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
+function ShortageSetup({ client, options, onConfirm, onMessage, onResume, onStart }: {
+  client: ShortageClient;
   options: ShortageOptions;
   onConfirm: (confirmation: PanelConfirmation) => void;
   onMessage: (message: string) => void;
@@ -157,9 +161,28 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
   const [pages, setPages] = useState<number[]>([1]);
   const [days, setDays] = useState("7");
   const [customId, setCustomId] = useState(options.customInventories[0]?.customInventoryId ?? "");
-  const [manualFrom, setManualFrom] = useState("");
-  const [manualTo, setManualTo] = useState("");
+  // ملاحظة المالك: الافتراضي البارحة إلى اليوم، والموظفون فقط من نفّذ جرداً يدوياً في الفترة.
+  const [manualFrom, setManualFrom] = useState(() => shiftDate(hebronToday(), -1));
+  const [manualTo, setManualTo] = useState(() => hebronToday());
   const [userIds, setUserIds] = useState<string[]>([]);
+  const [counters, setCounters] = useState<UserOption[] | null>(null);
+
+  useEffect(() => {
+    if (type !== "Manual") return undefined;
+    if (!manualFrom || !manualTo) { setCounters([]); return undefined; }
+    let stop = false;
+    setCounters(null);
+    void client.manualCounters(manualFrom, manualTo, branchIds)
+      .then((value) => {
+        if (stop) return;
+        const users = distinctBy(value.users, (user) => user.displayName);
+        setCounters(users);
+        setUserIds((current) => current.filter((id) => users.some((user) => user.userId === id)));
+      })
+      .catch((error: Error) => { if (!stop) { setCounters([]); onMessage(error.message); } });
+    return () => { stop = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, manualFrom, manualTo, branchIds.join(","), client]);
 
   function submit(replaceDraft: boolean) {
     const supplyDays = parseOptionalInteger(days, 1, 365);
@@ -263,7 +286,9 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
           <label>من تاريخ<input type="date" value={manualFrom} onChange={(event) => setManualFrom(event.target.value)} /></label>
           <label>إلى تاريخ<input type="date" value={manualTo} onChange={(event) => setManualTo(event.target.value)} /></label>
           <div className="inventory-checklist">
-            {options.users.map((user) => (
+            {counters === null ? <Waiting compact label="جاري تحميل الموظفين..." /> : null}
+            {counters?.length === 0 ? <span className="inventory-hint">لا يوجد موظف نفّذ جرداً يدوياً في هذه الفترة.</span> : null}
+            {(counters ?? []).map((user) => (
               <label key={user.userId} className={userIds.includes(user.userId) ? "inventory-pick is-selected" : "inventory-pick"}>
                 <input
                   type="checkbox"
@@ -274,7 +299,7 @@ function ShortageSetup({ options, onConfirm, onMessage, onResume, onStart }: {
               </label>
             ))}
           </div>
-          <small className="inventory-hint">بدون اختيار موظف = كل الموظفين. الكمية = آخر عدّ مكتمل في الفترة.</small>
+          <small className="inventory-hint">تظهر فقط أسماء من نفّذ جرداً يدوياً في الفترة. بدون اختيار موظف = كلهم. الكمية = آخر عدّ مكتمل في الفترة.</small>
         </section>
       ) : null}
 
@@ -534,7 +559,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
 
   function correct() {
     const branch = branches?.find((entry) => entry.branchId === target);
-    const value = parseCountInput(quantity);
+    const value = parseCountInput(quantity.trim() === "" ? "0" : quantity);
     if (!branch) { onMessage("اختر الفرع."); return; }
     if (value === null) { onMessage("أدخل الكمية الصحيحة."); return; }
     if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
@@ -586,7 +611,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
             {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
           </select>
         </label>
-        <label>الكمية المعدودة<input inputMode="decimal" value={quantity} onChange={(event) => { setQuantity(event.target.value); setRequestId(newRequestId()); }} /></label>
+        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
         {(() => {
           const branch = branches.find((entry) => entry.branchId === target);
           if (!branch || branch.current) return null;

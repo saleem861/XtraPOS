@@ -26,6 +26,7 @@ import {
   type ReportLineTab,
 } from "../inventory/inventoryRules";
 import { FullKeyboard } from "./FullKeyboard";
+import { CountQuantityField } from "./CountQuantityField";
 import { Pager, usePaging } from "./Pager";
 import { KeyboardToggle, useFullKeyboardVisible } from "./keyboardVisibility";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
@@ -376,7 +377,8 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
   const editable = audit.status === "Open" && audit.mine;
 
   async function save(line: AuditLine) {
-    const quantity = parseCountInput(drafts[line.auditItemId] ?? "");
+    const typed = (drafts[line.auditItemId] ?? "").trim();
+    const quantity = parseCountInput(typed === "" ? "0" : typed);
     if (quantity === null) { onMessage("أدخل كمية صحيحة. الصفر مسموح والسالبة غير مسموحة."); return; }
     setSaving(line.auditItemId);
     onMessage("");
@@ -437,7 +439,10 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
 
       <div className="inventory-list">
         {auditPaging.visible.map((line) => (
-          <article key={line.auditItemId} className={line.matched === false ? "inventory-row is-mismatch" : "inventory-row"}>
+          <article
+            key={line.auditItemId}
+            className={["inventory-row", line.matched === false ? "is-mismatch" : "", line.isCounted ? "is-selected" : ""].filter(Boolean).join(" ")}
+          >
             <div className="inventory-row-name">
               <span className="inventory-number">{line.itemNumber}</span>
               <strong>{line.itemName || "صنف بدون اسم"}</strong>
@@ -454,12 +459,11 @@ function AuditPanel({ client, auditId, onMessage, onBusy, onConfirm }: {
             ) : editable ? (
               <div className="inventory-qty">
                 {line.isCounted ? <span className="inventory-saved">المشرف: {formatQuantity(line.auditQuantity)}</span> : null}
-                <input
-                  inputMode="decimal"
-                  aria-label={`عدّ المشرف ${line.itemName ?? line.itemNumber}`}
+                <CountQuantityField
+                  label={`عدّ المشرف ${line.itemName ?? line.itemNumber}`}
                   value={drafts[line.auditItemId] ?? ""}
-                  onChange={(event) => setDrafts((current) => ({ ...current, [line.auditItemId]: event.target.value }))}
-                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(line); } }}
+                  onChange={(next) => setDrafts((current) => ({ ...current, [line.auditItemId]: next }))}
+                  onEnter={() => void save(line)}
                 />
                 <button type="button" className="primary-button" disabled={saving === line.auditItemId} onClick={() => void save(line)}>
                   {saving === line.auditItemId ? "جاري الحفظ..." : "حفظ"}
@@ -553,7 +557,7 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
 
   function correct() {
     if (!item) return;
-    const value = parseCountInput(quantity);
+    const value = parseCountInput(quantity.trim() === "" ? "0" : quantity);
     if (value === null) { onMessage("أدخل الكمية الصحيحة. الصفر مسموح والسالبة غير مسموحة."); return; }
     if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
     const before = item.quantityKnown ? formatQuantity(item.onHandQuantity) : "غير معروفة";
@@ -627,7 +631,7 @@ export function ItemProcessingPanel({ client, canClassify, canCorrect, onMessage
             {canCorrect ? (
               <>
                 <label>الكمية الصحيحة
-                  <input inputMode="decimal" value={quantity} onChange={(event) => { setQuantity(event.target.value); setCorrectionId(newRequestId()); }} aria-label="الكمية الصحيحة" />
+                  <CountQuantityField label="الكمية الصحيحة" value={quantity} onChange={(next) => { setQuantity(next); setCorrectionId(newRequestId()); }} onEnter={correct} />
                 </label>
                 <label>سبب التصحيح
                   <input value={reason} maxLength={500} onChange={(event) => { setReason(event.target.value); setCorrectionId(newRequestId()); }} aria-label="سبب التصحيح" />

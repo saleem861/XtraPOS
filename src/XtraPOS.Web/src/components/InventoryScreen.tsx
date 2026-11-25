@@ -27,6 +27,7 @@ import {
 } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { FullKeyboard } from "./FullKeyboard";
+import { CountQuantityField } from "./CountQuantityField";
 import { Pager, usePaging } from "./Pager";
 import { distinctBy } from "../distinct";
 import { InventoryReportPanel, ItemProcessingPanel, type BackHandler } from "./InventoryReviewPanels";
@@ -486,6 +487,8 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
+  /** أصناف حُفظت في هذه الزيارة: تبقى في مكانها في «لم يتم الجرد» مظللة حتى تغيير التبويب. */
+  const [savedHere, setSavedHere] = useState<ReadonlySet<string>>(() => new Set());
   const [manualItem, setManualItem] = useState<InventoryLookup | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const desktop = usesDesktopCustomerKeyboard();
@@ -507,11 +510,18 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
 
   useEffect(() => { void load(); }, [load]);
 
-  const visible = useMemo(() => filterItems(items, tab, manual && tab === "current" ? "" : query), [items, tab, query, manual]);
+  const visible = useMemo(() => {
+    const text = manual && tab === "current" ? "" : query;
+    if (tab !== "current" || savedHere.size === 0) return filterItems(items, tab, text);
+    const shown = new Set(filterItems(items.map((item) => (savedHere.has(item.itemId) ? { ...item, isCounted: false } : item)), tab, text).map((item) => item.itemId));
+    return items.filter((item) => shown.has(item.itemId));
+  }, [items, tab, query, manual, savedHere]);
   const paging = usePaging(visible, `${tab}|${query}`);
 
   async function save(itemId: string) {
-    const quantity = parseCountInput(drafts[itemId] ?? "");
+    // الكمية الافتراضية صفر (باهت): الحفظ بلا كتابة يحفظ صفراً.
+    const typed = (drafts[itemId] ?? "").trim();
+    const quantity = parseCountInput(typed === "" ? "0" : typed);
     if (quantity === null) {
       onMessage("أدخل كمية صحيحة. الصفر مسموح والسالبة غير مسموحة.");
       return;
@@ -535,6 +545,7 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       setDrafts((current) => { const next = { ...current }; delete next[itemId]; return next; });
       setEditing(null);
       setSavedId(itemId);
+      setSavedHere((current) => new Set(current).add(itemId));
       if (manual) setManualItem(null);
     } catch (error) {
       onMessage((error as Error).message);
@@ -593,19 +604,24 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
     return (
       <div className="inventory-qty">
         <button type="button" aria-label="إنقاص الكمية" onClick={() => setDrafts((current) => ({ ...current, [itemId]: stepQuantity(current[itemId] ?? "", -1) }))}>−</button>
-        <input
+        <CountQuantityField
           data-count-item={itemId}
-          inputMode="decimal"
-          aria-label={`الكمية الفعلية ${label}`}
+          label={`الكمية الفعلية ${label}`}
           value={value}
-          onChange={(event) => setDrafts((current) => ({ ...current, [itemId]: event.target.value }))}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(itemId); } }}
+          onChange={(next) => setDrafts((current) => ({ ...current, [itemId]: next }))}
+          onEnter={() => void save(itemId)}
         />
         <button type="button" aria-label="زيادة الكمية" onClick={() => setDrafts((current) => ({ ...current, [itemId]: stepQuantity(current[itemId] ?? "", 1) }))}>+</button>
         <button type="button" className="primary-button" disabled={saving === itemId} onClick={() => void save(itemId)}>{saving === itemId ? "جاري الحفظ..." : "حفظ"}</button>
       </div>
     );
   }
+
+  /** قاعدة المالك: «تثبيت الجرد» يُفعَّل بعد حفظ عدّ كل الأصناف؛ في اليدوي كل ما أُضيف. */
+  const remaining = manual ? 0 : Math.max(session.totalItems - session.countedItems, 0);
+  const allCounted = manual
+    ? session.countedItems > 0 && !manualItem
+    : session.totalItems > 0 && remaining === 0;
 
   const progress = manual
     ? `تم جرد ${session.countedItems} صنف`
@@ -633,10 +649,10 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       </form>
 
       <div className="inventory-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === "current"} className={tab === "current" ? "is-active" : undefined} onClick={() => setTab("current")}>
+        <button type="button" role="tab" aria-selected={tab === "current"} className={tab === "current" ? "is-active" : undefined} onClick={() => { setTab("current"); setSavedHere(new Set()); }}>
           {manual ? "الجرد الحالي" : `لم يتم الجرد (${Math.max(session.totalItems - session.countedItems, 0)})`}
         </button>
-        <button type="button" role="tab" aria-selected={tab === "counted"} className={tab === "counted" ? "is-active" : undefined} onClick={() => setTab("counted")}>
+        <button type="button" role="tab" aria-selected={tab === "counted"} className={tab === "counted" ? "is-active" : undefined} onClick={() => { setTab("counted"); setSavedHere(new Set()); }}>
           تم الجرد ({session.countedItems})
         </button>
       </div>
@@ -656,7 +672,11 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
           ) : <p className="inventory-hint">اكتب رقم الصنف أو امسح الباركود ثم اضغط «إضافة».</p>
         ) : null}
         {!loading && !(manual && tab === "current") ? paging.visible.map((item) => (
-          <article key={item.itemId} className={savedId === item.itemId ? "inventory-row is-saved" : "inventory-row"}>
+          <article
+            key={item.itemId}
+            className={["inventory-row", item.isCounted ? "is-selected" : "", savedId === item.itemId ? "is-saved" : ""].filter(Boolean).join(" ")}
+            aria-label={item.isCounted ? `${item.itemNumber} تم حفظ العد` : undefined}
+          >
             <div className="inventory-row-name">
               <span className="inventory-number">{item.itemNumber}</span>
               <strong>{item.itemName || "صنف بدون اسم"}</strong>
@@ -684,8 +704,13 @@ function CountingPanel({ client, session, canReview, onSession, onMessage, onCon
       </div>
 
       <footer className="inventory-actions">
+        {!allCounted ? (
+          <small className="inventory-hint">
+            {manual ? "احفظ عدّ الأصناف المضافة لتفعيل «تثبيت الجرد»." : `احفظ عدّ كل الأصناف لتفعيل «تثبيت الجرد» (بقي ${remaining}).`}
+          </small>
+        ) : null}
         <button type="button" className="ghost-button" disabled={finalizing} onClick={onSaveAndExit}>حفظ وخروج</button>
-        <button type="button" className="primary-button" disabled={finalizing || session.countedItems === 0} onClick={finalize}>
+        <button type="button" className="primary-button" disabled={finalizing || !allCounted} onClick={finalize}>
           {finalizing ? "جاري التثبيت..." : "تثبيت الجرد"}
         </button>
       </footer>

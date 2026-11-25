@@ -269,6 +269,9 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
   const counterTokenRef = useRef("");
   saleCustomerRef.current = saleCustomer;
   cartIdRef.current = cart?.cartId ?? "";
+  // استطلاع رمز العضوية يتوقف ما دامت شاشة الجرد مفتوحة فوق البيع (لا زبون أمام النقطة).
+  const counterPausedRef = useRef(false);
+  counterPausedRef.current = inventoryOpen;
   const [regularPricing, setRegularPricing] = useState(false);
   const regularPricingRef = useRef(false);
   const customerInputRef = useRef<HTMLInputElement>(null);
@@ -1253,7 +1256,7 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     const timer = window.setInterval(() => {
       if (!counterTokenRef.current || shownDay !== hebronToday()) loadCounterQr();
       const saleId = cartIdRef.current;
-      if (!saleId) return;
+      if (!saleId || counterPausedRef.current) return;
       void fetch("/api/pos/membership-counter/watch", {
         method: "POST",
         credentials: "same-origin",
