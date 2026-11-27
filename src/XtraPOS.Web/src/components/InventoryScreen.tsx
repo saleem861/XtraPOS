@@ -125,6 +125,17 @@ export function InventoryScreen({ session, permissions, onBack }: {
     return () => { cancelled = true; };
   }, [client]);
 
+  // الجرد المخصص يُحفظ على المركز أثناء «تحديد جرد». إعادة القراءة عند فتح اليدوي تُظهره فوراً،
+  // بما فيه جرد عُيّن لصف آخر من نفس اسم الفرع (مثل Labtop المكرر).
+  useEffect(() => {
+    if (step !== "manual" && step !== "custom") return;
+    let cancelled = false;
+    void client.configuration()
+      .then((value) => { if (!cancelled) setConfig(value); })
+      .catch((error: Error) => { if (!cancelled) setMessage(error.message); });
+    return () => { cancelled = true; };
+  }, [client, step]);
+
   /** الفروع للجرد: فرع الجهاز أولاً، ثم فروع المركز. بلا مركز يبقى فرع الجهاز وحده. */
   function openBranches() {
     setMessage("");
@@ -578,6 +589,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   const drainTask = useRef<Promise<void>>(Promise.resolve());
   const pace = useRef<"retry" | "now">("retry");
   const hurry = useRef<(() => void) | null>(null);
+  const sealed = useRef(false);
   const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [retrying, setRetrying] = useState(false);
   const desktop = usesDesktopCustomerKeyboard();
@@ -639,15 +651,6 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     });
   }
 
-  /**
-   * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
-   * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
-   */
-  function wakeDrain() {
-    pace.current = "now";
-    hurry.current?.();
-  }
-
   function pause(ms: number) {
     return new Promise<void>((resolve) => {
       const timer = window.setTimeout(resolve, ms);
@@ -655,6 +658,10 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     }).finally(() => { hurry.current = null; });
   }
 
+  /**
+   * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
+   * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
+   */
   async function drain() {
     if (draining.current) return drainTask.current;
     const task = runDrain();
@@ -666,7 +673,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     draining.current = true;
     let attempts = 0;
     try {
-      while (alive.current && queue.current.length > 0) {
+      while (alive.current && !sealed.current && queue.current.length > 0) {
         const batch = queue.current.slice(0, BATCH_LIMIT);
         const latest = new Map<string, number>();
         for (const job of batch) latest.set(job.itemId, job.quantity);
@@ -675,6 +682,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
             session.sessionId,
             [...latest.entries()].map(([itemId, quantity]) => ({ itemId, quantity })),
           );
+          if (sealed.current) return;
           queue.current.splice(0, batch.length);
           storePending(session.sessionId, queue.current);
           attempts = 0;
@@ -698,6 +706,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
           onSession(result.session);
           for (const job of batch) markPending(job.itemId, -1);
         } catch (error) {
+          if (sealed.current) return;
           const status = errorStatus(error);
           if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
             // الدفعة كلها مرفوضة (الجرد أُغلق مثلاً): لا تُعاد، وترجع الأصناف كما كانت.
@@ -814,23 +823,31 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
 
   async function acceptFinalize() {
     setFinalizing(true);
+    onMessage("");
+    // التثبيت لا ينتظر ترحيل الأصناف. العدّ الذي ما زال على الجهاز يُرسل مع طلب التثبيت نفسه.
+    sealed.current = true;
+    const pending = queue.current.splice(0);
+    storePending(session.sessionId, []);
+    setPending(new Map());
+    const latest = new Map<string, number>();
+    for (const job of pending) latest.set(job.itemId, job.quantity);
     try {
-      const waiting = queue.current.length;
-      if (waiting > 0) onMessage(`جاري إرسال ${waiting} صنف ثم التثبيت…`);
-      else onMessage("");
-      wakeDrain();
-      await drain();
-      if (queue.current.length > 0) await drain();
-      pace.current = "retry";
-      if (queue.current.length > 0) {
-        onMessage("تعذر إرسال بقية العد إلى المركز. زر التثبيت ما زال متاحاً.");
-        return;
-      }
-      onFinished(await client.finalize(session.sessionId));
+      onFinished(await client.finalize(
+        session.sessionId,
+        [...latest.entries()].map(([itemId, quantity]) => ({ itemId, quantity })),
+      ));
     } catch (error) {
+      sealed.current = false;
+      queue.current = pending.concat(queue.current);
+      storePending(session.sessionId, queue.current);
+      setPending(() => {
+        const next = new Map<string, number>();
+        for (const job of queue.current) next.set(job.itemId, (next.get(job.itemId) ?? 0) + 1);
+        return next;
+      });
       onMessage((error as Error).message);
+      void drain();
     } finally {
-      pace.current = "retry";
       setFinalizing(false);
     }
   }

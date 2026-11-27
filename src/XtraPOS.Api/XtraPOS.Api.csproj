@@ -341,6 +341,12 @@
     <EmbeddedResource Include="Data\Migrations\058_CentralSalesHistory.sql">
       <LogicalName>XtraPOS.Api.Data.Migrations.058_CentralSalesHistory.sql</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Data\Migrations\059_LegacySalesRateLock.sql">
+      <LogicalName>XtraPOS.Api.Data.Migrations.059_LegacySalesRateLock.sql</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\Central\Migrations\047_CentralLegacySalesRateLock.sql">
+      <LogicalName>XtraPOS.Api.Data.Central.Migrations.047_CentralLegacySalesRateLock.sql</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Data\Central\Migrations\040_CentralInventoryRelay.sql">
       <LogicalName>XtraPOS.Api.Data.Central.Migrations.040_CentralInventoryRelay.sql</LogicalName>
     </EmbeddedResource>

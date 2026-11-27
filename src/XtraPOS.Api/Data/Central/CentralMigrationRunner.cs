@@ -111,6 +111,9 @@ public sealed class CentralMigrationRunner
     // Owner decision, 27 November 2026: «إظهار الكل» lists items that are not required, marked «غير مطلوب». Column only. Back up first.
     public const string ShortageShowAllMigrationId = "046_CentralShortageShowAll";
     public const string ShortageShowAllMigrationName = "Shortage runs keep items that are not required for show all";
+    // Owner decision, 27 November 2026: speeds copied from Shop1/Shop2 are not recalculated. Column only. Back up first.
+    public const string LegacySalesRateLockMigrationId = "047_CentralLegacySalesRateLock";
+    public const string LegacySalesRateLockMigrationName = "Keep original item speeds on the central snapshot";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -160,6 +163,7 @@ public sealed class CentralMigrationRunner
         (QuantityAuthorityMigrationId, QuantityAuthorityMigrationName, "XtraPOS.Api.Data.Central.Migrations.044_CentralQuantityAuthority.sql"),
         (AuditByTasksMigrationId, AuditByTasksMigrationName, "XtraPOS.Api.Data.Central.Migrations.045_CentralAuditByTasks.sql"),
         (ShortageShowAllMigrationId, ShortageShowAllMigrationName, "XtraPOS.Api.Data.Central.Migrations.046_CentralShortageShowAll.sql"),
+        (LegacySalesRateLockMigrationId, LegacySalesRateLockMigrationName, "XtraPOS.Api.Data.Central.Migrations.047_CentralLegacySalesRateLock.sql"),
     ];
 
     private static readonly string ApplicationVersion =

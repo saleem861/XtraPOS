@@ -112,7 +112,7 @@ describe("login update button", () => {
   });
 
   it("says the updater is not running when it does not pick the request up in two minutes", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     try {
       vi.stubGlobal("fetch", vi.fn((url: string) => {
         if (url === "/api/local-update") {
@@ -123,6 +123,8 @@ describe("login update button", () => {
 
       render(<LoginScreen session={session} pending={false} error="" onSubmit={() => undefined} />);
       fireEvent.click(screen.getByRole("button", { name: "تحديث التطبيق" }));
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByText("بانتظار برنامج التحديث (يبدأ خلال دقيقة)")).toBeTruthy();
       await act(async () => { await vi.advanceTimersByTimeAsync(124_000); });
       expect(screen.getByText(/برنامج التحديث لا يعمل على هذا الجهاز/)).toBeTruthy();
       expect(screen.getByRole("button", { name: "تحديث التطبيق" }).hasAttribute("disabled")).toBe(false);

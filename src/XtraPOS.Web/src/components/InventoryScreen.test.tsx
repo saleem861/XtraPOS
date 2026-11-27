@@ -331,6 +331,8 @@ describe("counting rules from the owner's notes", () => {
         return answer();
       }
       if (url.includes("/finalize")) {
+        const body = JSON.parse(String(init?.body)) as { items: { itemId: string; quantity: number }[] };
+        calls.push(`BODY ${body.items.map((entry) => entry.itemId).sort().join(",")}`);
         return reply({ session: { ...openSession, status: "Finalizing", countedItems: 2, uncountedItems: 0 }, posted: 0, remote: true, queued: true });
       }
       return reply({});
@@ -345,11 +347,11 @@ describe("counting rules from the owner's notes", () => {
     expect(post.disabled).toBe(false);
     await userEvent.click(post);
     await userEvent.click(screen.getByRole("button", { name: "تثبيت" }));
-    expect(await screen.findByText(/جاري إرسال \d+ صنف ثم التثبيت/)).toBeTruthy();
-    expect(calls.some((call) => call.includes("/finalize"))).toBe(false);
-    release!();
+    expect(screen.queryByText(/جاري إرسال \d+ صنف ثم التثبيت/)).toBeNull();
     expect(await screen.findByText("تم التثبيت — تُرحَّل الفروق في الخلفية")).toBeTruthy();
     expect(calls.some((call) => call.startsWith("POST") && call.includes("/finalize"))).toBe(true);
+    expect(calls.some((call) => call === "BODY i1,i2")).toBe(true);
+    release!();
   });
 
   it("keeps unsent counts on the device and sends them in one request when the count reopens", async () => {

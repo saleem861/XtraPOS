@@ -227,7 +227,7 @@ public static class CentralStock
                  FROM dbo.BranchStockMovements
                  WHERE BranchID = @branch AND SourceType IN (N'Sale', N'SaleReturn') AND OccurredAt >= @from
                  GROUP BY ItemID) AS sold ON sold.ItemID = snapshot.ItemID
-             WHERE snapshot.BranchID = @branch {filter};
+             WHERE snapshot.BranchID = @branch AND ISNULL(snapshot.SalesRateLocked, 0) = 0 {filter};
              """,
             central,
             transaction) { CommandTimeout = 120 };
