@@ -27,6 +27,7 @@ export function NumericEditModal({
   allowDecimal,
   error,
   resetLabel,
+  placeholder,
   onConfirm,
   onCancel,
   onReset,
@@ -38,6 +39,8 @@ export function NumericEditModal({
   allowDecimal: boolean;
   error: string;
   resetLabel?: string;
+  /** يظهر باهتاً حين يكون المربع فارغاً (مثل الصفر الباهت في الجرد). */
+  placeholder?: string;
   onConfirm: (value: string) => void;
   onCancel: () => void;
   onReset?: () => void;
@@ -135,6 +138,7 @@ export function NumericEditModal({
           inputMode={finePointer ? "none" : allowDecimal ? "decimal" : "numeric"}
           readOnly={finePointer}
           autoFocus
+          placeholder={placeholder}
           value={value}
           onFocus={(event) => { if (fresh) event.currentTarget.select(); }}
           onChange={(event) => onInput(event.target.value)}

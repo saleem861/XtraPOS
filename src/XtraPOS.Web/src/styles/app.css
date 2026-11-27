@@ -6911,3 +6911,26 @@ html.pos-pro-shell .pos-topbar-slot .pos-pro-icon {
   font-weight: 800;
   cursor: pointer;
 }
+
+/* ملاءمة شاشة البيع لمساحة الجهاز على الكمبيوتر (المالك 27 نوفمبر 2026): components/displayFit.ts */
+html.pos-fit .app {
+  zoom: var(--pos-fit);
+  min-height: var(--pos-fit-height);
+}
+
+html.pos-fit .app:has(.pos-workspace) {
+  height: var(--pos-fit-height);
+  max-height: var(--pos-fit-height);
+}
+
+.pos-fit-toggle {
+  margin-inline-start: auto;
+  padding: 2px 8px;
+  border: 1px solid #d9e4ea;
+  border-radius: 999px;
+  background: #f5f8fb;
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}

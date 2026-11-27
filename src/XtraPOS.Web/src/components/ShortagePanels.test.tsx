@@ -37,6 +37,28 @@ const runItem = {
 };
 
 describe("shortage processing", () => {
+  it("explains an empty run: counted items without sales are not short", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url === "/api/shortages/options") {
+        return reply({ branches: [{ branchId: "br", branchName: "Labtop", current: false, lastPushAt: null, stale: false }], customInventories: [], users: [], draft: null, pageCount: 12 });
+      }
+      if (url === "/api/shortages/runs") {
+        return reply({ resumed: false, draft: { ...runHeader, itemCount: 0 }, summary: { scopeItems: 46, shortItems: 0, noSalesItems: 46, coveredItems: 0, branches: ["Labtop"] } });
+      }
+      if (url === "/api/shortages/runs/r1") return reply({ run: { ...runHeader, itemCount: 0 }, items: [] });
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Labtop/ }));
+    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: "الأصناف المهمة" }));
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت ومتابعة" }));
+    expect(await screen.findByText("في النطاق 46 صنفاً لـ Labtop، ولم يظهر منها نقص:")).toBeTruthy();
+    expect(screen.getByText(/46 صنف بلا مبيعات على المركز/)).toBeTruthy();
+  });
+
   it("calculates, saves a decision per item and refuses to finalize while items are open", async () => {
     const calls: { method: string; url: string; body?: unknown }[] = [];
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
@@ -57,7 +79,7 @@ describe("shortage processing", () => {
     // تسلسل النظام القديم: اختيار الفروع ← نوع معالجة النواقص ← عدد أيام التوفير (− N +) ← تثبيت ومتابعة.
     await userEvent.click(await screen.findByRole("button", { name: "متابعة" }));
     expect(await screen.findByText("يرجى اختيار فرع واحد على الأقل")).toBeTruthy();
-    await userEvent.click(screen.getByRole("checkbox", { name: "فرع نابلس" }));
+    await userEvent.click(screen.getByRole("button", { name: /^فرع نابلس/ }));
     await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
     await userEvent.click(await screen.findByRole("button", { name: "الأصناف المهمة" }));
     expect(screen.getByText("هذه القيمة تُستخدم فقط لهذا الحساب ولا تُحفظ في الإعدادات.")).toBeTruthy();
@@ -258,8 +280,9 @@ describe("define inventory", () => {
     // تسلسل النظام القديم: اختيار الفروع ← التالي ← اختيار الأصناف ← تثبيت ← اسم الجرد.
     const branchStep = await screen.findByRole("region", { name: "اختيار الفروع" });
     expect((within(branchStep).getByRole("button", { name: "التالي" }) as HTMLButtonElement).disabled).toBe(true);
-    await userEvent.click(await within(branchStep).findByRole("checkbox", { name: "فرع نابلس" }));
-    expect(within(branchStep).getByRole("checkbox", { name: "فرع نابلس" }).closest("label")?.className).toContain("is-selected");
+    await userEvent.click(await within(branchStep).findByRole("button", { name: /^فرع نابلس/ }));
+    expect(within(branchStep).getByRole("button", { name: /^فرع نابلس/ }).className).toContain("is-selected");
+    expect(within(branchStep).getByRole("button", { name: /^فرع نابلس/ }).getAttribute("aria-pressed")).toBe("true");
     await userEvent.click(within(branchStep).getByRole("button", { name: "التالي" }));
 
     await userEvent.type(await screen.findByRole("textbox", { name: "اكتب اسم أو رقم الصنف" }), "فحم");

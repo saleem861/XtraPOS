@@ -150,6 +150,8 @@ public sealed class ShortageService(InventoryCountService counting)
         if (branches.Count != branchIds.Count) throw new InventoryException("فرع غير موجود أو غير نشط.");
 
         var runId = Guid.NewGuid();
+        int count;
+        ShortageScopeSummary summary;
         await using var transaction = (SqlTransaction)await central.BeginTransactionAsync(cancellationToken);
         try
         {
@@ -206,7 +208,7 @@ public sealed class ShortageService(InventoryCountService counting)
                 await insert.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            var count = await CalculateAsync(central, transaction, runId, type, pages, request.CustomInventoryId, days, cancellationToken);
+            (count, summary) = await CalculateAsync(central, transaction, runId, type, pages, request.CustomInventoryId, days, cancellationToken);
             await using (var update = new SqlCommand("UPDATE dbo.ShortageRuns SET ItemCount = @count WHERE RunID = @run;", central, transaction))
             {
                 Id(update, "@run", runId);
@@ -222,10 +224,22 @@ public sealed class ShortageService(InventoryCountService counting)
             throw;
         }
 
-        return new { resumed = false, draft = await DraftAsync(central, actor, cancellationToken) };
+        return new
+        {
+            resumed = false,
+            draft = await DraftAsync(central, actor, cancellationToken),
+            summary = new
+            {
+                scopeItems = summary.ScopeItems,
+                shortItems = summary.ShortItems,
+                noSalesItems = summary.NoSalesItems,
+                coveredItems = summary.CoveredItems,
+                branches = branches.Select(branch => branch.BranchName).ToList(),
+            },
+        };
     }
 
-    private static async Task<int> CalculateAsync(
+    private static async Task<(int Count, ShortageScopeSummary Summary)> CalculateAsync(
         SqlConnection central,
         SqlTransaction transaction,
         Guid runId,
@@ -330,6 +344,7 @@ public sealed class ShortageService(InventoryCountService counting)
             branchRows.Columns.Add(name, kind);
         }
 
+        var results = new List<ShortageItemResult>();
         foreach (var group in rows.GroupBy(row => row.ItemId))
         {
             var first = group.First();
@@ -339,6 +354,7 @@ public sealed class ShortageService(InventoryCountService counting)
                     counted.TryGetValue((row.BranchId, row.ItemId), out var count) ? count : row.Quantity,
                     row.Rate)),
                 days);
+            results.Add(result);
             if (!result.IsShort) continue;
             items.Rows.Add(Guid.NewGuid(), runId, first.ItemId, first.Number, (object?)first.Name ?? DBNull.Value,
                 result.TotalNeed, result.TotalSurplus, result.Required, result.Balance, result.MissingRate, result.MissingQuantity);
@@ -351,7 +367,7 @@ public sealed class ShortageService(InventoryCountService counting)
 
         await BulkAsync(central, transaction, "dbo.ShortageRunItems", items, cancellationToken);
         await BulkAsync(central, transaction, "dbo.ShortageRunItemBranches", branchRows, cancellationToken);
-        return items.Rows.Count;
+        return (items.Rows.Count, ShortageScopeSummary.From(results));
     }
 
     private const string ManualFilter = """
