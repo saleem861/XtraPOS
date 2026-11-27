@@ -124,6 +124,10 @@ export interface ItemBranchState {
   lastCountedQuantity: number | null;
   lastCountedAt: string | null;
   lastCountedBy: string | null;
+  /** كمية النظام وقت الجرد، والكمية قبل التعديل وبعده، من آخر سطر جرد على المركز. */
+  systemQuantityAtCount?: number | null;
+  quantityBeforePosting?: number | null;
+  quantityAfterPosting?: number | null;
   pendingCorrection: number | null;
   pendingSince: string | null;
   pendingExpected: number | null;
@@ -323,8 +327,10 @@ export function createShortageClient(session: DeviceSession) {
     finalize: (runId: string) =>
       send<{ completed: boolean; tasks: number; items: number }>(`/api/shortages/runs/${encodeURIComponent(runId)}/finalize`, {}, "تعذر التثبيت النهائي."),
     discard: (runId: string) => send<{ discarded: boolean }>(`/api/shortages/runs/${encodeURIComponent(runId)}/discard`, {}, "تعذر إلغاء المعالجة."),
-    itemBranches: (itemId: string) =>
-      get<{ itemId: string; branches: ItemBranchState[] }>(`/api/shortages/items/${encodeURIComponent(itemId)}/branches`, "تعذر تحميل كميات الفروع."),
+    itemBranches: async (itemId: string) =>
+      readJson<{ itemId: string; branches: ItemBranchState[] }>(
+        await fetch(`/api/shortages/items/${encodeURIComponent(itemId)}/branches`, { headers: { ...headers, [BACKGROUND_HEADER]: "1" } }),
+        "تعذر تحميل كميات الفروع."),
     correct: (itemId: string, branchId: string, requestId: string, quantity: number, reason: string, expectedQuantity: number | null = null) =>
       send<{ applied: boolean; pending: boolean }>(`/api/shortages/items/${encodeURIComponent(itemId)}/corrections`, { branchId, requestId, quantity, expectedQuantity, reason }, "تعذر تصحيح الكمية."),
     /** عدد مهام المتابعة المفتوحة لزر «متابعة النواقص (N)»، طلب خلفي بلا «يرجى الانتظار». */

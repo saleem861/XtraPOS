@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MutableRefObject } from "react";
+import { createPortal } from "react-dom";
 import type { InventoryType } from "../api/inventory";
 import { newRequestId } from "../api/inventoryReview";
 import {
@@ -30,6 +31,7 @@ import {
   normalizeDigits,
   parseCountInput,
   parseOptionalQuantity,
+  stepQuantity,
   SHORTAGE_TYPES,
   togglePage,
 } from "../inventory/inventoryRules";
@@ -447,7 +449,6 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
   const [data, setData] = useState<{ run: RunHeader; items: RunItem[] } | null>(null);
   const [filter, setFilter] = useState<RunFilter>("open");
   const [query, setQuery] = useState("");
-  const [expanded, setExpanded] = useState("");
   // المالك 27 نوفمبر: المطلوب فقط افتراضياً؛ «إظهار الكل» يضيف غير المطلوب بعلامة «غير مطلوب».
   const [showAll, setShowAll] = useState(false);
 
@@ -492,7 +493,7 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
             className={showAll ? "ghost-button is-active" : "ghost-button"}
             aria-pressed={showAll}
             onClick={() => setShowAll((current) => !current)}
-          >إظهار الكل ({data.items.length})</button>
+          >{showAll ? `إظهار النواقص (${required.length})` : `إظهار الكل (${data.items.length})`}</button>
         ) : null}
       </header>
 
@@ -517,8 +518,7 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
             runId={runId}
             item={item}
             editable={editable}
-            expanded={expanded === item.itemId}
-            onToggle={() => setExpanded((current) => current === item.itemId ? "" : item.itemId)}
+            runBranchNames={header.branches.map((branch) => branch.branchName ?? "")}
             onSaved={(change) => replace(item.itemId, change)}
             onMessage={onMessage}
             onBusy={onBusy}
@@ -565,40 +565,39 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
   );
 }
 
-function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, onSaved, onMessage, onBusy, onConfirm }: PanelProps & {
+function knownQuantity(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "غير معروف";
+  return formatQuantity(value);
+}
+
+function decisionSummary(item: RunItem): string | null {
+  if (!item.isProcessed) return null;
+  if ((item.purchaseQuantity ?? 0) > 0) return `الكمية المطلوب شراؤها: ${formatQuantity(item.purchaseQuantity)}`;
+  if ((item.warehouseQuantity ?? 0) > 0) return `الإجمالي من المخزن: ${formatQuantity(item.warehouseQuantity)}${item.note ? ` (${item.note})` : ""}`;
+  if ((item.balanceDecision ?? 0) > 0) return `الكمية المطلوب موازنتها: ${formatQuantity(item.balanceDecision)}${item.note ? ` · ${item.note}` : ""}`;
+  if (item.deleteRequested) return `طلب حذف${item.substituteItemNumber ? ` · البديل ${item.substituteItemNumber}` : ""}`;
+  if (item.alreadySupplied) return "كمية التزويد";
+  return null;
+}
+
+type ShortageDialog = "warehouse" | "purchase" | "balance" | "delete" | "count" | "quantities";
+
+function ShortageItemRow({ client, runId, item, editable, runBranchNames, onSaved, onMessage, onBusy, onConfirm }: PanelProps & {
   runId: string;
   item: RunItem;
   editable: boolean;
-  expanded: boolean;
-  onToggle: () => void;
+  runBranchNames: string[];
   onSaved: (change: Partial<RunItem>) => void;
 }) {
   const run = useAction(onMessage, onBusy);
-  const [purchase, setPurchase] = useState(() => String(item.purchaseQuantity ?? (item.isProcessed ? "" : item.requiredQuantity || "")));
-  const [warehouse, setWarehouse] = useState(() => String(item.warehouseQuantity ?? ""));
-  const [balance, setBalance] = useState(() => String(item.balanceDecision ?? (item.isProcessed ? "" : item.balanceQuantity || "")));
-  const [note, setNote] = useState(item.note ?? "");
-  const [substitute, setSubstitute] = useState(item.substituteItemNumber ?? "");
+  const [dialog, setDialog] = useState<ShortageDialog | null>(null);
+  const summary = decisionSummary(item);
+  const branchLine = runBranchNames.filter(Boolean).join("، ");
 
-  async function save(kind: "quantities" | "delete" | "supplied" | "clear") {
-    let body: ShortageDecisionBody;
-    if (kind === "clear") {
-      body = { purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: false, alreadySupplied: false, note: null, clear: true };
-    } else if (kind === "quantities") {
-      const values = [parseOptionalQuantity(purchase), parseOptionalQuantity(warehouse), parseOptionalQuantity(balance)];
-      if (values.some((value) => value === undefined)) { onMessage("أدخل كميات صحيحة. الصفر والفارغ يعنيان لا شيء."); return; }
-      const [p, w, b] = values as (number | null)[];
-      body = { purchaseQuantity: p, warehouseQuantity: w, balanceQuantity: b, delete: false, alreadySupplied: false, note: note || null };
-    } else {
-      body = {
-        purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: kind === "delete", alreadySupplied: kind === "supplied", note: note || null,
-        substituteItemNumber: kind === "delete" ? normalizeDigits(substitute.trim()) || null : null,
-      };
-    }
-
+  async function commit(body: ShortageDecisionBody, done: string) {
     const saved = await run("جاري الحفظ...", () => client.decide(runId, item.itemId, body));
     if (!saved) return;
-    onSaved(kind === "clear"
+    onSaved(body.clear
       ? { isProcessed: false, purchaseQuantity: null, warehouseQuantity: null, balanceDecision: null, deleteRequested: false, alreadySupplied: false, note: null, substituteItemNumber: null }
       : {
           isProcessed: true,
@@ -608,64 +607,301 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
           deleteRequested: body.delete,
           alreadySupplied: body.alreadySupplied,
           note: body.note,
-          substituteItemNumber: saved.substituteItemNumber ?? null,
+          substituteItemNumber: saved.substituteItemNumber ?? body.substituteItemNumber ?? null,
         });
+    setDialog(null);
+    onMessage(done);
   }
-
-  const decision = item.deleteRequested ? `طلب حذف${item.substituteItemNumber ? ` · البديل ${item.substituteItemNumber}` : ""}`
-    : item.alreadySupplied ? "تم التزويد"
-      : [item.purchaseQuantity ? `شراء ${formatQuantity(item.purchaseQuantity)}` : "", item.warehouseQuantity ? `مخزن ${formatQuantity(item.warehouseQuantity)}` : "", item.balanceDecision ? `موازنة ${formatQuantity(item.balanceDecision)}` : ""].filter(Boolean).join(" · ");
 
   return (
     <article className={item.isProcessed ? "inventory-row is-processed" : "inventory-row"}>
       <div className="inventory-row-name">
-        <span className="inventory-number">{item.itemNumber}</span>
         <strong>{item.itemName || "صنف بدون اسم"}</strong>
-        {item.isRequired === false ? <span className="inventory-badge">غير مطلوب</span> : null}
-        <small>
-          احتياج {formatQuantity(item.totalNeed)} · فائض {formatQuantity(item.totalSurplus)} · مطلوب شراء {formatQuantity(item.requiredQuantity)} · موازنة {formatQuantity(item.balanceQuantity)}
-        </small>
+        <span>الصنف: {item.itemNumber}</span>
+        {runBranchNames.length > 1 ? <span>الفرع: {branchLine}</span> : null}
+        <span>المطلوب: {formatQuantity(item.totalNeed)}</span>
+        {item.isRequired === false ? <span>غير مطلوب</span> : null}
         {item.missingRate ? <small className="inventory-hint is-warning">سرعة البيع غير محسوبة في فرع أو أكثر (حُسبت صفراً).</small> : null}
         {item.missingQuantity ? <small className="inventory-hint is-warning">الرصيد غير معروف في فرع أو أكثر (حُسب صفراً).</small> : null}
-        {item.isProcessed ? <small className="inventory-saved">القرار: {decision || "—"}{item.processedByName ? ` · ${item.processedByName}` : ""}</small> : null}
+        {summary ? <small className="inventory-saved">{summary}{item.processedByName ? ` · ${item.processedByName}` : ""}</small> : null}
       </div>
-      <div className="inventory-counted">
-        <button type="button" className="ghost-button" onClick={onToggle}>{expanded ? "إخفاء" : "الكميات"}</button>
+      <div className="shortage-chips">
+        {editable && !item.isProcessed ? (
+          <>
+            <button type="button" className="shortage-chip" onClick={() => setDialog("warehouse")}>المخزن</button>
+            <button type="button" className="shortage-chip" onClick={() => setDialog("purchase")}>مسؤول الشراء</button>
+            <button type="button" className="shortage-chip" onClick={() => setDialog("balance")}>موازنة</button>
+            <button type="button" className="shortage-chip is-danger" onClick={() => setDialog("delete")}>حذف</button>
+          </>
+        ) : null}
+        <button type="button" className="shortage-chip" onClick={() => setDialog("count")}>الجرد</button>
+        <button type="button" className="shortage-chip" onClick={() => setDialog("quantities")}>الكميات</button>
+        {editable && item.isProcessed && (item.balanceDecision ?? 0) > 0 ? (
+          <button type="button" className="shortage-chip" onClick={() => setDialog("balance")}>تعديل الموازنة</button>
+        ) : null}
+        {editable && item.isProcessed ? (
+          <button type="button" className="shortage-chip" onClick={() => void commit(
+            { purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: false, alreadySupplied: false, note: null, clear: true },
+            "أُعيد الصنف إلى النواقص.",
+          )}>إعادة إلى النواقص</button>
+        ) : null}
       </div>
-      {expanded ? (
-        <div className="inventory-expand">
-          <table className="inventory-table">
-            <thead><tr><th>الفرع</th><th>الرصيد</th><th>السرعة</th><th>الهدف</th><th>احتياج</th><th>فائض</th></tr></thead>
-            <tbody>
-              {item.branches.map((branch) => (
-                <tr key={branch.branchId}>
-                  <td>{branch.branchName ?? "—"}</td>
-                  <td>{formatQuantity(branch.currentQuantity)}</td>
-                  <td>{branch.dailySalesRate === null ? "غير محسوبة" : formatQuantity(branch.dailySalesRate)}</td>
-                  <td>{formatQuantity(branch.target)}</td>
-                  <td>{formatQuantity(branch.need)}</td>
-                  <td>{formatQuantity(branch.surplus)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <BranchCountsAndCorrection client={client} itemId={item.itemId} onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
-          {editable ? (
-            <div className="inventory-decision">
-              <label>شراء<input inputMode="decimal" value={purchase} onChange={(event) => setPurchase(event.target.value)} aria-label={`شراء ${item.itemNumber}`} /></label>
-              <label>المخزن<input inputMode="decimal" value={warehouse} onChange={(event) => setWarehouse(event.target.value)} aria-label={`المخزن ${item.itemNumber}`} /></label>
-              <label>موازنة<input inputMode="decimal" value={balance} onChange={(event) => setBalance(event.target.value)} aria-label={`موازنة ${item.itemNumber}`} /></label>
-              <label>ملاحظة<input value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} aria-label={`ملاحظة ${item.itemNumber}`} /></label>
-              <label>الصنف البديل (مع الحذف)<input value={substitute} maxLength={100} onChange={(event) => setSubstitute(event.target.value)} placeholder="رقم الصنف" aria-label={`الصنف البديل ${item.itemNumber}`} /></label>
-              <button type="button" className="primary-button" onClick={() => void save("quantities")}>حفظ</button>
-              <button type="button" className="ghost-button" onClick={() => void save("supplied")}>تم التزويد</button>
-              <button type="button" className="ghost-button" onClick={() => void save("delete")}>حذف</button>
-              {item.isProcessed ? <button type="button" className="ghost-button" onClick={() => void save("clear")}>إعادة إلى النواقص</button> : null}
-            </div>
-          ) : null}
-        </div>
+      {dialog ? createPortal(
+        <ShortageActionDialog
+          kind={dialog}
+          client={client}
+          item={item}
+          onClose={() => setDialog(null)}
+          onCommit={(body, done) => void commit(body, done)}
+          onMessage={onMessage}
+          onBusy={onBusy}
+          onConfirm={onConfirm}
+        />,
+        document.body,
       ) : null}
     </article>
+  );
+}
+
+function ShortageActionDialog({ kind, client, item, onClose, onCommit, onMessage, onBusy, onConfirm }: PanelProps & {
+  kind: ShortageDialog;
+  item: RunItem;
+  onClose: () => void;
+  onCommit: (body: ShortageDecisionBody, done: string) => void;
+}) {
+  const wide = kind === "count" || kind === "quantities" || kind === "warehouse" || kind === "balance";
+  return (
+    <div className="inventory-dialog" role="dialog" aria-modal="true" aria-label={dialogTitle(kind)}>
+      <div className={wide ? "inventory-dialog-card is-wide" : "inventory-dialog-card"}>
+        <strong>{dialogTitle(kind)}</strong>
+        <p>{item.itemName || "صنف بدون اسم"}</p>
+        <p>الصنف: {item.itemNumber}</p>
+        {kind === "warehouse" ? <WarehouseFields item={item} onClose={onClose} onCommit={onCommit} onMessage={onMessage} /> : null}
+        {kind === "purchase" ? <PurchaseFields item={item} onClose={onClose} onCommit={onCommit} onMessage={onMessage} /> : null}
+        {kind === "balance" ? <BalanceFields item={item} onClose={onClose} onCommit={onCommit} onMessage={onMessage} /> : null}
+        {kind === "delete" ? <DeleteFields item={item} onClose={onClose} onCommit={onCommit} /> : null}
+        {kind === "count" || kind === "quantities" ? (
+          <LiveBranchLines client={client} item={item} kind={kind} onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
+        ) : null}
+        {kind === "count" || kind === "quantities" ? (
+          <div className="inventory-dialog-actions">
+            <button type="button" className="ghost-button" onClick={onClose}>إغلاق</button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function dialogTitle(kind: ShortageDialog): string {
+  switch (kind) {
+    case "warehouse": return "المخزن";
+    case "purchase": return "مسؤول الشراء";
+    case "balance": return "موازنة";
+    case "delete": return "تأكيد الحذف";
+    case "count": return "الجرد";
+    case "quantities": return "الكميات والمطلوب";
+  }
+}
+
+function PurchaseFields({ item, onClose, onCommit, onMessage }: {
+  item: RunItem;
+  onClose: () => void;
+  onCommit: (body: ShortageDecisionBody, done: string) => void;
+  onMessage: (message: string) => void;
+}) {
+  const [qty, setQty] = useState(String(item.purchaseQuantity ?? item.requiredQuantity ?? 0));
+  function accept() {
+    const value = parseOptionalQuantity(qty);
+    if (value === undefined || value === null) { onMessage("أدخل كمية صحيحة. الصفر مسموح."); return; }
+    onCommit(
+      { purchaseQuantity: value, warehouseQuantity: null, balanceQuantity: null, delete: false, alreadySupplied: false, note: null },
+      "تم تعيين الكمية المطلوب شراؤها (غير مثبت).",
+    );
+  }
+  return (
+    <>
+      <label>الكمية المطلوب شراؤها
+        <div className="shortage-stepper">
+          <button type="button" aria-label="إنقاص" onClick={() => setQty((current) => stepQuantity(current, -1))}>−</button>
+          <input inputMode="decimal" aria-label="الكمية المطلوب شراؤها" value={qty} onChange={(event) => setQty(event.target.value)} />
+          <button type="button" aria-label="زيادة" onClick={() => setQty((current) => stepQuantity(current, 1))}>+</button>
+        </div>
+      </label>
+      <div className="inventory-dialog-actions">
+        <button type="button" className="primary-button" onClick={accept}>تثبيت</button>
+        <button type="button" className="ghost-button" onClick={onClose}>إلغاء</button>
+      </div>
+    </>
+  );
+}
+
+function WarehouseFields({ item, onClose, onCommit, onMessage }: {
+  item: RunItem;
+  onClose: () => void;
+  onCommit: (body: ShortageDecisionBody, done: string) => void;
+  onMessage: (message: string) => void;
+}) {
+  const [amounts, setAmounts] = useState<Record<string, string>>(() => Object.fromEntries(item.branches.map((branch) => [branch.branchId, String(branch.need ?? 0)])));
+  const total = item.branches.reduce((sum, branch) => sum + (parseCountInput(amounts[branch.branchId] ?? "") ?? 0), 0);
+  function accept() {
+    if (item.branches.some((branch) => parseOptionalQuantity(amounts[branch.branchId] ?? "") === undefined)) {
+      onMessage("أدخل كميات صحيحة من المخزن.");
+      return;
+    }
+    const note = item.branches.length > 1
+      ? item.branches.map((branch) => `${branch.branchName ?? "فرع"} ${amounts[branch.branchId] ?? "0"}`).join("، ")
+      : null;
+    onCommit(
+      { purchaseQuantity: null, warehouseQuantity: total, balanceQuantity: null, delete: false, alreadySupplied: false, note },
+      "تم تعيين الكمية من المخزن (غير مثبت).",
+    );
+  }
+  return (
+    <>
+      {item.branches.map((branch) => (
+        <label key={branch.branchId}>الكمية من المخزن — {branch.branchName ?? "فرع"}
+          <input inputMode="decimal" aria-label={`الكمية من المخزن ${branch.branchName ?? ""}`} value={amounts[branch.branchId] ?? ""} onChange={(event) => setAmounts((current) => ({ ...current, [branch.branchId]: event.target.value }))} />
+        </label>
+      ))}
+      <p>الإجمالي من المخزن: {formatQuantity(total)}</p>
+      <div className="inventory-dialog-actions">
+        <button type="button" className="primary-button" onClick={accept}>تثبيت</button>
+        <button type="button" className="ghost-button" onClick={onClose}>إلغاء</button>
+      </div>
+    </>
+  );
+}
+
+function BalanceFields({ item, onClose, onCommit, onMessage }: {
+  item: RunItem;
+  onClose: () => void;
+  onCommit: (body: ShortageDecisionBody, done: string) => void;
+  onMessage: (message: string) => void;
+}) {
+  const suggested = item.balanceQuantity ?? 0;
+  const [fromId, setFromId] = useState("");
+  const [toId, setToId] = useState("");
+  const [qty, setQty] = useState(suggested > 0 ? String(suggested) : "");
+  const from = item.branches.find((branch) => branch.branchId === fromId);
+  const to = item.branches.find((branch) => branch.branchId === toId);
+  const value = parseCountInput(qty.trim() === "" ? "0" : qty);
+  function accept() {
+    if (value === null) { onMessage("أدخل كمية الموازنة."); return; }
+    if (!from || !to || from.branchId === to.branchId) { onMessage("اختر فرع المصدر وفرع الهدف."); return; }
+    onCommit(
+      { purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: value, delete: false, alreadySupplied: false, note: `من ${from.branchName ?? "فرع"} إلى ${to.branchName ?? "فرع"}` },
+      "تم تعليم الموازنة (غير مثبت).",
+    );
+  }
+  return (
+    <>
+      {suggested <= 0 ? <p>لا توجد موازنة مقترحة حسب الحساب الحالي</p> : null}
+      <p>من الفرع</p>
+      <div className="shortage-branch-chips">
+        {item.branches.map((branch) => (
+          <button key={branch.branchId} type="button" className={fromId === branch.branchId ? "is-selected" : undefined} onClick={() => setFromId(branch.branchId)}>{branch.branchName ?? "فرع"}</button>
+        ))}
+      </div>
+      <p>إلى الفرع</p>
+      <div className="shortage-branch-chips">
+        {item.branches.map((branch) => (
+          <button key={branch.branchId} type="button" className={toId === branch.branchId ? "is-selected" : undefined} onClick={() => setToId(branch.branchId)}>{branch.branchName ?? "فرع"}</button>
+        ))}
+      </div>
+      <p>الكمية الحالية للفرع المصدر: {from ? knownQuantity(from.currentQuantity) : "—"}</p>
+      <p>المتاح حسب الحساب من المصدر: {from ? formatQuantity(from.surplus) : "—"}</p>
+      <p>احتياج الفرع الهدف حسب الحساب: {to ? formatQuantity(to.need) : "—"}</p>
+      <label>الكمية
+        <input inputMode="decimal" aria-label="كمية الموازنة" value={qty} onChange={(event) => setQty(event.target.value)} />
+      </label>
+      {suggested > 0 && value !== null && value > suggested ? <p className="inventory-hint is-warning">الكمية المدخلة أكبر من الموازنة المقترحة حسب الحساب</p> : null}
+      <div className="inventory-dialog-actions">
+        <button type="button" className="primary-button" onClick={accept}>تثبيت الموازنة</button>
+        <button type="button" className="ghost-button" onClick={onClose}>إلغاء</button>
+      </div>
+    </>
+  );
+}
+
+function DeleteFields({ item, onClose, onCommit }: {
+  item: RunItem;
+  onClose: () => void;
+  onCommit: (body: ShortageDecisionBody, done: string) => void;
+}) {
+  const [substitute, setSubstitute] = useState(item.substituteItemNumber ?? "");
+  return (
+    <>
+      <p>هل تريد نقل هذا الصنف إلى قائمة الحذف؟</p>
+      <label>الصنف البديل
+        <input value={substitute} maxLength={100} aria-label="الصنف البديل" placeholder="رقم الصنف" onChange={(event) => setSubstitute(event.target.value)} />
+      </label>
+      <div className="inventory-dialog-actions">
+        <button type="button" className="shortage-chip is-danger" onClick={() => onCommit(
+          { purchaseQuantity: null, warehouseQuantity: null, balanceQuantity: null, delete: true, alreadySupplied: false, note: null, substituteItemNumber: normalizeDigits(substitute.trim()) || null },
+          "نُقل الصنف إلى قائمة الحذف.",
+        )}>حذف</button>
+        <button type="button" className="ghost-button" onClick={onClose}>إلغاء</button>
+      </div>
+    </>
+  );
+}
+
+function LiveBranchLines({ client, item, kind, onMessage, onBusy, onConfirm }: PanelProps & { item: RunItem; kind: "count" | "quantities" }) {
+  const [branches, setBranches] = useState<ItemBranchState[] | null>(null);
+  useEffect(() => {
+    let gone = false;
+    client.itemBranches(item.itemId).then((value) => {
+      if (!gone) setBranches(distinctBy(value.branches, (branch) => branch.branchName));
+    }).catch((error: Error) => { if (!gone) onMessage(error.message); });
+    return () => { gone = true; };
+  }, [client, item.itemId, onMessage]);
+
+  const rows = item.branches.length > 0 ? item.branches : [];
+  return (
+    <>
+      {branches === null ? <p>جاري تحميل الكميات الحالية...</p> : null}
+      {rows.map((branch) => {
+        const live = branches?.find((entry) => entry.branchId === branch.branchId);
+        if (kind === "quantities") {
+          return (
+            <section key={branch.branchId}>
+              <strong>{branch.branchName ?? "فرع"}</strong>
+              <p>الكمية وقت الحساب: {knownQuantity(branch.currentQuantity)}</p>
+              <p>الكمية الحالية الآن: {branches === null ? "جاري تحميل الكميات الحالية..." : knownQuantity(live?.quantity ?? null)}</p>
+              <p>{branch.dailySalesRate === null ? "السرعة اليومية: غير محسوبة" : `السرعة المستخدمة في الحساب: ${formatQuantity(branch.dailySalesRate)}`}</p>
+              <p>الهدف حسب أيام التوفير: {formatQuantity(branch.target)}</p>
+              <p>المطلوب حسب الحساب: {formatQuantity(branch.need)}</p>
+              <p>الفائض حسب الحساب: {formatQuantity(branch.surplus)}</p>
+            </section>
+          );
+        }
+        const counted = live?.lastCountedQuantity;
+        return (
+          <section key={branch.branchId}>
+            <strong>{branch.branchName ?? "فرع"}</strong>
+            <p>الكمية الحالية: {branches === null ? "جاري تحميل الكميات الحالية..." : knownQuantity(live?.quantity ?? null)}</p>
+            {branches !== null && (counted === null || counted === undefined) ? <p>لا توجد بيانات جرد متاحة لهذا الفرع</p> : null}
+            {counted !== null && counted !== undefined ? (
+              <>
+                <p>تم الجرد: نعم</p>
+                <p>الكمية المعدودة: {formatQuantity(counted)}</p>
+                <p>كمية النظام وقت الجرد: {knownQuantity(live?.systemQuantityAtCount)}</p>
+                <p>التعديل: {live?.quantityBeforePosting != null && live.quantityAfterPosting != null ? formatDifference(live.quantityAfterPosting - live.quantityBeforePosting) : "غير معروف"}</p>
+                <p>الكمية قبل التعديل: {knownQuantity(live?.quantityBeforePosting)}</p>
+                <p>الكمية بعد التعديل: {knownQuantity(live?.quantityAfterPosting)}</p>
+                <p>وقت الجرد: {formatDateTime(live?.lastCountedAt)}</p>
+                <p>الموظف: {live?.lastCountedBy || "غير معروف"}</p>
+              </>
+            ) : null}
+          </section>
+        );
+      })}
+      {kind === "quantities" ? <p>إجمالي المطلوب: {formatQuantity(item.requiredQuantity)}</p> : null}
+      {kind === "quantities" && branches !== null ? (
+        <BranchCountsAndCorrection client={client} itemId={item.itemId} onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
+      ) : null}
+    </>
   );
 }
 
@@ -686,7 +922,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
   }, [client, itemId, onMessage]);
 
   useEffect(() => { void load(); }, [load]);
-  if (!branches) return null;
+  if (!branches) return <p className="inventory-hint">جاري تحميل الكميات الحالية...</p>;
 
   function correct() {
     const branch = branches?.find((entry) => entry.branchId === target);
@@ -726,7 +962,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
           {branches.map((branch) => (
             <tr key={branch.branchId}>
               <td>{branch.branchName}{branch.current ? " (هذا الفرع)" : ""}</td>
-              <td>{formatQuantity(branch.quantity)} <small>{formatDateTime(branch.snapshotAt)}</small></td>
+              <td>{branch.quantity === null ? "غير معروف" : formatQuantity(branch.quantity)} <small>{formatDateTime(branch.snapshotAt)}</small></td>
               <td>{branch.lastCountedQuantity === null ? "—" : `${formatQuantity(branch.lastCountedQuantity)} · ${formatDateTime(branch.lastCountedAt)}`}</td>
               <td>{branch.pendingCorrection === null
                 ? "—"

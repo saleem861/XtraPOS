@@ -324,6 +324,65 @@
   justify-content: flex-end;
 }
 
+.inventory-dialog-card.is-wide {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+  overflow: auto;
+}
+
+.shortage-chips,
+.shortage-branch-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shortage-chip,
+.shortage-branch-chips button {
+  border: 0;
+  border-radius: 10px;
+  background: #0b1d36;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.shortage-chip.is-danger {
+  background: #b42318;
+}
+
+.shortage-branch-chips button.is-selected {
+  outline: 2px solid #1b4f8a;
+  outline-offset: 1px;
+}
+
+.shortage-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortage-stepper button {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #1b4f8a;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.shortage-stepper input {
+  width: 88px;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 700;
+}
+
 /* المرحلة 2: «تقرير الجرد» وتدقيق المشرف و«معالجة الأصناف» */
 .inventory-report,
 .inventory-items {
@@ -902,6 +961,9 @@
 
 .inventory-define-items > .inventory-list {
   width: 100%;
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
 }
 
 .inventory-define-footer {
