@@ -143,7 +143,7 @@ export function CustomerPurchasesScreen({ session, user, initialCustomer, onBack
 
   return (
     <section className="new-customer sales-review customer-purchases" dir="rtl" aria-label="مشتريات الزبون">
-      <ScreenHeader title="مشتريات الزبون" context={user.branchName} onBack={onBack} />
+      <ScreenHeader title="مشتريات الزبون" context={user.branchName} onBack={searching ? undefined : onBack} />
       <div className="customer-purchases-body">
         <div className="customer-purchases-top">
           <div className="customer-purchases-who">
