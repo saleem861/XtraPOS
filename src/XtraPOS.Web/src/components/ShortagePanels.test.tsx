@@ -340,7 +340,7 @@ describe("manual shortages", () => {
     }));
     render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
     await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
-    await userEvent.click(await screen.findByRole("checkbox", { name: "فرع نابلس" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^فرع نابلس/ }));
     await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
     await userEvent.click(await screen.findByRole("button", { name: "الجرد اليدوي" }));
     await userEvent.click(await screen.findByRole("button", { name: /^جرد يدوي/ }));
