@@ -101,4 +101,12 @@ public sealed class InventoryCountRulesTests
         Assert.True(InventoryCountRules.CanFinalize(46, 46));
         Assert.True(InventoryCountRules.CanFinalize(3, 3));
     }
+
+    [Fact]
+    public void Finalizing_is_a_background_post_and_still_requires_a_complete_count()
+    {
+        Assert.Equal("قيد الترحيل", InventorySessionStatuses.Label(InventorySessionStatuses.Finalizing));
+        Assert.Equal("جرد الأصناف المهمة من جهاز في Labtop", InventoryCountRules.FinalizeReason(InventoryTypes.Important, "Labtop"));
+        Assert.False(InventoryCountRules.CanFinalize(46, 45));
+    }
 }

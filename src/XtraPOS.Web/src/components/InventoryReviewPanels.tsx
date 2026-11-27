@@ -173,6 +173,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
           <select value={filter.status} onChange={(event) => setFilter({ ...filter, status: event.target.value as ReportFilter["status"] })}>
             <option value="">مثبّت وغير مثبّت</option>
             <option value="Completed">مثبّت</option>
+            <option value="Finalizing">قيد الترحيل</option>
             <option value="Open">غير مثبّت</option>
             <option value="Discarded">ملغى</option>
           </select>

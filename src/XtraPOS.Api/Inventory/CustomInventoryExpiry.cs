@@ -40,7 +40,8 @@ public static class CustomInventoryExpiry
               AND (inventory.IsActive = 1
                    OR EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS target WHERE target.CustomInventoryID = inventory.CustomInventoryID))
               AND NOT EXISTS (SELECT 1 FROM dbo.InventorySessions AS running
-                              WHERE running.CustomInventoryID = inventory.CustomInventoryID AND running.Status = N'Open');
+                              WHERE running.CustomInventoryID = inventory.CustomInventoryID
+                                AND running.Status IN (N'Open', N'Finalizing'));
 
             DELETE target FROM dbo.CustomInventoryBranches AS target
             INNER JOIN @expired AS gone ON gone.CustomInventoryID = target.CustomInventoryID;

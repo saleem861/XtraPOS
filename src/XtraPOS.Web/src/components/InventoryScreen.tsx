@@ -99,7 +99,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
   const [openSession, setOpenSession] = useState<InventorySession | null>(null);
   const [checkingOpen, setCheckingOpen] = useState(false);
   const [active, setActive] = useState<InventorySession | null>(null);
-  const [finished, setFinished] = useState<{ session: InventorySession; posted: number; remote?: boolean } | null>(null);
+  const [finished, setFinished] = useState<{ session: InventorySession; posted: number; remote?: boolean; queued?: boolean } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -475,15 +475,17 @@ export function InventoryScreen({ session, permissions, onBack }: {
 
         {step === "done" && finished ? (
           <div className="inventory-done">
-            <strong>{finished.remote ? `تم تثبيت جرد ${branch?.branchName ?? "الفرع"} على المركز.` : "تم تثبيت الجرد وتحديث المخزون بنجاح."}</strong>
+            <strong>{finished.queued ? "تم التثبيت — تُرحَّل الفروق في الخلفية" : finished.remote ? `تم تثبيت جرد ${branch?.branchName ?? "الفرع"} على المركز.` : "تم تثبيت الجرد وتحديث المخزون بنجاح."}</strong>
             <dl>
               <div><dt>إجمالي الأصناف</dt><dd>{finished.session.totalItems}</dd></div>
               <div><dt>تم جردها</dt><dd>{finished.session.countedItems}</dd></div>
               <div><dt>غير مجرودة</dt><dd>{finished.session.uncountedItems}</dd></div>
-              <div><dt>{finished.remote ? "ثُبّتت على المركز" : "تم ترحيلها"}</dt><dd>{finished.posted}</dd></div>
+              <div><dt>{finished.queued ? "الترحيل" : finished.remote ? "ثُبّتت على المركز" : "تم ترحيلها"}</dt><dd>{finished.queued ? "في الخلفية" : finished.posted}</dd></div>
             </dl>
             <p className="inventory-hint">
-              {finished.remote
+              {finished.queued
+                ? "أُغلق الجرد. الفروق تُرحَّل إلى المركز في الخلفية، ويأخذها الفرع في أول مزامنة بإضافتها إلى رصيده الحالي."
+                : finished.remote
                 ? "ثُبّت كل فارق على المركز أولاً، ويأخذه الفرع في أول مزامنة بإضافته إلى رصيده الحالي، فلا يضيع بيع حدث أثناء الجرد. الأصناف غير المجرودة لم تُغيَّر."
                 : "تم تحديث كميات الأصناف المجرودة فقط. الأصناف غير المجرودة لم تُغيَّر كمياتها."}
             </p>
@@ -518,8 +520,6 @@ interface PendingSave {
   previous: InventoryItem | null;
   attempts: number;
 }
-
-const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 /** الحفظ الذي لم يصل المركز يُحفظ على الجهاز، فلا يضيع إن أُعيد تحميل الصفحة، ويُرسل عند العودة للجرد. */
 const PENDING_KEY = (sessionId: string) => `xtrapos.inventory.pending.${sessionId}`;
@@ -559,7 +559,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   onMessage: (message: string) => void;
   onConfirm: (confirmation: Confirmation) => void;
   onSaveAndExit: () => void;
-  onFinished: (result: { session: InventorySession; posted: number; remote?: boolean }) => void;
+  onFinished: (result: { session: InventorySession; posted: number; remote?: boolean; queued?: boolean }) => void;
 }) {
   const manual = session.inventoryType === "Manual";
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -575,6 +575,9 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   const queue = useRef<PendingSave[]>([]);
   const draining = useRef(false);
   const alive = useRef(true);
+  const drainTask = useRef<Promise<void>>(Promise.resolve());
+  const pace = useRef<"retry" | "now">("retry");
+  const hurry = useRef<(() => void) | null>(null);
   const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [retrying, setRetrying] = useState(false);
   const desktop = usesDesktopCustomerKeyboard();
@@ -640,8 +643,26 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
    * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
    * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
    */
+  function wakeDrain() {
+    pace.current = "now";
+    hurry.current?.();
+  }
+
+  function pause(ms: number) {
+    return new Promise<void>((resolve) => {
+      const timer = window.setTimeout(resolve, ms);
+      hurry.current = () => { window.clearTimeout(timer); resolve(); };
+    }).finally(() => { hurry.current = null; });
+  }
+
   async function drain() {
-    if (draining.current) return;
+    if (draining.current) return drainTask.current;
+    const task = runDrain();
+    drainTask.current = task;
+    return task;
+  }
+
+  async function runDrain() {
     draining.current = true;
     let attempts = 0;
     try {
@@ -693,9 +714,12 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
             onMessage(`لم يُحفظ العدّ: ${(error as Error).message}`);
             continue;
           }
+          const hurryNow = () => pace.current === "now";
+          if (hurryNow()) return;
           attempts += 1;
           setRetrying(true);
-          await wait(Math.min(15000, 1000 * 2 ** Math.min(attempts, 4)));
+          await pause(Math.min(15000, 1000 * 2 ** Math.min(attempts, 4)));
+          if (hurryNow()) return;
         }
       }
     } finally {
@@ -780,28 +804,35 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   }
 
   function finalize() {
-    if (pendingCount > 0) {
-      onMessage(`انتظر حتى يُحفظ كل العدّ على المركز (بقي ${pendingCount}).`);
-      return;
-    }
     onConfirm({
       title: "تثبيت الجرد",
-      message: "سيتم تثبيت الجرد وترحيل الفروقات إلى مخزون الفرع. هل تريد المتابعة؟",
+      message: "سيتم إغلاق الجرد وترحيل الفروقات في الخلفية. لا يُثبَّت جرد ناقص. هل تريد المتابعة؟",
       accept: "تثبيت",
-      onAccept: () => {
-        void (async () => {
-          setFinalizing(true);
-          onMessage("");
-          try {
-            onFinished(await client.finalize(session.sessionId));
-          } catch (error) {
-            onMessage((error as Error).message);
-          } finally {
-            setFinalizing(false);
-          }
-        })();
-      },
+      onAccept: () => { void acceptFinalize(); },
     });
+  }
+
+  async function acceptFinalize() {
+    setFinalizing(true);
+    try {
+      const waiting = queue.current.length;
+      if (waiting > 0) onMessage(`جاري إرسال ${waiting} صنف ثم التثبيت…`);
+      else onMessage("");
+      wakeDrain();
+      await drain();
+      if (queue.current.length > 0) await drain();
+      pace.current = "retry";
+      if (queue.current.length > 0) {
+        onMessage("تعذر إرسال بقية العد إلى المركز. زر التثبيت ما زال متاحاً.");
+        return;
+      }
+      onFinished(await client.finalize(session.sessionId));
+    } catch (error) {
+      onMessage((error as Error).message);
+    } finally {
+      pace.current = "retry";
+      setFinalizing(false);
+    }
   }
 
   function editor(itemId: string, label: string) {
@@ -824,15 +855,15 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   }
 
   /**
-   * قاعدة المالك: «تثبيت الجرد» يُفعَّل بعد حفظ عدّ كل الأصناف (في اليدوي كل ما أُضيف)، وبعد أن يصل كل حفظ للمركز.
-   * العدّاد من الأصناف في الشاشة، فيتحرك فوراً مع الحفظ في الخلفية.
+   * قاعدة المالك: «تثبيت الجرد» يُفعَّل فور عدّ كل الأصناف على الجهاز.
+   * وصول الحفظ للمركز والترحيل يجريان في الخلفية، ولا يُثبَّت جرد ناقص.
    */
   const counted = items.filter((item) => item.isCounted).length;
   const total = manual ? counted : session.totalItems;
   const remaining = manual ? 0 : Math.max(total - counted, 0);
-  const allCounted = pendingCount === 0 && (manual
+  const allCounted = manual
     ? counted > 0 && !manualItem
-    : total > 0 && remaining === 0);
+    : total > 0 && remaining === 0;
 
   const progress = manual
     ? `تم جرد ${counted} صنف`
@@ -932,9 +963,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
       <footer className="inventory-actions">
         {!allCounted ? (
           <small className="inventory-hint">
-            {pendingCount > 0
-              ? `يُفعَّل «تثبيت الجرد» بعد وصول كل الحفظ للمركز (بقي ${pendingCount}).`
-              : manual ? "احفظ عدّ الأصناف المضافة لتفعيل «تثبيت الجرد»." : `احفظ عدّ كل الأصناف لتفعيل «تثبيت الجرد» (بقي ${remaining}).`}
+            {manual ? "احفظ عدّ الأصناف المضافة لتفعيل «تثبيت الجرد»." : `احفظ عدّ كل الأصناف لتفعيل «تثبيت الجرد» (بقي ${remaining}).`}
           </small>
         ) : null}
         <button type="button" className="ghost-button" disabled={finalizing || pendingCount > 0} onClick={onSaveAndExit}>حفظ وخروج</button>

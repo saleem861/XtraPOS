@@ -34,8 +34,19 @@ public static class InventoryTypes
 public static class InventorySessionStatuses
 {
     public const string Open = "Open";
+    public const string Finalizing = "Finalizing";
     public const string Completed = "Completed";
     public const string Discarded = "Discarded";
+
+    /// <summary>تقرير الجرد: «قيد الترحيل» هي حالة «قيد الإنهاء» في النظام القديم.</summary>
+    public static string Label(string status) => status switch
+    {
+        Finalizing => "قيد الترحيل",
+        Completed => "مثبّت",
+        Open => "غير مثبّت",
+        Discarded => "ملغى",
+        _ => status,
+    };
 }
 
 /// <summary>
@@ -43,8 +54,12 @@ public static class InventorySessionStatuses
 /// </summary>
 public static class InventoryCountRules
 {
-    /// <summary>قاعدة المالك: «تثبيت الجرد» بعد حفظ عدّ كل الأصناف، وفي الجلسة صنف واحد على الأقل.</summary>
+    /// <summary>قاعدة المالك: «تثبيت الجرد» بعد حفظ عدّ كل الأصناف، وفي الجلسة صنف واحد على الأقل. لا يُثبَّت جرد ناقص.</summary>
     public static bool CanFinalize(int totalItems, int countedItems) => totalItems > 0 && countedItems >= totalItems;
+
+    /// <summary>سبب التصحيح عند الترحيل في الخلفية. اسم المكان هو فرع الجلسة، لأن جهاز الطلب لم يعد متاحاً.</summary>
+    public static string FinalizeReason(string inventoryType, string placeName) =>
+        $"{InventoryTypes.Label(inventoryType)} من جهاز في {placeName}";
 
     public const int PeriodicPageCount = 12;
     public static readonly TimeOnly PeriodCutoff = new(16, 0);
