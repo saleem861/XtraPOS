@@ -48,7 +48,7 @@ export interface ReportFilter {
   to: string;
   type: InventoryType | "";
   userId: string;
-  status: "" | "Open" | "Completed" | "Discarded";
+  status: "" | "Open" | "Finalizing" | "Completed" | "Discarded";
 }
 
 export interface ReportLine {

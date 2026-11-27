@@ -42,6 +42,7 @@ public sealed class InventoryReviewService(
         {
             null or "" => null,
             InventorySessionStatuses.Open => InventorySessionStatuses.Open,
+            InventorySessionStatuses.Finalizing => InventorySessionStatuses.Finalizing,
             InventorySessionStatuses.Completed => InventorySessionStatuses.Completed,
             InventorySessionStatuses.Discarded => InventorySessionStatuses.Discarded,
             _ => throw new InventoryException("حالة الجرد غير صالحة."),

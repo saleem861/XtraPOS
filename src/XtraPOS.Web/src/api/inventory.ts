@@ -174,7 +174,7 @@ export function createInventoryClient(session: DeviceSession, branchId = "") {
         method: "POST",
         headers: json,
       });
-      return readJson<{ session: InventorySession; posted: number; remote?: boolean }>(response, "تعذر تثبيت الجرد. حاول مرة أخرى.");
+      return readJson<{ session: InventorySession; posted: number; remote?: boolean; queued?: boolean }>(response, "تعذر تثبيت الجرد. حاول مرة أخرى.");
     },
   };
 }

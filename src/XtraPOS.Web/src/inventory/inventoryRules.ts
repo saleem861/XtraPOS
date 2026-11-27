@@ -137,6 +137,7 @@ export function parseOptionalInteger(text: string, min: number, max: number): nu
 }
 
 export function sessionStatusLabel(status: string): string {
+  if (status === "Finalizing") return "قيد الترحيل";
   if (status === "Completed") return "مثبّت";
   if (status === "Open") return "غير مثبّت";
   if (status === "Discarded") return "ملغى";

@@ -295,7 +295,8 @@ describe("counting rules from the owner's notes", () => {
     await userEvent.type(second, "3");
     await userEvent.click(within(second.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
     expect(screen.getByRole("tab", { name: "تم الجرد (2)" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/بعد وصول كل الحفظ للمركز/)).toBeNull();
     expect(screen.getByText(/جاري إرسال 2 صنف للمركز/)).toBeTruthy();
     expect(bodies).toHaveLength(1);
 
@@ -305,6 +306,50 @@ describe("counting rules from the owner's notes", () => {
     await userEvent.click(screen.getByRole("tab", { name: "تم الجرد (2)" }));
     expect((await screen.findByLabelText("650 تم حفظ العد")).className).toContain("is-selected");
     expect(window.localStorage.getItem(`xtrapos.inventory.pending.${openSession.sessionId}`)).toBeNull();
+  });
+
+  it("enables posting from the local count and sends the queue before finalize", async () => {
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    const lines = [item({ itemId: "i1", itemNumber: "650" }), item({ itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة" })];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.startsWith("/api/inventory/configuration")) {
+        return reply({ businessDate: "2026-11-23", periodType: "AM", cutoff: "16:00", pageCount: 12, defaultPage: 7, importantItems: 2, pageItems: [] });
+      }
+      if (url.startsWith("/api/inventory/sessions/open")) return reply({ session: null });
+      if (url === "/api/inventory/sessions") return reply({ session: openSession, resumed: false });
+      if (url.includes("/items")) return reply({ session: openSession, items: lines });
+      if (url.includes("/counts")) {
+        const body = JSON.parse(String(init?.body)) as { items: { itemId: string }[] };
+        const answer = () => reply({
+          session: { ...openSession, countedItems: 2, uncountedItems: 0 },
+          items: body.items.map((entry) => ({ ...lines.find((line) => line.itemId === entry.itemId)!, isCounted: true, countedQuantity: 1 })),
+          rejected: [],
+        });
+        if (!release) return new Promise((resolve) => { release = () => resolve(answer()); });
+        return answer();
+      }
+      if (url.includes("/finalize")) {
+        return reply({ session: { ...openSession, status: "Finalizing", countedItems: 2, uncountedItems: 0 }, posted: 0, remote: true, queued: true });
+      }
+      return reply({});
+    }));
+    render(<InventoryScreen session={session} permissions={["Inventory.Count"]} onBack={() => undefined} />);
+    await openImportantCount();
+    const first = await screen.findByRole("textbox", { name: "الكمية الفعلية فحم سريع" });
+    await userEvent.click(within(first.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
+    const second = screen.getByRole("textbox", { name: "الكمية الفعلية رأس أرجيلة" });
+    await userEvent.click(within(second.closest("article") as HTMLElement).getByRole("button", { name: "حفظ" }));
+    const post = screen.getByRole("button", { name: "تثبيت الجرد" }) as HTMLButtonElement;
+    expect(post.disabled).toBe(false);
+    await userEvent.click(post);
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت" }));
+    expect(await screen.findByText(/جاري إرسال \d+ صنف ثم التثبيت/)).toBeTruthy();
+    expect(calls.some((call) => call.includes("/finalize"))).toBe(false);
+    release!();
+    expect(await screen.findByText("تم التثبيت — تُرحَّل الفروق في الخلفية")).toBeTruthy();
+    expect(calls.some((call) => call.startsWith("POST") && call.includes("/finalize"))).toBe(true);
   });
 
   it("keeps unsent counts on the device and sends them in one request when the count reopens", async () => {
