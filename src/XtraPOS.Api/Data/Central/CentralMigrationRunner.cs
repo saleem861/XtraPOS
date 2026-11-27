@@ -108,6 +108,9 @@ public sealed class CentralMigrationRunner
     // Owner decision, 25 November 2026: the audit is on shortage processing, answered yes/no. Columns only. Back up first.
     public const string AuditByTasksMigrationId = "045_CentralAuditByTasks";
     public const string AuditByTasksMigrationName = "Receipt audit on processed shortage tasks, answered yes or no";
+    // Owner decision, 27 November 2026: «إظهار الكل» lists items that are not required, marked «غير مطلوب». Column only. Back up first.
+    public const string ShortageShowAllMigrationId = "046_CentralShortageShowAll";
+    public const string ShortageShowAllMigrationName = "Shortage runs keep items that are not required for show all";
 
     private static readonly (string Id, string Name, string Resource)[] Migrations =
     [
@@ -156,6 +159,7 @@ public sealed class CentralMigrationRunner
         (ShortageSubstituteMigrationId, ShortageSubstituteMigrationName, "XtraPOS.Api.Data.Central.Migrations.043_CentralShortageSubstitute.sql"),
         (QuantityAuthorityMigrationId, QuantityAuthorityMigrationName, "XtraPOS.Api.Data.Central.Migrations.044_CentralQuantityAuthority.sql"),
         (AuditByTasksMigrationId, AuditByTasksMigrationName, "XtraPOS.Api.Data.Central.Migrations.045_CentralAuditByTasks.sql"),
+        (ShortageShowAllMigrationId, ShortageShowAllMigrationName, "XtraPOS.Api.Data.Central.Migrations.046_CentralShortageShowAll.sql"),
     ];
 
     private static readonly string ApplicationVersion =

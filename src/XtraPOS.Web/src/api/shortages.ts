@@ -97,6 +97,8 @@ export interface RunItem {
   note: string | null;
   processedByName: string | null;
   substituteItemNumber?: string | null;
+  /** false: غير مطلوب (بلا مبيعات أو رصيده يغطي)، يظهر فقط عند «إظهار الكل». */
+  isRequired?: boolean;
   branches: RunItemBranch[];
 }
 

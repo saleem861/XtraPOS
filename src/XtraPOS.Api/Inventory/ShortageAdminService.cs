@@ -872,7 +872,7 @@ public sealed class ShortageAdminService(ShortageService shortages)
         await using (var command = new SqlCommand(
             """
             SELECT run.RunID, run.ShortageType, run.SupplyDays, run.Status, run.CreatedByName, run.CreatedAt, run.CompletedAt, run.ItemCount,
-                   (SELECT COUNT(*) FROM dbo.ShortageRunItems WHERE RunID = run.RunID AND IsProcessed = 1),
+                   (SELECT COUNT(*) FROM dbo.ShortageRunItems WHERE RunID = run.RunID AND IsProcessed = 1 AND IsRequired = 1),
                    (SELECT COUNT(*) FROM dbo.ShortageTasks WHERE RunID = run.RunID),
                    STUFF((SELECT N'، ' + target.BranchName FROM dbo.ShortageRunBranches AS target WHERE target.RunID = run.RunID
                           ORDER BY target.BranchName FOR XML PATH(N'')), 1, 2, N'')

@@ -432,7 +432,7 @@ function ScopeSummaryNote({ summary }: { summary: ShortageScopeSummary }) {
         {summary.noSalesItems > 0 ? <li>{summary.noSalesItems} صنف بلا مبيعات على المركز (سرعة البيع صفر)، فالكمية المطلوبة لها صفر مهما كان رصيدها.</li> : null}
         {summary.coveredItems > 0 ? <li>{summary.coveredItems} صنف رصيده يغطي حاجة أيام التوفير.</li> : null}
       </ul>
-      <p>الجرد يصحح الرصيد فقط؛ النقص يُحسب من سرعة البيع × أيام التوفير − الرصيد.</p>
+      <p>الجرد يصحح الرصيد فقط؛ النقص يُحسب من سرعة البيع × أيام التوفير − الرصيد. اضغط «إظهار الكل» لرؤية هذه الأصناف.</p>
     </div>
   );
 }
@@ -448,6 +448,8 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
   const [filter, setFilter] = useState<RunFilter>("open");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState("");
+  // المالك 27 نوفمبر: المطلوب فقط افتراضياً؛ «إظهار الكل» يضيف غير المطلوب بعلامة «غير مطلوب».
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
     const value = await run("جاري تحميل الأصناف...", () => client.run(runId));
@@ -456,17 +458,20 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
 
   useEffect(() => { void load(); }, [load]);
 
+  const required = useMemo(() => (data?.items ?? []).filter((item) => item.isRequired !== false), [data]);
+  const shown = showAll ? data?.items ?? [] : required;
   const visible = useMemo(() => {
     const text = normalizeDigits(query.trim()).toLowerCase();
-    return (data?.items ?? []).filter((item) =>
+    return shown.filter((item) =>
       inRunTab(item, filter)
       && (!text || item.itemNumber.toLowerCase().includes(text) || (item.itemName ?? "").toLowerCase().includes(text)));
-  }, [data, filter, query]);
-  const runPaging = usePaging(visible, `${filter}|${query}`);
+  }, [shown, filter, query]);
+  const runPaging = usePaging(visible, `${filter}|${query}|${showAll}`);
 
   if (!data) return <Waiting compact label="جاري التحميل..." />;
   const header = data.run;
-  const processed = data.items.filter((item) => item.isProcessed).length;
+  const processed = required.filter((item) => item.isProcessed).length;
+  const notRequired = data.items.length - required.length;
   const editable = header.status === "Draft" && header.mine;
 
   function replace(itemId: string, change: Partial<RunItem>) {
@@ -480,13 +485,21 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
           <strong>{header.shortageTypeLabel}{header.customInventoryName ? `: ${header.customInventoryName}` : ""}</strong>
           <span>{header.supplyDays} يوم توفير · {header.branches.map((branch) => branch.branchName).join("، ")}</span>
         </div>
-        <span className="inventory-progress">عولج {processed} من {data.items.length}</span>
+        <span className="inventory-progress">عولج {processed} من {required.length}</span>
+        {notRequired > 0 ? (
+          <button
+            type="button"
+            className={showAll ? "ghost-button is-active" : "ghost-button"}
+            aria-pressed={showAll}
+            onClick={() => setShowAll((current) => !current)}
+          >إظهار الكل ({data.items.length})</button>
+        ) : null}
       </header>
 
       <div className="inventory-tabs" role="tablist">
         {RUN_TABS.map(([value, label]) => (
           <button key={value} type="button" role="tab" aria-selected={filter === value} className={filter === value ? "is-active" : undefined} onClick={() => setFilter(value)}>
-            {label} ({data.items.filter((item) => inRunTab(item, value)).length})
+            {label} ({shown.filter((item) => inRunTab(item, value)).length})
           </button>
         ))}
       </div>
@@ -495,8 +508,8 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
       </form>
 
       <div className="inventory-list">
-        {data.items.length === 0 ? <p className="inventory-hint">لا توجد نواقص في هذا النطاق. يمكنك التثبيت مباشرة.</p> : null}
-        {data.items.length === 0 && summary ? <ScopeSummaryNote summary={summary} /> : null}
+        {required.length === 0 ? <p className="inventory-hint">لا توجد نواقص في هذا النطاق. يمكنك التثبيت مباشرة.</p> : null}
+        {required.length === 0 && summary && !showAll ? <ScopeSummaryNote summary={summary} /> : null}
         {runPaging.visible.map((item) => (
           <ShortageItemRow
             key={item.itemId}
@@ -534,12 +547,12 @@ function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinis
             className="primary-button"
             onClick={() => onConfirm({
               title: "التثبيت النهائي",
-              message: processed < data.items.length
-                ? `لم تتم معالجة ${data.items.length - processed} صنف. عالج كل الأصناف قبل التثبيت.`
+              message: processed < required.length
+                ? `لم تتم معالجة ${required.length - processed} صنف. عالج كل الأصناف المطلوبة قبل التثبيت.`
                 : "سيتم تثبيت المعالجة وإنشاء مهام الشراء والمخزن والموازنة والحذف. هل تريد المتابعة؟",
               accept: "تثبيت نهائي",
               onAccept: () => {
-                if (processed < data.items.length) return;
+                if (processed < required.length) return;
                 void run("جاري التثبيت النهائي...", () => client.finalize(runId)).then((value) => { if (value) onFinished(value); });
               },
             })}
@@ -608,6 +621,7 @@ function ShortageItemRow({ client, runId, item, editable, expanded, onToggle, on
       <div className="inventory-row-name">
         <span className="inventory-number">{item.itemNumber}</span>
         <strong>{item.itemName || "صنف بدون اسم"}</strong>
+        {item.isRequired === false ? <span className="inventory-badge">غير مطلوب</span> : null}
         <small>
           احتياج {formatQuantity(item.totalNeed)} · فائض {formatQuantity(item.totalSurplus)} · مطلوب شراء {formatQuantity(item.requiredQuantity)} · موازنة {formatQuantity(item.balanceQuantity)}
         </small>
