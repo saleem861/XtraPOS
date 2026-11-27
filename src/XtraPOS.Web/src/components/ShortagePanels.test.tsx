@@ -61,6 +61,7 @@ describe("shortage processing", () => {
 
     const toggle = screen.getByRole("button", { name: "إظهار الكل (2)" });
     await userEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "إظهار النواقص (1)" })).toBe(toggle);
     const idleRow = (await screen.findByText("رأس أرجيلة")).closest("article") as HTMLElement;
     expect(within(idleRow).getByText("غير مطلوب")).toBeTruthy();
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
@@ -123,15 +124,25 @@ describe("shortage processing", () => {
     await vi.waitFor(() => expect(calls.find((call) => call.url === "/api/shortages/runs")?.body).toMatchObject({ shortageType: "Important", branchIds: ["br"], supplyDays: 7 }));
 
     const row = (await screen.findByText("فحم سريع")).closest("article") as HTMLElement;
-    expect(within(row).getByText(/مطلوب شراء 4/)).toBeTruthy();
+    expect(within(row).getByText("المطلوب: 10")).toBeTruthy();
+    expect(within(row).queryByRole("textbox")).toBeNull();
     expect(within(row).getByText(/سرعة البيع غير محسوبة/)).toBeTruthy();
 
     await userEvent.click(within(row).getByRole("button", { name: "الكميات" }));
-    expect((within(row).getByRole("textbox", { name: "شراء 650" }) as HTMLInputElement).value).toBe("4");
-    await userEvent.click(within(row).getByRole("button", { name: "حفظ" }));
-    expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ purchaseQuantity: 4, balanceQuantity: 6, delete: false });
+    expect(screen.getByRole("dialog", { name: "الكميات والمطلوب" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "إغلاق" }));
+
+    await userEvent.click(within(row).getByRole("button", { name: "مسؤول الشراء" }));
+    const purchase = screen.getByRole("dialog", { name: "مسؤول الشراء" });
+    const purchaseQty = within(purchase).getByRole("textbox", { name: "الكمية المطلوب شراؤها" }) as HTMLInputElement;
+    expect(purchaseQty.value).toBe("4");
+    await userEvent.click(within(purchase).getByRole("button", { name: "زيادة" }));
+    expect(purchaseQty.value).toBe("5");
+    await userEvent.click(within(purchase).getByRole("button", { name: "تثبيت" }));
+    expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ purchaseQuantity: 5, warehouseQuantity: null, balanceQuantity: null });
     await userEvent.click(screen.getByRole("tab", { name: "مسؤول الشراء (1)" }));
-    expect(await screen.findByText(/القرار: شراء 4/)).toBeTruthy();
+    expect(await screen.findByText("الكمية المطلوب شراؤها: 5")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "إعادة إلى النواقص" })).toBeTruthy();
   });
 });
 

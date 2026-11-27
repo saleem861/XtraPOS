@@ -606,11 +606,14 @@ public sealed class ShortageService(InventoryCountService counting)
             SELECT branch.BranchID, branch.BranchName,
                    CASE WHEN snapshot.IsQuantityInitialized = 1 THEN snapshot.OnHandQuantity END, snapshot.DailySalesRate, snapshot.ReceivedAt,
                    lastCount.CountedQuantity, lastCount.CountedAt, lastCount.CountedByName,
+                   lastCount.SystemQuantityAtCount, lastCount.QuantityBeforePosting, lastCount.QuantityAfterPosting,
                    pending.NewQuantity, pending.RequestedAt, pending.ExpectedQuantity, pending.DeltaQuantity
             FROM dbo.Branches AS branch
             LEFT JOIN dbo.BranchStockSnapshots AS snapshot ON snapshot.BranchID = branch.BranchID AND snapshot.ItemID = @item
             OUTER APPLY (
-                SELECT TOP (1) line.CountedQuantity, line.CountedAt, line.CountedByName
+                SELECT TOP (1) line.CountedQuantity, line.CountedAt, line.CountedByName,
+                       CASE WHEN line.SystemQuantityKnown = 1 THEN line.SystemQuantityAtCount END AS SystemQuantityAtCount,
+                       line.QuantityBeforePosting, line.QuantityAfterPosting
                 FROM dbo.InventorySessionItems AS line
                 INNER JOIN dbo.InventorySessions AS countSession ON countSession.SessionID = line.SessionID
                 WHERE countSession.BranchID = branch.BranchID AND line.ItemID = @item AND line.IsCounted = 1
@@ -641,10 +644,13 @@ public sealed class ShortageService(InventoryCountService counting)
                 lastCountedQuantity = Dec(reader, 5),
                 lastCountedAt = UtcOrNull(reader, 6),
                 lastCountedBy = Str(reader, 7),
-                pendingCorrection = Dec(reader, 8),
-                pendingSince = UtcOrNull(reader, 9),
-                pendingExpected = Dec(reader, 10),
-                pendingDelta = Dec(reader, 11),
+                systemQuantityAtCount = Dec(reader, 8),
+                quantityBeforePosting = Dec(reader, 9),
+                quantityAfterPosting = Dec(reader, 10),
+                pendingCorrection = Dec(reader, 11),
+                pendingSince = UtcOrNull(reader, 12),
+                pendingExpected = Dec(reader, 13),
+                pendingDelta = Dec(reader, 14),
             });
         }
 

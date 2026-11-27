@@ -6,8 +6,8 @@ import { NumericEditModal } from "./NumericEditModal";
 /**
  * قاعدة المالك لمربع الكمية في كل شاشات الجرد:
  * - الكمية الافتراضية صفر باهت (placeholder)، والحفظ بلا كتابة يعني صفراً.
- * - الكمبيوتر: عند الوصول للمربع (نقر أو انتقال تلقائي بعد حفظ الصنف السابق) تظهر لوحة أرقام
- *   في منتصف الشاشة، بالضبط مثل لوحة «الكمية» في شاشة البيع؛ «تأكيد» أو Enter يحفظ الصنف (المالك 27 نوفمبر).
+ * - الكمبيوتر: اللوحة في منتصف الشاشة، مثل لوحة «الكمية» في شاشة البيع، وتفتح فقط عند النقر على المربع
+ *   (الملاحظة 11). الانتقال للصنف التالي بعد الحفظ لا يفتحها. «تأكيد» أو Enter يحفظ الصنف.
  * - أندرويد/iOS: لوحة أرقام الجهاز (inputMode) وتتحرك الصفحة ليبقى المربع ظاهراً فوقها.
  */
 export function applyPadKey(current: string, key: string): string | "enter" {
@@ -87,7 +87,7 @@ export function CountQuantityField({
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        onFocus={(event) => { setFocused(true); openPad(); rest.onFocus?.(event); }}
+        onFocus={(event) => { setFocused(true); rest.onFocus?.(event); }}
         onBlur={(event) => { setFocused(false); rest.onBlur?.(event); }}
         onClick={(event) => { if (!padOpen) openPad(); rest.onClick?.(event); }}
         onKeyDown={(event) => {
