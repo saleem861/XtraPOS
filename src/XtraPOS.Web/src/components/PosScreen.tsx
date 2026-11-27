@@ -95,6 +95,8 @@ import {
 } from "../cart/model";
 import { NumericEditModal } from "./NumericEditModal";
 import { NumericKeypad } from "./NumericKeypad";
+import { nextScale, scaleLabel, setDisplayScale, useDesktopFit, useDisplayScale } from "./displayFit";
+import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import type { ItemListItem } from "../catalog/types";
 import type { CurrentUser, DeviceSession } from "../types/setup";
 
@@ -186,6 +188,10 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
     document.documentElement.classList.toggle("pos-pro-shell", professionalShell);
     return () => document.documentElement.classList.remove("pos-pro-shell");
   }, [professionalShell]);
+  // ملاءمة المساحة على الكمبيوتر فقط (ماوس)، لا على شاشات اللمس.
+  const finePointerShell = professionalShell && usesDesktopCustomerKeyboard();
+  const displayScale = useDisplayScale();
+  const appliedScale = useDesktopFit(finePointerShell);
   const scope: CartScope = {
     businessId: session.businessId,
     branchId: session.branchId,
@@ -1523,7 +1529,19 @@ export function PosScreen({ session, user, onBack }: PosScreenProps) {
           </div>
         </section>
         <section className="pos-side-card pos-pad-card">
-          <h3><Keyboard aria-hidden="true" />لوحة الأرقام</h3>
+          <h3>
+            <Keyboard aria-hidden="true" />لوحة الأرقام
+            {finePointerShell ? (
+              <button
+                type="button"
+                className="pos-fit-toggle"
+                title={`حجم العرض على هذا الجهاز. المساحة: ${typeof window === "undefined" ? "" : `${window.innerWidth}×${window.innerHeight}`}`}
+                aria-label={`حجم العرض: ${scaleLabel(displayScale, appliedScale)}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setDisplayScale(nextScale(displayScale))}
+              >{scaleLabel(displayScale, appliedScale)}</button>
+            ) : null}
+          </h3>
           <div className="pos-side-pad" dir="ltr">
             {["Del", "/", "*", "BS", "7", "8", "9", "-", "4", "5", "6", "+", "1", "2", "3", "Enter", "0", "."].map((key) => (
               <button

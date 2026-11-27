@@ -64,6 +64,17 @@ public sealed class InventoryRelayService(
         if (await ExistsAsync(central, "dbo.CustomInventories", cancellationToken)
             && await ExistsAsync(local, "dbo.CustomInventories", cancellationToken))
         {
+            // الجرود المحددة تزول بعد 20 يوماً (المالك 27 نوفمبر)، ثم يسحب الفرع الحالة الجديدة فوراً.
+            try
+            {
+                var expired = await CustomInventoryExpiry.ExpireAsync(central, cancellationToken);
+                if (expired > 0) logger.LogInformation("Inventory: {Count} custom inventory(ies) expired after {Days} days.", expired, CustomInventoryExpiry.LifetimeDays);
+            }
+            catch (SqlException error)
+            {
+                logger.LogWarning(error, "Inventory: custom inventory expiry skipped this cycle.");
+            }
+
             await PullCustomInventoriesAsync(local, central, branch, cancellationToken);
             await ApplyCorrectionRequestsAsync(local, central, branch, cancellationToken);
         }

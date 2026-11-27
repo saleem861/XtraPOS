@@ -3,6 +3,15 @@ import { deviceHeaders, SetupClientError } from "./client";
 import { BACKGROUND_HEADER } from "../components/waitingActivity";
 import type { InventoryType } from "./inventory";
 
+/** لماذا خرجت المعالجة بهذا العدد: الأصناف في النطاق، والناقصة، وما بلا سرعة بيع، وما رصيده يغطي الهدف. */
+export interface ShortageScopeSummary {
+  scopeItems: number;
+  shortItems: number;
+  noSalesItems: number;
+  coveredItems: number;
+  branches: string[];
+}
+
 export interface ShortageBranchOption {
   branchId: string;
   branchName: string;
@@ -195,6 +204,9 @@ export interface CustomInventory {
   isActive: boolean;
   createdByName: string | null;
   createdAt: string;
+  /** يزول تلقائياً بعد 20 يوماً من إنشائه (المالك 27 نوفمبر). */
+  expiresAt?: string;
+  daysLeft?: number;
   branchIds: string[];
   branchNames: string[];
   /** استُعمل في جلسات جرد: «حذف» يوقفه ويخفيه بدل محوه. */
@@ -302,7 +314,7 @@ export function createShortageClient(session: DeviceSession) {
       return get<{ from: string; to: string; users: (UserOption & { sessions: number })[] }>(`/api/shortages/manual-counters?${params}`, "تعذر تحميل الموظفين.");
     },
     start: (request: StartShortageRequest) =>
-      send<{ resumed: boolean; draft: RunHeader | null }>("/api/shortages/runs", request, "تعذر حساب النواقص."),
+      send<{ resumed: boolean; draft: RunHeader | null; summary?: ShortageScopeSummary }>("/api/shortages/runs", request, "تعذر حساب النواقص."),
     run: (runId: string) => get<{ run: RunHeader; items: RunItem[] }>(`/api/shortages/runs/${encodeURIComponent(runId)}`, "تعذر تحميل المعالجة."),
     decide: (runId: string, itemId: string, body: ShortageDecisionBody) =>
       send<{ saved: boolean; substituteItemNumber?: string | null; substituteItemName?: string | null }>(`/api/shortages/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}`, body, "تعذر حفظ قرار الصنف.", "PUT"),

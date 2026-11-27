@@ -17,6 +17,7 @@ import {
   type ShortageClient,
   type ShortageDecisionBody,
   type ShortageOptions,
+  type ShortageScopeSummary,
   type Supplier,
   type SupplyRequest,
   type UserOption,
@@ -37,6 +38,7 @@ import { Waiting } from "./Waiting";
 import { distinctBy } from "../distinct";
 import { hebronToday, shiftDate } from "../cart/heldDraftFilters";
 import { Pager, usePaging } from "./Pager";
+import { BranchCardPicker } from "./BranchCardPicker";
 import { CountQuantityField } from "./CountQuantityField";
 
 /** مرجع ثابت لقائمة فارغة. */
@@ -83,6 +85,7 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
   const run = useAction(onMessage, onBusy);
   const [options, setOptions] = useState<ShortageOptions | null>(null);
   const [runId, setRunId] = useState("");
+  const [summary, setSummary] = useState<ShortageScopeSummary | null>(null);
   const [finished, setFinished] = useState<{ tasks: number; items: number } | null>(null);
   const setupBack = useRef<(() => boolean) | null>(null);
 
@@ -124,6 +127,7 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
       <RunView
         client={client}
         runId={runId}
+        summary={summary}
         onMessage={onMessage}
         onBusy={onBusy}
         onConfirm={onConfirm}
@@ -141,9 +145,10 @@ export function ShortageProcessingPanel({ client, onMessage, onBusy, onConfirm, 
       backRef={setupBack}
       onConfirm={onConfirm}
       onMessage={onMessage}
-      onResume={(id) => setRunId(id)}
+      onResume={(id) => { setSummary(null); setRunId(id); }}
       onStart={async (request) => {
         const result = await run("جاري حساب الكميات المطلوبة...", () => client.start(request));
+        setSummary(result?.resumed ? null : result?.summary ?? null);
         if (result?.draft) setRunId(result.draft.runId);
       }}
     />
@@ -241,21 +246,12 @@ function ShortageSetup({ client, options, backRef, onConfirm, onMessage, onResum
         <section className="inventory-section" aria-label="اختيار الفروع">
           <strong>اختيار الفروع</strong>
           <small className="inventory-hint">يمكن اختيار أكثر من فرع لمعالجة النواقص.</small>
-          <div className="inventory-checklist">
-            {options.branches.map((branch) => {
-              const picked = branchIds.includes(branch.branchId);
-              return (
-                <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
-                  <input
-                    type="checkbox"
-                    checked={picked}
-                    onChange={() => setBranchIds((current) => current.includes(branch.branchId) ? current.filter((id) => id !== branch.branchId) : [...current, branch.branchId])}
-                  />
-                  {branch.branchName}
-                </label>
-              );
-            })}
-          </div>
+          <BranchCardPicker
+            branches={options.branches.map((branch) => ({ ...branch, note: branch.current ? "فرع هذا الجهاز" : undefined }))}
+            selected={branchIds}
+            onToggle={(id) => setBranchIds((current) => current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id])}
+            onAll={(all) => setBranchIds(all ? options.branches.map((branch) => branch.branchId) : [])}
+          />
           <button
             type="button"
             className="primary-button"
@@ -420,8 +416,30 @@ function inRunTab(item: RunItem, filter: RunFilter): boolean {
   }
 }
 
-function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDiscarded }: PanelProps & {
+/**
+ * لماذا لم يظهر شيء (ملاحظة المالك 27 نوفمبر): النقص = سرعة البيع × أيام التوفير − رصيد المركز،
+ * فالصنف الذي جُرد بلا مبيعات هدفه صفر ولا يظهر.
+ */
+function ScopeSummaryNote({ summary }: { summary: ShortageScopeSummary }) {
+  const where = summary.branches.join("، ");
+  if (summary.scopeItems === 0) {
+    return <p className="inventory-hint is-warning" role="status">لا توجد أصناف في هذا النطاق لـ {where}. تحقق من نوع المعالجة (الأصناف المهمة، الصفحات، الجرد المخصص) أو من الفرع المختار.</p>;
+  }
+  return (
+    <div className="inventory-hint is-warning" role="status">
+      <p>في النطاق {summary.scopeItems} صنفاً لـ {where}، ولم يظهر منها نقص:</p>
+      <ul>
+        {summary.noSalesItems > 0 ? <li>{summary.noSalesItems} صنف بلا مبيعات على المركز (سرعة البيع صفر)، فالكمية المطلوبة لها صفر مهما كان رصيدها.</li> : null}
+        {summary.coveredItems > 0 ? <li>{summary.coveredItems} صنف رصيده يغطي حاجة أيام التوفير.</li> : null}
+      </ul>
+      <p>الجرد يصحح الرصيد فقط؛ النقص يُحسب من سرعة البيع × أيام التوفير − الرصيد.</p>
+    </div>
+  );
+}
+
+function RunView({ client, runId, summary, onMessage, onBusy, onConfirm, onFinished, onDiscarded }: PanelProps & {
   runId: string;
+  summary?: ShortageScopeSummary | null;
   onFinished: (result: { tasks: number; items: number }) => void;
   onDiscarded: () => void;
 }) {
@@ -478,6 +496,7 @@ function RunView({ client, runId, onMessage, onBusy, onConfirm, onFinished, onDi
 
       <div className="inventory-list">
         {data.items.length === 0 ? <p className="inventory-hint">لا توجد نواقص في هذا النطاق. يمكنك التثبيت مباشرة.</p> : null}
+        {data.items.length === 0 && summary ? <ScopeSummaryNote summary={summary} /> : null}
         {runPaging.visible.map((item) => (
           <ShortageItemRow
             key={item.itemId}
@@ -711,7 +730,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
             {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
           </select>
         </label>
-        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
+        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" saveOnConfirm={false} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
         {(() => {
           const branch = branches.find((entry) => entry.branchId === target);
           if (!branch || branch.current) return null;
@@ -802,7 +821,7 @@ export function BranchQuantities({ client, itemId, canCorrect, onMessage, onBusy
           ) : null}
           {target === branch.branchId ? (
             <div className="inventory-decision">
-              <label>الكمية الصحيحة<CountQuantityField label={`الكمية الصحيحة ${branch.branchName}`} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => correct(branch)} /></label>
+              <label>الكمية الصحيحة<CountQuantityField label={`الكمية الصحيحة ${branch.branchName}`} saveOnConfirm={false} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => correct(branch)} /></label>
               <p className="inventory-hint" aria-label="فارق التصحيح">
                 المفترضة {formatQuantity(branch.quantity)} · الفارق {formatDifference(correctionDifference(branch.quantity, parseCountInput(quantity.trim() === "" ? "0" : quantity)))}
               </p>
@@ -1152,6 +1171,14 @@ const EMPTY_DRAFT: DefineDraft = { id: null, name: "", isActive: true, branchIds
  */
 type DefineStep = "branches" | "items" | "name" | "list";
 
+function daysLeftLabel(days: number | undefined): string {
+  if (days === undefined) return "—";
+  if (days <= 0) return "اليوم";
+  if (days === 1) return "يوم واحد";
+  if (days === 2) return "يومين";
+  return days <= 10 ? `${days} أيام` : `${days} يوماً`;
+}
+
 export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onRegisterBack }: PanelProps & { onRegisterBack?: (handler: BackHandler | null) => void }) {
   const run = useAction(onMessage, onBusy);
   const [step, setStep] = useState<DefineStep>("branches");
@@ -1291,21 +1318,12 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
       {step === "branches" ? (
         <section className="inventory-section" aria-label="اختيار الفروع">
           <strong>{editing.id ? `تعديل «${editing.name}» · اختيار الفروع` : "اختيار الفروع"}</strong>
-          <div className="inventory-row-actions">
-            <button type="button" className="ghost-button" onClick={() => setEditing((current) => ({ ...current, branchIds: branches.map((branch) => branch.branchId) }))}>تحديد الكل</button>
-            <button type="button" className="ghost-button" onClick={() => setEditing((current) => ({ ...current, branchIds: [] }))}>إلغاء تحديد الكل</button>
-          </div>
-          <div className="inventory-checklist">
-            {branches.map((branch) => {
-              const picked = editing.branchIds.includes(branch.branchId);
-              return (
-                <label key={branch.branchId} className={picked ? "inventory-pick is-selected" : "inventory-pick"}>
-                  <input type="checkbox" checked={picked} onChange={() => toggleBranch(branch.branchId)} />
-                  {branch.branchName}
-                </label>
-              );
-            })}
-          </div>
+          <BranchCardPicker
+            branches={branches.map((branch) => ({ ...branch, note: branch.current ? "فرع هذا الجهاز" : undefined }))}
+            selected={editing.branchIds}
+            onToggle={toggleBranch}
+            onAll={(all) => setEditing((current) => ({ ...current, branchIds: all ? branches.map((branch) => branch.branchId) : [] }))}
+          />
           <button
             type="button"
             className="primary-button"
@@ -1317,18 +1335,20 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
       ) : null}
 
       {step === "items" ? (
-        <section className="inventory-section" aria-label="اختيار الأصناف">
+        <section className="inventory-section inventory-define-items" aria-label="اختيار الأصناف">
           <strong>اختيار الأصناف</strong>
-          <form className="inventory-search" onSubmit={(event) => void search(event)}>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب اسم أو رقم الصنف" aria-label="اكتب اسم أو رقم الصنف" />
-            {query ? <button type="button" className="ghost-button" onClick={() => { setQuery(""); setResults(null); setSearched(""); }}>مسح</button> : null}
-            <button type="submit" className="primary-button">بحث</button>
-          </form>
-          <div className="inventory-row-actions">
-            <button type="button" className="ghost-button" disabled={!results?.length || allFound} onClick={() => selectAll(true)}>تحديد الكل</button>
-            <button type="button" className="ghost-button" disabled={!results?.length} onClick={() => selectAll(false)}>إلغاء تحديد الكل</button>
+          {/* المالك 27 نوفمبر: البحث وأزراره شريط في الأعلى، والقائمة بعرض الشاشة تحته، و«تثبيت» شريط ثابت في الأسفل. */}
+          <div className="inventory-define-toolbar">
+            <form className="inventory-search" onSubmit={(event) => void search(event)}>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="اكتب اسم أو رقم الصنف" aria-label="اكتب اسم أو رقم الصنف" />
+              {query ? <button type="button" className="ghost-button" onClick={() => { setQuery(""); setResults(null); setSearched(""); }}>مسح</button> : null}
+              <button type="submit" className="primary-button">بحث</button>
+            </form>
+            <div className="inventory-row-actions">
+              <button type="button" className="ghost-button" disabled={!results?.length || allFound} onClick={() => selectAll(true)}>تحديد الكل</button>
+              <button type="button" className="ghost-button" disabled={!results?.length} onClick={() => selectAll(false)}>إلغاء تحديد الكل</button>
+            </div>
           </div>
-          <p className="inventory-hint" role="status">تم تحديد {editing.items.length} صنفاً</p>
           {results ? (
             <div className="inventory-list" aria-label="نتائج البحث">
               {results.length === 0 ? <p className="inventory-hint">لا توجد أصناف مطابقة لـ «{searched}».</p> : null}
@@ -1345,28 +1365,31 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
               })}
               <Pager {...resultsPaging} />
             </div>
-          ) : null}
-          {editing.items.length > 0 ? (
-            <details className="inventory-picked">
-              <summary>الأصناف المحددة ({editing.items.length})</summary>
-              <div className="inventory-list" aria-label="أصناف الجرد">
-                {pickedPaging.visible.map((item) => (
-                  <div key={item.itemId} className="inventory-select-row is-selected">
-                    <span className="inventory-number">{item.itemNumber}</span>
-                    <span>{item.itemName || "صنف بدون اسم"}</span>
-                    <button type="button" className="ghost-button" aria-label={`إزالة ${item.itemNumber}`} onClick={() => toggle(item)}>إزالة</button>
-                  </div>
-                ))}
-                <Pager {...pickedPaging} />
-              </div>
-            </details>
-          ) : null}
-          <button
-            type="button"
-            className="primary-button"
-            disabled={editing.items.length === 0}
-            onClick={() => { setNotice(""); setStep("name"); }}
-          >تثبيت</button>
+          ) : <p className="inventory-hint">ابحث باسم الصنف أو رقمه، ثم حدّد الأصناف.</p>}
+          <div className="inventory-define-footer">
+            <span className="inventory-hint" role="status">تم تحديد {editing.items.length} صنفاً</span>
+            {editing.items.length > 0 ? (
+              <details className="inventory-picked">
+                <summary>الأصناف المحددة ({editing.items.length})</summary>
+                <div className="inventory-list" aria-label="أصناف الجرد">
+                  {pickedPaging.visible.map((item) => (
+                    <div key={item.itemId} className="inventory-select-row is-selected">
+                      <span className="inventory-number">{item.itemNumber}</span>
+                      <span>{item.itemName || "صنف بدون اسم"}</span>
+                      <button type="button" className="ghost-button" aria-label={`إزالة ${item.itemNumber}`} onClick={() => toggle(item)}>إزالة</button>
+                    </div>
+                  ))}
+                  <Pager {...pickedPaging} />
+                </div>
+              </details>
+            ) : null}
+            <button
+              type="button"
+              className="primary-button"
+              disabled={editing.items.length === 0}
+              onClick={() => { setNotice(""); setStep("name"); }}
+            >تثبيت</button>
+          </div>
         </section>
       ) : null}
 
@@ -1395,9 +1418,9 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
         <section className="inventory-section" aria-label="الجرود المحددة">
           <strong>الجرود المحددة</strong>
           <table className="inventory-table" aria-label="الجرود المخصصة">
-            <thead><tr><th>الاسم</th><th>الأصناف</th><th>الفروع</th><th>الحالة</th><th>إجراءات</th></tr></thead>
+            <thead><tr><th>الاسم</th><th>الأصناف</th><th>الفروع</th><th>الحالة</th><th>يزول بعد</th><th>إجراءات</th></tr></thead>
             <tbody>
-              {list.length === 0 ? <tr><td colSpan={5}>لا يوجد جرد مخصص بعد.</td></tr> : null}
+              {list.length === 0 ? <tr><td colSpan={6}>لا يوجد جرد مخصص بعد.</td></tr> : null}
               {listPaging.visible.map((entry) => (
                 <tr key={entry.customInventoryId} className={editing.id === entry.customInventoryId ? "is-selected" : undefined}>
                   <td>
@@ -1417,6 +1440,7 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
                   <td>{entry.items.length}</td>
                   <td>{entry.branchNames.join("، ")}</td>
                   <td>{entry.isActive ? "نشط" : <span className="inventory-badge">موقوف</span>}</td>
+                  <td>{daysLeftLabel(entry.daysLeft)}</td>
                   <td>
                     <div className="inventory-row-actions">
                       <button type="button" className="ghost-button" onClick={() => void setActive(entry, !entry.isActive)}>{entry.isActive ? "توقيف" : "تفعيل"}</button>
@@ -1428,6 +1452,7 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
             </tbody>
           </table>
           <Pager {...listPaging} label="جرد" />
+          <p className="inventory-hint">كل جرد محدد يزول تلقائياً بعد 20 يوماً من إنشائه؛ المستعمل يُوقف ويختفي وتبقى تقارير جلساته.</p>
           <button type="button" className="primary-button" onClick={restart}>جرد مخصص جديد</button>
         </section>
       ) : null}

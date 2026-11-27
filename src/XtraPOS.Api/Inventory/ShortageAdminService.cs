@@ -21,6 +21,8 @@ public sealed class ShortageAdminService(ShortageService shortages)
     public async Task<object> CustomInventoriesAsync(PosDeviceContext actor, CancellationToken cancellationToken)
     {
         await using var central = await shortages.CentralAsync(cancellationToken);
+        // المنتهي (20 يوماً) يزول قبل العرض، فلا يظهر ولو لم تمر دورة المزامنة بعد.
+        await CustomInventoryExpiry.ExpireAsync(central, cancellationToken);
         var branchNames = (await BranchesAsync(central, actor, cancellationToken)).ToDictionary(branch => branch.BranchId, branch => branch.BranchName);
         var targets = new Dictionary<Guid, List<Guid>>();
         await using (var command = new SqlCommand(
@@ -88,6 +90,8 @@ public sealed class ShortageAdminService(ShortageService shortages)
                     isActive = reader.GetBoolean(2),
                     createdByName = Str(reader, 3),
                     createdAt = Utc(reader.GetDateTime(4)),
+                    expiresAt = Utc(CustomInventoryExpiry.ExpiresAt(reader.GetDateTime(4))),
+                    daysLeft = CustomInventoryExpiry.DaysLeft(reader.GetDateTime(4), DateTime.UtcNow),
                     used = reader.GetInt32(5) == 1,
                     branchIds = branches,
                     branchNames = branches.Select(branch => branchNames.GetValueOrDefault(branch) ?? "—").ToArray(),

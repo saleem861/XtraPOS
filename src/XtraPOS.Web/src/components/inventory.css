@@ -620,31 +620,6 @@
 }
 
 /* لوحة أرقام الكمية في الجرد على اللابتوب (مثل لوحة البيع)، ثابتة أسفل الشاشة ما دام المربع مُركَّزاً */
-.inventory-numpad {
-  position: fixed;
-  inset-inline-start: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  z-index: 60;
-  width: min(360px, 92vw);
-  padding: 10px;
-  border: 1px solid var(--xp-border);
-  border-radius: 14px;
-  background: var(--xp-surface);
-  box-shadow: 0 10px 30px rgba(15, 30, 60, 0.18);
-}
-
-.inventory-numpad .pos-side-pad {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-}
-
-.inventory-numpad .pos-side-pad button {
-  min-height: 48px;
-  font-size: 18px;
-}
-
 /* الصف المحفوظ يُظلَّل؛ وفي الموبايل تبقى مساحة أسفل القائمة ليُرفع المربع فوق لوحة الجهاز */
 .inventory-row.is-selected {
   border-color: var(--xp-primary);
@@ -834,4 +809,128 @@
   text-align: center;
   font-size: 28px;
   font-weight: 700;
+}
+
+/* بطاقات اختيار الفروع (تحديد جرد، معالجة النواقص) — المالك 27 نوفمبر 2026 */
+.branch-card-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.branch-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.branch-card {
+  position: relative;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 10px;
+  border: 2px solid var(--xp-border);
+  border-radius: 14px;
+  background: var(--xp-surface);
+  color: var(--navy);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.branch-card strong {
+  font-size: 18px;
+}
+
+.branch-card small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.branch-card:hover {
+  border-color: var(--xp-primary);
+}
+
+.branch-card.is-selected {
+  border-color: var(--xp-primary);
+  background: #e3efff;
+  box-shadow: inset 0 0 0 1px var(--xp-primary);
+}
+
+.branch-card-check {
+  position: absolute;
+  top: 8px;
+  inset-inline-start: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--xp-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.branch-card.is-selected .branch-card-check {
+  border-color: var(--xp-primary);
+  background: var(--xp-primary);
+  color: #fff;
+}
+
+/* تحديد جرد ← اختيار الأصناف: البحث في الأعلى، القائمة بالعرض الكامل، و«تثبيت» ثابت في الأسفل (المالك 27 نوفمبر) */
+.inventory-section.inventory-define-items {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.inventory-define-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: 100%;
+}
+
+.inventory-define-toolbar .inventory-search {
+  flex: 1 1 360px;
+}
+
+.inventory-define-items > .inventory-list {
+  width: 100%;
+}
+
+.inventory-define-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  width: 100%;
+  margin-top: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--xp-border);
+  border-radius: 12px;
+  background: var(--xp-surface);
+  box-shadow: 0 -4px 14px rgba(15, 30, 60, 0.08);
+}
+
+.inventory-define-footer .inventory-picked {
+  flex: 1 1 auto;
+}
+
+.inventory-define-footer > .primary-button {
+  margin-inline-start: auto;
+  min-width: 140px;
+}
+
+.inventory-define-footer .inventory-picked .inventory-list {
+  max-height: 40vh;
+  overflow-y: auto;
 }

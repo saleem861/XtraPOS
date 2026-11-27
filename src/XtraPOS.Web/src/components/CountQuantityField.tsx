@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type InputHTMLAttributes } from "react";
 import { usesDesktopCustomerKeyboard } from "../customers/newCustomerForm";
 import { normalizeDigits, stepQuantity } from "../inventory/inventoryRules";
-import { useFullKeyboardVisible } from "./keyboardVisibility";
-import { PosNumberPad } from "./PosNumberPad";
+import { NumericEditModal } from "./NumericEditModal";
 
 /**
  * قاعدة المالك لمربع الكمية في كل شاشات الجرد:
  * - الكمية الافتراضية صفر باهت (placeholder)، والحفظ بلا كتابة يعني صفراً.
- * - اللابتوب: لوحة أرقام على الشاشة مثل لوحة أرقام الكمية في شاشة البيع، تظهر ما دام المربع مُركَّزاً.
+ * - الكمبيوتر: عند الوصول للمربع (نقر أو انتقال تلقائي بعد حفظ الصنف السابق) تظهر لوحة أرقام
+ *   في منتصف الشاشة، بالضبط مثل لوحة «الكمية» في شاشة البيع؛ «تأكيد» أو Enter يحفظ الصنف (المالك 27 نوفمبر).
  * - أندرويد/iOS: لوحة أرقام الجهاز (inputMode) وتتحرك الصفحة ليبقى المربع ظاهراً فوقها.
  */
 export function applyPadKey(current: string, key: string): string | "enter" {
@@ -36,25 +36,29 @@ export function CountQuantityField({
   onChange,
   onEnter,
   label,
+  title,
+  saveOnConfirm = true,
   ...rest
 }: {
   value: string;
   onChange: (value: string) => void;
   onEnter: () => void;
   label: string;
+  /** عنوان لوحة الأرقام على الكمبيوتر (اسم الصنف). الافتراض: label. */
+  title?: string;
+  /** «تأكيد» في لوحة الكمبيوتر يحفظ مثل Enter (الجرد). false: يكتب الكمية فقط (التصحيح يحتاج سبباً بعدها). */
+  saveOnConfirm?: boolean;
 } & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "inputMode" | "placeholder">) {
   const desktop = usesDesktopCustomerKeyboard();
-  const [fullKeyboard] = useFullKeyboardVisible();
   const [focused, setFocused] = useState(false);
+  const [padOpen, setPadOpen] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
+  // بعد «تأكيد» تتغير القيمة عند الأب أولاً، ثم يُحفظ بأحدث نسخة من onEnter (التي ترى القيمة الجديدة).
+  const latestEnter = useRef(onEnter);
+  latestEnter.current = onEnter;
 
   useEffect(() => {
-    if (!focused) return undefined;
-    // اللابتوب: لوحة الأرقام ثابتة أسفل الشاشة، فيُوسَّط المربع فوقها مرة واحدة.
-    if (desktop) {
-      const timer = window.setTimeout(() => keepVisible(ref.current), 50);
-      return () => window.clearTimeout(timer);
-    }
+    if (desktop || !focused) return undefined;
     const viewport = window.visualViewport;
     const timer = window.setTimeout(() => keepVisible(ref.current), 300);
     const onResize = () => { if (document.activeElement === ref.current) keepVisible(ref.current); };
@@ -65,10 +69,10 @@ export function CountQuantityField({
     };
   }, [desktop, focused]);
 
-  function press(key: string) {
-    const next = applyPadKey(value, key);
-    if (next === "enter") onEnter();
-    else onChange(next);
+  function openPad() {
+    if (!desktop || rest.disabled) return;
+    keepVisible(ref.current);
+    setPadOpen(true);
   }
 
   return (
@@ -76,23 +80,37 @@ export function CountQuantityField({
       <input
         {...rest}
         ref={ref}
-        inputMode="decimal"
+        inputMode={desktop ? "none" : "decimal"}
+        readOnly={desktop || rest.readOnly}
         placeholder="0"
         className={["inventory-qty-input", rest.className].filter(Boolean).join(" ")}
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        onFocus={(event) => { setFocused(true); rest.onFocus?.(event); }}
+        onFocus={(event) => { setFocused(true); openPad(); rest.onFocus?.(event); }}
         onBlur={(event) => { setFocused(false); rest.onBlur?.(event); }}
+        onClick={(event) => { if (!padOpen) openPad(); rest.onClick?.(event); }}
         onKeyDown={(event) => {
           if (event.key === "Enter") { event.preventDefault(); onEnter(); return; }
           rest.onKeyDown?.(event);
         }}
       />
-      {desktop && focused && !fullKeyboard ? (
-        <div className="inventory-numpad" role="group" aria-label="لوحة الأرقام">
-          <PosNumberPad onKey={press} />
-        </div>
+      {padOpen ? (
+        <NumericEditModal
+          title={title ?? label}
+          ariaLabel="لوحة الأرقام"
+          inputLabel={label}
+          initialValue={value}
+          placeholder="0"
+          allowDecimal
+          error=""
+          onConfirm={(next) => {
+            setPadOpen(false);
+            onChange(next);
+            if (saveOnConfirm) window.setTimeout(() => latestEnter.current(), 0);
+          }}
+          onCancel={() => setPadOpen(false)}
+        />
       ) : null}
     </>
   );

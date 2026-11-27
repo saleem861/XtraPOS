@@ -36,6 +36,30 @@ public sealed record ShortageItemResult(
     bool MissingQuantity)
 {
     public bool IsShort => TotalNeed > 0;
+
+    /// <summary>بلا سرعة بيع في كل الفروع المختارة (لم يُبع أو لم تُحسب سرعته)، فهدفه صفر ولا يظهر في النواقص.</summary>
+    public bool NoSales => Branches.All(branch => (branch.DailySalesRate ?? 0m) <= 0m);
+}
+
+/// <summary>
+/// لماذا خرجت المعالجة بهذا العدد (ملاحظة المالك 27 نوفمبر: «جردت ولم يظهر أي صنف»):
+/// الأصناف في النطاق، والناقصة منها، وما لا سرعة بيع له، وما رصيده يغطي الهدف.
+/// </summary>
+public sealed record ShortageScopeSummary(int ScopeItems, int ShortItems, int NoSalesItems, int CoveredItems)
+{
+    public static ShortageScopeSummary From(IEnumerable<ShortageItemResult> results)
+    {
+        int scope = 0, shortItems = 0, noSales = 0, covered = 0;
+        foreach (var result in results)
+        {
+            scope++;
+            if (result.IsShort) shortItems++;
+            else if (result.NoSales) noSales++;
+            else covered++;
+        }
+
+        return new ShortageScopeSummary(scope, shortItems, noSales, covered);
+    }
 }
 
 /// <summary>قرار المعالج لصنف واحد: كميات للشراء والمخزن والموازنة، أو حذف، أو «تم التزويد».</summary>

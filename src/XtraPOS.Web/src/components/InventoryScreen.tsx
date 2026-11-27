@@ -812,6 +812,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
         <CountQuantityField
           data-count-item={itemId}
           label={`الكمية الفعلية ${label}`}
+          title={label}
           value={value}
           onChange={(next) => setDrafts((current) => ({ ...current, [itemId]: next }))}
           onEnter={() => save(itemId)}

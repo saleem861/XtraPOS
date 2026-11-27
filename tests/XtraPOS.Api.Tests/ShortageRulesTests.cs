@@ -129,4 +129,34 @@ public sealed class ShortageRulesTests
         Assert.Equal("50!%", ShortageRules.EscapeLike("50%"));
         Assert.Equal("a!_b![c!!", ShortageRules.EscapeLike("a_b[c!"));
     }
+
+    [Fact]
+    public void Summary_explains_an_empty_run_items_without_sales_are_not_short()
+    {
+        // Labtop (27 نوفمبر): أصناف جُردت لكنها بلا مبيعات، فهدفها صفر ولا تظهر في النواقص.
+        var results = new[]
+        {
+            ShortageRules.Calculate([new(A, 0m, null)], 7),
+            ShortageRules.Calculate([new(A, 5m, 0m)], 7),
+            ShortageRules.Calculate([new(A, 20m, 1m)], 7),
+            ShortageRules.Calculate([new(A, 2m, 1m)], 7),
+        };
+        var summary = ShortageScopeSummary.From(results);
+        Assert.Equal(4, summary.ScopeItems);
+        Assert.Equal(1, summary.ShortItems);
+        Assert.Equal(2, summary.NoSalesItems);
+        Assert.Equal(1, summary.CoveredItems);
+    }
+
+    [Fact]
+    public void Custom_inventories_expire_twenty_days_after_creation()
+    {
+        var created = new DateTime(2026, 11, 27, 8, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(20, CustomInventoryExpiry.DaysLeft(created, created));
+        Assert.Equal(20, CustomInventoryExpiry.DaysLeft(created, created.AddHours(5)));
+        Assert.Equal(1, CustomInventoryExpiry.DaysLeft(created, created.AddDays(19).AddHours(1)));
+        Assert.False(CustomInventoryExpiry.IsExpired(created, created.AddDays(20).AddSeconds(-1)));
+        Assert.True(CustomInventoryExpiry.IsExpired(created, created.AddDays(20)));
+        Assert.Equal(0, CustomInventoryExpiry.DaysLeft(created, created.AddDays(25)));
+    }
 }
