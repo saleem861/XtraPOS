@@ -1299,8 +1299,8 @@ public sealed class InventoryCountService(
     }
 
     /// <summary>
-    /// تثبيت الجرد في النظام المركزي: يقفل الجلسة بعد التأكد أن كل الأصناف معدودة،
-    /// ويترك ترحيل الفروق لعامل الخلفية. الشاشة لا تنتظر رحلات المركز.
+    /// تثبيت الجرد في النظام المركزي: يكتب كل فروق الكمية على المركز في معاملة واحدة،
+    /// ثم يعيد الجلسة مثبّتة. الفرع يأخذ الناتج لاحقاً للبيع.
     /// </summary>
     private async Task<object> FinalizeCentralAsync(
         PosDeviceContext device,
@@ -1328,17 +1328,19 @@ public sealed class InventoryCountService(
             var owned = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
             await ApplyPendingCountsAsync(connection, transaction, actor, owned, sessionId, target.Remote, counts, cancellationToken);
             await RequireAllCountedAsync(connection, transaction, sessionId, cancellationToken);
-            await using (var queue = new SqlCommand(
+            var posted = await PostCentralDifferencesAsync(connection, transaction, actor, owned.Type, sessionId, cancellationToken);
+            await using (var complete = new SqlCommand(
                 """
                 UPDATE dbo.InventorySessions
-                SET Status = N'Finalizing', LastSavedAt = SYSUTCDATETIME()
+                SET Status = N'Completed', CompletedAt = SYSUTCDATETIME(), LastSavedAt = SYSUTCDATETIME(),
+                    PostedItems = (SELECT COUNT(*) FROM dbo.InventorySessionItems WHERE SessionID = @id AND PostedAt IS NOT NULL)
                 WHERE SessionID = @id AND Status = N'Open';
                 """,
                 connection,
                 transaction))
             {
-                queue.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                if (await queue.ExecuteNonQueryAsync(cancellationToken) != 1)
+                complete.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                if (await complete.ExecuteNonQueryAsync(cancellationToken) != 1)
                 {
                     throw new InventoryException("هذا الجرد يُرحَّل في الخلفية ولا يمكن تعديله.", StatusCodes.Status409Conflict);
                 }
@@ -1348,12 +1350,150 @@ public sealed class InventoryCountService(
             var summary = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             finalizeSignal.Pulse();
-            return new { session = summary, posted = 0, remote = true, central = true, queued = true };
+            return new { session = summary, posted, remote = true, central = true, queued = false };
         }
         catch
         {
             if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// يكتب فروق الأصناف المعدودة على رصيد المركز في جملة واحدة، بنفس قاعدة
+    /// <see cref="InventoryRelayRules.PlanCentral"/>: الفارق يُضاف للرصيد الحالي، والرصيد غير المعروف يُكتب بالمعدودة.
+    /// سطر له طلب تصحيح سابق يُعلَّم منشوراً ولا يُعاد. يرجع عدد الأسطر التي نُشرت في هذه العملية.
+    /// </summary>
+    private async Task<int> PostCentralDifferencesAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        PosDeviceContext actor,
+        string inventoryType,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        string place = "الفرع";
+        await using (var branch = new SqlCommand("SELECT BranchName FROM dbo.Branches WHERE BranchID = @branch;", connection, transaction))
+        {
+            branch.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+            if (await branch.ExecuteScalarAsync(cancellationToken) is string name && name.Length > 0) place = name;
+        }
+
+        await using var command = new SqlCommand(
+            """
+            IF OBJECT_ID(N'tempdb..#finalizeLines') IS NOT NULL DROP TABLE #finalizeLines;
+            CREATE TABLE #finalizeLines (
+                SessionItemID uniqueidentifier NOT NULL PRIMARY KEY,
+                ItemID uniqueidentifier NOT NULL UNIQUE,
+                Counted decimal(18, 4) NOT NULL,
+                Expected decimal(18, 4) NULL,
+                ItemNumber nvarchar(100) NULL,
+                ItemName nvarchar(500) NULL,
+                CurrentQty decimal(18, 4) NULL);
+
+            INSERT INTO #finalizeLines (SessionItemID, ItemID, Counted, Expected, ItemNumber, ItemName, CurrentQty)
+            SELECT line.SessionItemID, line.ItemID, line.CountedQuantity,
+                   CASE WHEN line.SystemQuantityKnown = 1 THEN line.SystemQuantityAtCount END,
+                   item.ItemNumber, LEFT(item.ItemName, 500),
+                   CASE WHEN snap.IsQuantityInitialized = 1 THEN snap.OnHandQuantity END
+            FROM dbo.InventorySessionItems AS line
+            LEFT JOIN dbo.Items AS item ON item.ItemID = line.ItemID
+            LEFT JOIN dbo.BranchStockSnapshots AS snap WITH (UPDLOCK, HOLDLOCK)
+                ON snap.BranchID = @branch AND snap.ItemID = line.ItemID
+            WHERE line.SessionID = @id AND line.IsCounted = 1 AND line.CountedQuantity IS NOT NULL AND line.PostedAt IS NULL;
+
+            DECLARE @now datetime2(0) = SYSUTCDATETIME();
+
+            UPDATE sessionLine
+            SET StockMovementID = request.RequestID, PostedAt = @now,
+                QuantityBeforePosting = request.CentralPreviousQuantity,
+                QuantityAfterPosting = COALESCE(request.CentralResultingQuantity, request.NewQuantity)
+            FROM dbo.InventorySessionItems AS sessionLine
+            INNER JOIN dbo.InventoryCorrectionRequests AS request ON request.RequestID = sessionLine.SessionItemID
+            WHERE sessionLine.SessionID = @id AND sessionLine.PostedAt IS NULL;
+
+            DELETE line
+            FROM #finalizeLines AS line
+            WHERE EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests AS request WHERE request.RequestID = line.SessionItemID);
+
+            IF EXISTS (SELECT 1 FROM #finalizeLines WHERE ItemNumber IS NULL)
+                THROW 51047, N'missing item', 1;
+
+            UPDATE snap
+            SET OnHandQuantity = CASE WHEN line.CurrentQty IS NOT NULL
+                                      THEN line.CurrentQty + (line.Counted - COALESCE(line.Expected, line.CurrentQty))
+                                      ELSE line.Counted END,
+                IsQuantityInitialized = 1, LastMovementAt = @now, BalanceUpdatedAt = @now, ReceivedAt = @now
+            FROM dbo.BranchStockSnapshots AS snap
+            INNER JOIN #finalizeLines AS line ON line.ItemID = snap.ItemID
+            WHERE snap.BranchID = @branch;
+
+            INSERT INTO dbo.BranchStockSnapshots
+                (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, BalanceUpdatedAt, LastMovementAt)
+            SELECT @branch, line.ItemID, line.ItemNumber, line.Counted, 1, NULL, @now, @now
+            FROM #finalizeLines AS line
+            WHERE line.CurrentQty IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM dbo.BranchStockSnapshots AS snap
+                  WHERE snap.BranchID = @branch AND snap.ItemID = line.ItemID);
+
+            INSERT INTO dbo.BranchStockMovements
+                (StockMovementID, BranchID, ItemID, ItemNumber, SourceType, SourceDocumentID, SourceLineID, PostingMode,
+                 PreviousQuantity, QuantityDelta, ResultingQuantity, OccurredAt, CreatedAt, Origin, AppliedToBalance)
+            SELECT line.SessionItemID, @branch, line.ItemID, line.ItemNumber, @source, @id, line.SessionItemID,
+                   CASE WHEN line.CurrentQty IS NULL THEN N'Absolute' ELSE N'Delta' END,
+                   line.CurrentQty,
+                   CASE WHEN line.CurrentQty IS NULL THEN line.Counted
+                        ELSE line.Counted - COALESCE(line.Expected, line.CurrentQty) END,
+                   CASE WHEN line.CurrentQty IS NULL THEN line.Counted
+                        ELSE line.CurrentQty + (line.Counted - COALESCE(line.Expected, line.CurrentQty)) END,
+                   @now, @now, N'Central', 1
+            FROM #finalizeLines AS line
+            WHERE NOT EXISTS (SELECT 1 FROM dbo.BranchStockMovements AS movement WHERE movement.StockMovementID = line.SessionItemID);
+
+            INSERT INTO dbo.InventoryCorrectionRequests
+                (RequestID, BranchID, ItemID, ItemNumber, ItemName, NewQuantity, ExpectedQuantity, DeltaQuantity,
+                 Reason, RequestedByUserID, RequestedByName, CentralAppliedAt, CentralPreviousQuantity,
+                 CentralResultingQuantity, SourceType)
+            SELECT line.SessionItemID, @branch, line.ItemID, line.ItemNumber, line.ItemName, line.Counted,
+                   CASE WHEN line.CurrentQty IS NULL THEN NULL ELSE COALESCE(line.Expected, line.CurrentQty) END,
+                   CASE WHEN line.CurrentQty IS NULL THEN NULL ELSE line.Counted - COALESCE(line.Expected, line.CurrentQty) END,
+                   @reason, @user, @userName, @now, line.CurrentQty,
+                   CASE WHEN line.CurrentQty IS NULL THEN line.Counted
+                        ELSE line.CurrentQty + (line.Counted - COALESCE(line.Expected, line.CurrentQty)) END,
+                   @source
+            FROM #finalizeLines AS line
+            WHERE NOT EXISTS (SELECT 1 FROM dbo.InventoryCorrectionRequests AS request WHERE request.RequestID = line.SessionItemID);
+
+            UPDATE sessionLine
+            SET StockMovementID = line.SessionItemID, PostedAt = @now,
+                QuantityBeforePosting = line.CurrentQty,
+                QuantityAfterPosting = CASE WHEN line.CurrentQty IS NULL THEN line.Counted
+                                            ELSE line.CurrentQty + (line.Counted - COALESCE(line.Expected, line.CurrentQty)) END
+            FROM dbo.InventorySessionItems AS sessionLine
+            INNER JOIN #finalizeLines AS line ON line.SessionItemID = sessionLine.SessionItemID
+            WHERE sessionLine.PostedAt IS NULL;
+
+            SELECT COUNT(*) FROM #finalizeLines;
+            """,
+            connection,
+            transaction)
+        {
+            CommandTimeout = 180,
+        };
+        command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+        command.Parameters.Add("@source", SqlDbType.NVarChar, 40).Value = StockSourceTypes.InventoryCount;
+        command.Parameters.Add("@reason", SqlDbType.NVarChar, 500).Value = Limit(InventoryCountRules.FinalizeReason(inventoryType, place), 500) ?? "جرد";
+        command.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
+        command.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = (object?)Limit(actor.DisplayName, 200) ?? DBNull.Value;
+        try
+        {
+            return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+        }
+        catch (SqlException exception) when (exception.Number == 51047)
+        {
+            throw new InventoryException("صنف معدود غير موجود في أصناف المركز.", StatusCodes.Status404NotFound);
         }
     }
 

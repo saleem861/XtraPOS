@@ -333,7 +333,7 @@ describe("counting rules from the owner's notes", () => {
       if (url.includes("/finalize")) {
         const body = JSON.parse(String(init?.body)) as { items: { itemId: string; quantity: number }[] };
         calls.push(`BODY ${body.items.map((entry) => entry.itemId).sort().join(",")}`);
-        return reply({ session: { ...openSession, status: "Finalizing", countedItems: 2, uncountedItems: 0 }, posted: 0, remote: true, queued: true });
+        return reply({ session: { ...openSession, status: "Completed", countedItems: 2, uncountedItems: 0 }, posted: 2, remote: true, queued: false });
       }
       return reply({});
     }));
@@ -348,7 +348,7 @@ describe("counting rules from the owner's notes", () => {
     await userEvent.click(post);
     await userEvent.click(screen.getByRole("button", { name: "تثبيت" }));
     expect(screen.queryByText(/جاري إرسال \d+ صنف ثم التثبيت/)).toBeNull();
-    expect(await screen.findByText("تم التثبيت — تُرحَّل الفروق في الخلفية")).toBeTruthy();
+    expect(await screen.findByText("تم تثبيت جرد فرع نابلس على المركز.")).toBeTruthy();
     expect(calls.some((call) => call.startsWith("POST") && call.includes("/finalize"))).toBe(true);
     expect(calls.some((call) => call === "BODY i1,i2")).toBe(true);
     release!();

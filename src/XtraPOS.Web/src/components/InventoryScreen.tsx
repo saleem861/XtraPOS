@@ -815,7 +815,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   function finalize() {
     onConfirm({
       title: "تثبيت الجرد",
-      message: "سيتم إغلاق الجرد وترحيل الفروقات في الخلفية. لا يُثبَّت جرد ناقص. هل تريد المتابعة؟",
+      message: "سيتم إغلاق الجرد وكتابة كل فروق الكمية على المركز الآن. لا يُثبَّت جرد ناقص. هل تريد المتابعة؟",
       accept: "تثبيت",
       onAccept: () => { void acceptFinalize(); },
     });
