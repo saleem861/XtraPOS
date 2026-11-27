@@ -114,8 +114,7 @@ public sealed class InventoryCountService(
                 INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = assigned.CustomInventoryID
                 INNER JOIN dbo.Branches AS branch ON branch.BranchID = assigned.BranchID AND branch.IsActive = 1
                 WHERE inventory.IsActive = 1
-                  AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS mine
-                              WHERE mine.CustomInventoryID = assigned.CustomInventoryID AND mine.BranchID = @branch)
+                  AND {CustomInventoryScope.AssignedToBranch}
                 ORDER BY branch.BranchName;
                 """,
                 connection);
@@ -527,11 +526,17 @@ public sealed class InventoryCountService(
     /// «تثبيت الجرد»: يرحّل الأصناف المعدودة فقط، حركة InventoryCount لكل صنف، في معاملة واحدة.
     /// إعادة التثبيت لا تكرر الحركة (SourceLineID = سطر الجرد).
     /// </summary>
-    public async Task<object> FinalizeAsync(PosDeviceContext device, Guid sessionId, CancellationToken cancellationToken, Guid? branchId = null)
+    public async Task<object> FinalizeAsync(
+        PosDeviceContext device,
+        Guid sessionId,
+        IReadOnlyList<(Guid ItemId, decimal? Quantity)>? pending,
+        CancellationToken cancellationToken,
+        Guid? branchId = null)
     {
+        var counts = NormalizePending(pending);
         if (await CentralConfiguredAsync(cancellationToken))
         {
-            return await FinalizeCentralAsync(device, branchId, sessionId, cancellationToken);
+            return await FinalizeCentralAsync(device, branchId, sessionId, counts, cancellationToken);
         }
 
         if (branchId is Guid other && other != Guid.Empty && other != device.BranchId)
@@ -558,7 +563,8 @@ public sealed class InventoryCountService(
                 await lockSession.ExecuteScalarAsync(token);
             }
 
-            await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, token);
+            var owned = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, token);
+            await ApplyPendingCountsAsync(connection, transaction, actor, owned, sessionId, remote: false, counts, token);
             await RequireAllCountedAsync(connection, transaction, sessionId, token);
             var lines = new List<(Guid LineId, Guid ItemId, decimal Counted, decimal? System, bool Known)>();
             await using (var read = new SqlCommand(
@@ -1207,7 +1213,7 @@ public sealed class InventoryCountService(
 
     /// <summary>على المركز: الجرد المخصص المخصص لذلك الفرع فقط.</summary>
     private static string CustomForBranch(bool remote) => remote
-        ? "AND EXISTS (SELECT 1 FROM dbo.CustomInventoryBranches AS assigned WHERE assigned.CustomInventoryID = inventory.CustomInventoryID AND assigned.BranchID = @branch)"
+        ? "AND " + CustomInventoryScope.AssignedToBranch
         : "";
 
     /// <summary>قاعدة المالك: لا يُثبَّت أي جرد قبل حفظ عدّ كل أصنافه (اليدوي: كل ما أُضيف، وكله معدود عند إضافته).</summary>
@@ -1296,7 +1302,12 @@ public sealed class InventoryCountService(
     /// تثبيت الجرد في النظام المركزي: يقفل الجلسة بعد التأكد أن كل الأصناف معدودة،
     /// ويترك ترحيل الفروق لعامل الخلفية. الشاشة لا تنتظر رحلات المركز.
     /// </summary>
-    private async Task<object> FinalizeCentralAsync(PosDeviceContext device, Guid? branchId, Guid sessionId, CancellationToken cancellationToken)
+    private async Task<object> FinalizeCentralAsync(
+        PosDeviceContext device,
+        Guid? branchId,
+        Guid sessionId,
+        IReadOnlyList<(Guid ItemId, decimal Quantity)> counts,
+        CancellationToken cancellationToken)
     {
         await using var target = await OpenTargetAsync(device, branchId, cancellationToken);
         var connection = target.Connection;
@@ -1314,7 +1325,8 @@ public sealed class InventoryCountService(
                 await lockSession.ExecuteScalarAsync(cancellationToken);
             }
 
-            await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
+            var owned = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);
+            await ApplyPendingCountsAsync(connection, transaction, actor, owned, sessionId, target.Remote, counts, cancellationToken);
             await RequireAllCountedAsync(connection, transaction, sessionId, cancellationToken);
             await using (var queue = new SqlCommand(
                 """
@@ -1480,6 +1492,112 @@ public sealed class InventoryCountService(
             if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
             throw;
         }
+    }
+
+    /// <summary>آخر كمية محلية لكل صنف. الكمية غير الصالحة تُرفض قبل أي كتابة.</summary>
+    private static List<(Guid ItemId, decimal Quantity)> NormalizePending(IReadOnlyList<(Guid ItemId, decimal? Quantity)>? pending)
+    {
+        var latest = new Dictionary<Guid, decimal>();
+        foreach (var line in pending ?? [])
+        {
+            if (line.ItemId == Guid.Empty) continue;
+            latest[line.ItemId] = InventoryCountRules.ValidateCountedQuantity(line.Quantity);
+        }
+
+        return latest.Select(pair => (pair.Key, pair.Value)).ToList();
+    }
+
+    /// <summary>
+    /// يكتب العدّ الذي ما زال على الجهاز في جملة واحدة مع التثبيت، بلا انتظار طابور الحفظ.
+    /// الكمية المفترضة تُؤخذ من الرصيد إن لم تُحفظ من قبل، حتى يبقى فارق الجرد صحيحاً.
+    /// </summary>
+    private async Task ApplyPendingCountsAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        PosDeviceContext actor,
+        SessionRow session,
+        Guid sessionId,
+        bool remote,
+        IReadOnlyList<(Guid ItemId, decimal Quantity)> counts,
+        CancellationToken cancellationToken)
+    {
+        if (counts.Count == 0) return;
+        await using (var drop = new SqlCommand("IF OBJECT_ID(N'tempdb..#pendingCounts') IS NOT NULL DROP TABLE #pendingCounts;", connection, transaction))
+        {
+            await drop.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var create = new SqlCommand(
+            "CREATE TABLE #pendingCounts (ItemID uniqueidentifier NOT NULL PRIMARY KEY, CountedQuantity decimal(18, 4) NOT NULL);",
+            connection,
+            transaction))
+        {
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var table = new DataTable();
+        table.Columns.Add("ItemID", typeof(Guid));
+        table.Columns.Add("CountedQuantity", typeof(decimal));
+        foreach (var line in counts) table.Rows.Add(line.ItemId, line.Quantity);
+        using (var bulk = new SqlBulkCopy(connection, SqlBulkCopyOptions.Default, transaction) { DestinationTableName = "#pendingCounts" })
+        {
+            bulk.ColumnMappings.Add("ItemID", "ItemID");
+            bulk.ColumnMappings.Add("CountedQuantity", "CountedQuantity");
+            await bulk.WriteToServerAsync(table, cancellationToken);
+        }
+
+        if (session.Type == InventoryTypes.Manual)
+        {
+            var missing = new List<Guid>();
+            await using (var read = new SqlCommand(
+                """
+                SELECT pending.ItemID
+                FROM #pendingCounts AS pending
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM dbo.InventorySessionItems AS line
+                    WHERE line.SessionID = @id AND line.ItemID = pending.ItemID);
+                """,
+                connection,
+                transaction))
+            {
+                read.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken)) missing.Add(reader.GetGuid(0));
+            }
+
+            foreach (var itemId in missing)
+            {
+                await InsertManualItemAsync(connection, transaction, actor.BranchId, sessionId, itemId, remote, cancellationToken);
+            }
+        }
+
+        var balance = Balance(remote);
+        await using var update = new SqlCommand(
+            $"""
+            UPDATE line
+            SET IsCounted = 1,
+                CountedQuantity = pending.CountedQuantity,
+                SystemQuantityAtCount = CASE
+                    WHEN line.SystemQuantityKnown = 1 THEN line.SystemQuantityAtCount
+                    ELSE CASE WHEN balance.IsQuantityInitialized = 1 THEN balance.OnHandQuantity END END,
+                SystemQuantityKnown = CASE
+                    WHEN line.SystemQuantityKnown = 1 THEN 1
+                    WHEN balance.IsQuantityInitialized = 1 THEN 1 ELSE 0 END,
+                CountedAt = SYSUTCDATETIME(),
+                CountedByUserID = @user,
+                CountedByName = @userName
+            FROM dbo.InventorySessionItems AS line
+            INNER JOIN #pendingCounts AS pending ON pending.ItemID = line.ItemID
+            LEFT JOIN {balance} AS balance ON balance.BranchID = @branch AND balance.ItemID = line.ItemID
+            WHERE line.SessionID = @id AND line.PostedAt IS NULL;
+            """,
+            connection,
+            transaction);
+        update.Parameters.Add("@user", SqlDbType.UniqueIdentifier).Value = actor.UserId;
+        update.Parameters.Add("@userName", SqlDbType.NVarChar, 200).Value = Limit(actor.DisplayName, 200) ?? (object)DBNull.Value;
+        update.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = actor.BranchId;
+        update.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+        await update.ExecuteNonQueryAsync(cancellationToken);
     }
 
     internal async Task<SqlConnection> OpenLocalAsync(CancellationToken cancellationToken)

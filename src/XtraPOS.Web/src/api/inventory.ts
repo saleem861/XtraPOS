@@ -169,10 +169,11 @@ export function createInventoryClient(session: DeviceSession, branchId = "") {
         clearTimeout(timer);
       }
     },
-    async finalize(sessionId: string) {
+    async finalize(sessionId: string, counts: { itemId: string; quantity: number }[] = []) {
       const response = await fetch(`/api/inventory/sessions/${encodeURIComponent(sessionId)}/finalize${query()}`, {
         method: "POST",
         headers: json,
+        body: JSON.stringify({ items: counts, ...(remote ? { branchId: remote } : {}) }),
       });
       return readJson<{ session: InventorySession; posted: number; remote?: boolean; queued?: boolean }>(response, "تعذر تثبيت الجرد. حاول مرة أخرى.");
     },

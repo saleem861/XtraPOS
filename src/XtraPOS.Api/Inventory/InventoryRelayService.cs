@@ -43,9 +43,18 @@ public sealed class InventoryRelayService(
         if (branchId is not Guid branch) return none;
 
         var today = InventoryCalendar.Today();
-        var rates = await RefreshSalesRatesAsync(local, branch, today, cancellationToken);
-
         var central = await counting.OpenCentralAsync(cancellationToken);
+        try
+        {
+            var imported = await LegacyItemSpeed.ImportAsync(local, central, branch, cancellationToken);
+            if (imported > 0) logger.LogInformation("Inventory: copied {Count} original item speed(s) and locked them.", imported);
+        }
+        catch (SqlException error)
+        {
+            logger.LogWarning(error, "Inventory: original item speeds were not copied this cycle.");
+        }
+
+        var rates = await RefreshSalesRatesAsync(local, branch, today, cancellationToken);
         if (central is null) return none with { RatesUpdated = rates };
         await using var lease = central;
         if (!await ExistsAsync(central, "dbo.BranchStockSnapshots", cancellationToken))
@@ -191,6 +200,7 @@ public sealed class InventoryRelayService(
                 FROM dbo.ItemBranchInventory AS card
                 INNER JOIN #rates AS rate ON rate.ItemID = card.ItemID
                 WHERE card.BranchID = @branch
+                  AND ISNULL(card.SalesRateLocked, 0) = 0
                   AND (card.DailySalesRate IS NULL OR card.DailySalesRate <> rate.DailySalesRate);
                 """,
                 local);
@@ -241,6 +251,7 @@ public sealed class InventoryRelayService(
         table.Columns.Add("IsQuantityInitialized", typeof(bool));
         table.Columns.Add("DailySalesRate", typeof(decimal));
         table.Columns.Add("BalanceUpdatedAt", typeof(DateTime));
+        table.Columns.Add("SalesRateLocked", typeof(bool));
         // العلامة المائية = لحظة بدء القراءة من قاعدة الفرع (لا أحدث UpdatedAt):
         // أصناف كثيرة تحمل نفس الطابع القديم كانت تُعاد كلها كل دقيقة لأن (الأحدث − دقيقتين) يشملها دائماً.
         DateTime readStart;
@@ -252,7 +263,8 @@ public sealed class InventoryRelayService(
         await using (var read = new SqlCommand(
             $"""
             SELECT balance.ItemID, item.ItemNumber, balance.OnHandQuantity, balance.IsQuantityInitialized, card.DailySalesRate,
-                   CASE WHEN card.UpdatedAt > balance.UpdatedAt THEN card.UpdatedAt ELSE balance.UpdatedAt END AS ChangedAt
+                   CASE WHEN card.UpdatedAt > balance.UpdatedAt THEN card.UpdatedAt ELSE balance.UpdatedAt END AS ChangedAt,
+                   CAST(ISNULL(card.SalesRateLocked, 0) AS bit)
             FROM dbo.BranchStockBalances AS balance
             INNER JOIN dbo.Items AS item ON item.ItemID = balance.ItemID
             LEFT JOIN dbo.ItemBranchInventory AS card ON card.BranchID = balance.BranchID AND card.ItemID = balance.ItemID
@@ -275,7 +287,8 @@ public sealed class InventoryRelayService(
                     reader.IsDBNull(2) ? DBNull.Value : reader.GetDecimal(2),
                     reader.GetBoolean(3),
                     reader.IsDBNull(4) ? DBNull.Value : reader.GetDecimal(4),
-                    changedAt);
+                    changedAt,
+                    !reader.IsDBNull(6) && reader.GetBoolean(6));
             }
         }
 
@@ -290,7 +303,8 @@ public sealed class InventoryRelayService(
                     OnHandQuantity decimal(18, 4) NULL,
                     IsQuantityInitialized bit NOT NULL,
                     DailySalesRate decimal(18, 6) NULL,
-                    BalanceUpdatedAt datetime2(0) NOT NULL
+                    BalanceUpdatedAt datetime2(0) NOT NULL,
+                    SalesRateLocked bit NOT NULL
                 );
                 """,
                 central))
@@ -324,17 +338,22 @@ public sealed class InventoryRelayService(
                                                      THEN 1 ELSE source.IsQuantityInitialized END,
                         BalanceUpdatedAt = CASE WHEN target.IsQuantityInitialized = 1 AND target.OnHandQuantity IS NOT NULL
                                                 THEN target.BalanceUpdatedAt ELSE source.BalanceUpdatedAt END,
-                        DailySalesRate = CASE WHEN @centralRates = 1 THEN target.DailySalesRate ELSE source.DailySalesRate END,
+                        DailySalesRate = CASE
+                            WHEN source.SalesRateLocked = 1 THEN source.DailySalesRate
+                            WHEN ISNULL(target.SalesRateLocked, 0) = 1 THEN target.DailySalesRate
+                            WHEN @centralRates = 1 THEN target.DailySalesRate
+                            ELSE source.DailySalesRate END,
+                        SalesRateLocked = CASE WHEN source.SalesRateLocked = 1 OR ISNULL(target.SalesRateLocked, 0) = 1 THEN 1 ELSE 0 END,
                         ReceivedAt = SYSUTCDATETIME()
                     FROM dbo.BranchStockSnapshots AS target
                     INNER JOIN #snap AS source ON source.ItemID = target.ItemID
                     WHERE target.BranchID = @branch;
 
                     INSERT INTO dbo.BranchStockSnapshots
-                        (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, BalanceUpdatedAt,
+                        (BranchID, ItemID, ItemNumber, OnHandQuantity, IsQuantityInitialized, DailySalesRate, SalesRateLocked, BalanceUpdatedAt,
                          BranchReportedQuantity, BranchReportedAt)
                     SELECT @branch, source.ItemID, source.ItemNumber, source.OnHandQuantity, source.IsQuantityInitialized,
-                           source.DailySalesRate, source.BalanceUpdatedAt,
+                           source.DailySalesRate, source.SalesRateLocked, source.BalanceUpdatedAt,
                            CASE WHEN source.IsQuantityInitialized = 1 THEN source.OnHandQuantity END, source.BalanceUpdatedAt
                     FROM #snap AS source
                     WHERE NOT EXISTS (SELECT 1 FROM dbo.BranchStockSnapshots AS target
@@ -515,8 +534,7 @@ public sealed class InventoryRelayService(
             """
             SELECT inventory.CustomInventoryID, inventory.InventoryName, inventory.IsActive, inventory.UpdatedAt
             FROM dbo.CustomInventories AS inventory
-            INNER JOIN dbo.CustomInventoryBranches AS target ON target.CustomInventoryID = inventory.CustomInventoryID
-            WHERE target.BranchID = @branch;
+            WHERE {CustomInventoryScope.AssignedToBranch};
             """,
             central))
         {

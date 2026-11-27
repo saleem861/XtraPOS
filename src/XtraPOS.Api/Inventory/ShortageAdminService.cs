@@ -240,8 +240,12 @@ public sealed class ShortageAdminService(ShortageService shortages)
         if (codes.Count > 500) throw new InventoryException("أقصى عدد للأصناف في جرد مخصص 500.");
 
         await using var central = await shortages.CentralAsync(cancellationToken);
-        var known = (await BranchesAsync(central, actor, cancellationToken)).Select(branch => branch.BranchId).ToHashSet();
+        var knownBranches = await BranchesAsync(central, actor, cancellationToken);
+        var known = knownBranches.Select(branch => branch.BranchId).ToHashSet();
         if (branchIds.Any(branch => !known.Contains(branch))) throw new InventoryException("فرع غير موجود أو غير نشط.");
+        branchIds = CustomInventoryScope.SameNameBranches(
+            knownBranches.Select(branch => (branch.BranchId, branch.BranchName)),
+            branchIds).ToList();
 
         var resolved = new Dictionary<Guid, (string Number, string? Name)>();
         var missing = new List<string>();

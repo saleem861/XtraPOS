@@ -123,6 +123,9 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
     // Owner decision, 25 November 2026: central computes the sales rate, so the last 31 days of sales are sent once.
     public const string CentralSalesHistoryMigrationId = "058_CentralSalesHistory";
     public const string CentralSalesHistoryMigrationName = "Last 31 days of sales sent to central for the sales rate";
+    // Owner decision, 27 November 2026: Shop1/Shop2 speeds stay and are not replaced by the daily job.
+    public const string LegacySalesRateLockMigrationId = "059_LegacySalesRateLock";
+    public const string LegacySalesRateLockMigrationName = "Lock item speeds copied from the original shop databases";
     public const string CustomerCreatePermissionMigrationName = "Customer create permission";
     public const string CreditOutboxLeaseMigrationName = "Credit outbox lease";
 
@@ -365,6 +368,10 @@ public sealed class MigrationRunner(SqlConnectionFactory connections, ILogger<Mi
             CentralSalesHistoryMigrationId,
             CentralSalesHistoryMigrationName,
             "XtraPOS.Api.Data.Migrations.058_CentralSalesHistory.sql"),
+        new(
+            LegacySalesRateLockMigrationId,
+            LegacySalesRateLockMigrationName,
+            "XtraPOS.Api.Data.Migrations.059_LegacySalesRateLock.sql"),
     ];
 
     public async Task ApplyPendingAsync(CancellationToken cancellationToken)

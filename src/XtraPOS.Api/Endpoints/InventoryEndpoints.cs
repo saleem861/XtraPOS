@@ -90,11 +90,15 @@ public static class InventoryEndpoints
         return await RunAsync(() => inventory.SaveCountsAsync(caller.Context!, sessionId, lines, caller.CanReview, cancellationToken, body?.BranchId));
     }
 
-    private static async Task<IResult> FinalizeAsync(Guid sessionId, Guid? branchId, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
+    private static async Task<IResult> FinalizeAsync(Guid sessionId, Guid? branchId, FinalizeBody? body, HttpContext http, AuthService auth, PermissionService permissions, InventoryCountService inventory, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => inventory.FinalizeAsync(caller.Context!, sessionId, cancellationToken, branchId));
+        var lines = (body?.Items ?? [])
+            .Where(line => line.ItemId is Guid id && id != Guid.Empty)
+            .Select(line => (line.ItemId!.Value, line.Quantity))
+            .ToList();
+        return await RunAsync(() => inventory.FinalizeAsync(caller.Context!, sessionId, lines, cancellationToken, body?.BranchId ?? branchId));
     }
 
     public static IReadOnlyList<int> ParsePages(string? pages) =>
@@ -149,6 +153,12 @@ public static class InventoryEndpoints
     }
 
     private sealed class CountsBody
+    {
+        public List<CountBody>? Items { get; set; }
+        public Guid? BranchId { get; set; }
+    }
+
+    private sealed class FinalizeBody
     {
         public List<CountBody>? Items { get; set; }
         public Guid? BranchId { get; set; }

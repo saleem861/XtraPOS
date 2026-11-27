@@ -1514,23 +1514,35 @@ export function DefineInventoryPanel({ client, onMessage, onBusy, onConfirm, onR
     }));
   }
 
-  async function save() {
+  function save() {
     if (!editing.name.trim()) { onMessage("يرجى إدخال اسم الجرد."); return; }
     if (editing.branchIds.length === 0) { onMessage("يرجى اختيار فرع واحد على الأقل."); return; }
     if (editing.items.length === 0) { onMessage("يرجى تحديد صنف واحد على الأقل."); return; }
-    setNotice("");
-    const name = editing.name.trim();
-    const value = await run("جاري الحفظ...", () => client.saveCustomInventory({
-      customInventoryId: editing.id,
-      name,
+    const draft: DefineDraft = {
+      id: editing.id,
+      name: editing.name.trim(),
       isActive: editing.isActive,
-      branchIds: editing.branchIds,
-      itemCodes: editing.items.map((item) => item.itemNumber),
-    }));
-    if (!value) return;
-    apply(value);
+      branchIds: [...editing.branchIds],
+      items: [...editing.items],
+    };
+    onMessage("");
+    setNotice(`يُثبَّت «${draft.name}» الآن. يمكنك مغادرة هذه الشاشة.`);
     restart();
-    setNotice(`تم تثبيت «${name}». يظهر في «الجرد ← الجرد المخصص» على أجهزة الفروع المختارة خلال دقيقة.`);
+    void client.saveCustomInventory({
+      customInventoryId: draft.id,
+      name: draft.name,
+      isActive: draft.isActive,
+      branchIds: draft.branchIds,
+      itemCodes: draft.items.map((item) => item.itemNumber),
+    }).then((value) => {
+      apply(value);
+      setNotice(`تم تثبيت «${draft.name}». يظهر في «الجرد ← جرد يدوي ← الجرد المخصص» للفروع المختارة.`);
+    }).catch((error: Error) => {
+      setEditing(draft);
+      setStep("name");
+      setNotice("");
+      onMessage(error.message);
+    });
   }
 
   async function setActive(entry: CustomInventory, active: boolean) {

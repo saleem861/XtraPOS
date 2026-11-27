@@ -1333,10 +1333,11 @@ public sealed class ShortageService(InventoryCountService counting)
             FROM dbo.Branches AS branch
             LEFT JOIN dbo.BranchSnapshotStatus AS status ON status.BranchID = branch.BranchID
             WHERE branch.BusinessID = @business AND branch.IsActive = 1
-            ORDER BY branch.BranchName;
+            ORDER BY CASE WHEN branch.BranchID = @current THEN 0 ELSE 1 END, branch.BranchName;
             """,
             central);
         Id(command, "@business", actor.BusinessId);
+        Id(command, "@current", actor.BranchId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
