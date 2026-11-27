@@ -651,15 +651,6 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     });
   }
 
-  /**
-   * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
-   * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
-   */
-  function wakeDrain() {
-    pace.current = "now";
-    hurry.current?.();
-  }
-
   function pause(ms: number) {
     return new Promise<void>((resolve) => {
       const timer = window.setTimeout(resolve, ms);
@@ -667,6 +658,10 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
     }).finally(() => { hurry.current = null; });
   }
 
+  /**
+   * يرسل كل ما في الطابور دفعة واحدة (حتى 100 صنف) بطلب واحد، ثم ما تجمّع بعدها.
+   * انقطاع أو مهلة أو خطأ في المركز (5xx): يُعاد تلقائياً. صنف رفضه الخادم: يرجع كما كان مع رسالة.
+   */
   async function drain() {
     if (draining.current) return drainTask.current;
     const task = runDrain();
