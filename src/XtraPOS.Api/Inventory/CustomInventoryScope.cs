@@ -18,6 +18,29 @@ public static class CustomInventoryScope
               AND LTRIM(RTRIM(scopeAssignedBranch.BranchName)) = LTRIM(RTRIM(scopeMine.BranchName)))
         """;
 
+    /// <summary>حالة كل فرع معيّن لجرد مخصص يخص فرع الجهاز (بالاسم). الاستعلام مُركَّب حتى لا يُرسل القالب حرفياً.</summary>
+    public static readonly string BranchStatusSql = $"""
+        SELECT assigned.CustomInventoryID, branch.BranchID, branch.BranchName,
+               CASE WHEN EXISTS (SELECT 1 FROM dbo.InventorySessions AS countSession
+                                 WHERE countSession.CustomInventoryID = assigned.CustomInventoryID
+                                   AND countSession.BranchID = assigned.BranchID
+                                   AND countSession.Status = N'Completed'
+                                   AND countSession.CompletedAt >= inventory.UpdatedAt) THEN 1 ELSE 0 END
+        FROM dbo.CustomInventoryBranches AS assigned
+        INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = assigned.CustomInventoryID
+        INNER JOIN dbo.Branches AS branch ON branch.BranchID = assigned.BranchID AND branch.IsActive = 1
+        WHERE inventory.IsActive = 1
+          AND {AssignedToBranch}
+        ORDER BY branch.BranchName;
+        """;
+
+    /// <summary>الجرد المخصص الذي يسحبه الفرع من المركز. الاستعلام مُركَّب حتى لا يُرسل القالب حرفياً.</summary>
+    public static readonly string AssignedPullSql = $"""
+        SELECT inventory.CustomInventoryID, inventory.InventoryName, inventory.IsActive, inventory.UpdatedAt
+        FROM dbo.CustomInventories AS inventory
+        WHERE {AssignedToBranch};
+        """;
+
     /// <summary>اختيار فرع واحد بالاسم يُوسَّع إلى كل الفروع النشطة التي تحمل الاسم نفسه.</summary>
     public static IReadOnlyList<Guid> SameNameBranches(
         IEnumerable<(Guid Id, string Name)> branches,

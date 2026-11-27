@@ -175,6 +175,24 @@ export function parseOptionalQuantity(text: string): number | null | undefined {
   return value === null ? undefined : value;
 }
 
+export interface CustomBranchState {
+  branchId: string;
+  branchName: string;
+  completed: boolean;
+}
+
+/**
+ * كما في النظام القديم: الجرد المخصص يُحسب في النواقص فقط إذا كان معيّناً لكل الفروع المختارة
+ * ومكتملاً (جرد مثبّت) في كل واحد منها.
+ */
+export function customShortageRefusal(selectedBranchIds: readonly string[], branches: readonly CustomBranchState[]): string {
+  const assigned = new Map(branches.map((branch) => [branch.branchId, branch]));
+  if (selectedBranchIds.some((id) => !assigned.has(id))) return "هذا الجرد غير معيّن لجميع الفروع المختارة.";
+  const incomplete = selectedBranchIds.filter((id) => !assigned.get(id)?.completed).map((id) => assigned.get(id)?.branchName || id);
+  if (incomplete.length === 0) return "";
+  return `لا يمكن متابعة حساب النواقص قبل اكتمال الجرد المخصص في جميع الفروع المختارة. الفروع غير المكتملة: ${incomplete.join("، ")}`;
+}
+
 export const SHORTAGE_TYPES: { value: InventoryType; label: string }[] = [
   { value: "Important", label: "الأصناف المهمة" },
   { value: "Periodic", label: "الجرد الدوري" },

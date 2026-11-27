@@ -25,6 +25,7 @@ import {
 } from "../api/shortages";
 import {
   correctionDifference,
+  customShortageRefusal,
   formatDateTime,
   formatDifference,
   formatQuantity,
@@ -321,10 +322,20 @@ function ShortageSetup({ client, options, backRef, onConfirm, onMessage, onResum
               key={custom.customInventoryId}
               type="button"
               className={customId === custom.customInventoryId ? "inventory-card is-selected" : "inventory-card"}
-              onClick={() => { setCustomId(custom.customInventoryId); go("days"); }}
+              onClick={() => {
+                const refusal = customShortageRefusal(branchIds, custom.branches ?? []);
+                if (refusal) { onMessage(refusal); return; }
+                setCustomId(custom.customInventoryId);
+                go("days");
+              }}
             >
               <strong>{custom.name}</strong>
               <small>{custom.items} صنف</small>
+              {custom.branches?.length ? (
+                <span className="inventory-custom-branches">
+                  الفروع: {custom.branches.map((entry) => `${entry.branchName} (${entry.completed ? "مكتمل" : "غير مكتمل"})`).join("، ")}
+                </span>
+              ) : null}
             </button>
           ))}
         </div>

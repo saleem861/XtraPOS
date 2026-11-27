@@ -102,29 +102,14 @@ public sealed class InventoryCountService(
         var customBranches = new Dictionary<Guid, List<object>>();
         if (target.Remote && customRows.Count > 0)
         {
-            await using var statuses = new SqlCommand(
-                """
-                SELECT assigned.CustomInventoryID, branch.BranchName,
-                       CASE WHEN EXISTS (SELECT 1 FROM dbo.InventorySessions AS countSession
-                                         WHERE countSession.CustomInventoryID = assigned.CustomInventoryID
-                                           AND countSession.BranchID = assigned.BranchID
-                                           AND countSession.Status = N'Completed'
-                                           AND countSession.CompletedAt >= inventory.UpdatedAt) THEN 1 ELSE 0 END
-                FROM dbo.CustomInventoryBranches AS assigned
-                INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = assigned.CustomInventoryID
-                INNER JOIN dbo.Branches AS branch ON branch.BranchID = assigned.BranchID AND branch.IsActive = 1
-                WHERE inventory.IsActive = 1
-                  AND {CustomInventoryScope.AssignedToBranch}
-                ORDER BY branch.BranchName;
-                """,
-                connection);
+            await using var statuses = new SqlCommand(CustomInventoryScope.BranchStatusSql, connection);
             statuses.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = (object?)target.Actor?.BranchId ?? DBNull.Value;
             await using var reader = await statuses.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
                 var id = reader.GetGuid(0);
                 if (!customBranches.TryGetValue(id, out var list)) customBranches[id] = list = [];
-                list.Add(new { branchName = reader.GetString(1), completed = reader.GetInt32(2) == 1 });
+                list.Add(new { branchId = reader.GetGuid(1), branchName = reader.GetString(2), completed = reader.GetInt32(3) == 1 });
             }
         }
 

@@ -13,7 +13,7 @@ export interface InventoryConfiguration {
   importantItems: number;
   pageItems: { page: number; items: number }[];
   /** الجرد المخصص لهذا الفرع كما نزل من المركز («تحديد جرد»)، وحالته في كل فرع مخصص له (كما في النظام القديم). */
-  customInventories?: { customInventoryId: string; name: string; items: number; branches?: { branchName: string; completed: boolean }[] }[];
+  customInventories?: { customInventoryId: string; name: string; items: number; branches?: { branchId?: string; branchName: string; completed: boolean }[] }[];
 }
 
 export interface InventorySession {

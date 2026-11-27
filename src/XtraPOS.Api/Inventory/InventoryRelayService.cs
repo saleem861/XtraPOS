@@ -530,13 +530,7 @@ public sealed class InventoryRelayService(
     private static async Task PullCustomInventoriesAsync(SqlConnection local, SqlConnection central, Guid branch, CancellationToken cancellationToken)
     {
         var remote = new List<(Guid Id, string Name, bool Active, DateTime UpdatedAt)>();
-        await using (var read = new SqlCommand(
-            """
-            SELECT inventory.CustomInventoryID, inventory.InventoryName, inventory.IsActive, inventory.UpdatedAt
-            FROM dbo.CustomInventories AS inventory
-            WHERE {CustomInventoryScope.AssignedToBranch};
-            """,
-            central))
+        await using (var read = new SqlCommand(CustomInventoryScope.AssignedPullSql, central))
         {
             read.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
             await using var reader = await read.ExecuteReaderAsync(cancellationToken);
