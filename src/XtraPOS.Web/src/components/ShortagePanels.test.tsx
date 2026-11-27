@@ -37,6 +37,39 @@ const runItem = {
 };
 
 describe("shortage processing", () => {
+  it("shows only required items until «إظهار الكل», which adds the rest marked «غير مطلوب»", async () => {
+    const idle = { ...runItem, itemId: "i2", itemNumber: "224", itemName: "رأس أرجيلة", totalNeed: 0, requiredQuantity: 0, balanceQuantity: 0, isRequired: false };
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.startsWith("/api/inventory/configuration")) return reply(configuration);
+      if (url === "/api/shortages/options") {
+        return reply({ branches: [{ branchId: "br", branchName: "فرع نابلس", current: true, lastPushAt: null, stale: false }], customInventories: [], users: [], draft: null, pageCount: 12 });
+      }
+      if (url === "/api/shortages/runs") return reply({ resumed: false, draft: runHeader });
+      if (url === "/api/shortages/runs/r1") return reply({ run: runHeader, items: [{ ...runItem, isRequired: true }, idle] });
+      return reply({});
+    }));
+    render(<InventoryScreen session={device} permissions={["Inventory.Count", "Shortages.Process"]} onBack={() => undefined} />);
+    await userEvent.click(screen.getByRole("button", { name: /^معالجة النواقص/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^فرع نابلس/ }));
+    await userEvent.click(screen.getByRole("button", { name: "متابعة" }));
+    await userEvent.click(await screen.findByRole("button", { name: "الأصناف المهمة" }));
+    await userEvent.click(screen.getByRole("button", { name: "تثبيت ومتابعة" }));
+
+    expect(await screen.findByText("فحم سريع")).toBeTruthy();
+    expect(screen.queryByText("رأس أرجيلة")).toBeNull();
+    expect(screen.getByText("عولج 0 من 1")).toBeTruthy();
+
+    const toggle = screen.getByRole("button", { name: "إظهار الكل (2)" });
+    await userEvent.click(toggle);
+    const idleRow = (await screen.findByText("رأس أرجيلة")).closest("article") as HTMLElement;
+    expect(within(idleRow).getByText("غير مطلوب")).toBeTruthy();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("عولج 0 من 1")).toBeTruthy();
+
+    await userEvent.click(toggle);
+    expect(screen.queryByText("رأس أرجيلة")).toBeNull();
+  });
+
   it("explains an empty run: counted items without sales are not short", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => {
       if (url.startsWith("/api/inventory/configuration")) return reply(configuration);

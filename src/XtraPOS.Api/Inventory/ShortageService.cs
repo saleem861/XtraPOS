@@ -327,7 +327,7 @@ public sealed class ShortageService(InventoryCountService counting)
                      ("RunItemID", typeof(Guid)), ("RunID", typeof(Guid)), ("ItemID", typeof(Guid)), ("ItemNumber", typeof(string)),
                      ("ItemName", typeof(string)), ("TotalNeed", typeof(decimal)), ("TotalSurplus", typeof(decimal)),
                      ("RequiredQuantity", typeof(decimal)), ("BalanceQuantity", typeof(decimal)), ("MissingRate", typeof(bool)),
-                     ("MissingQuantity", typeof(bool)),
+                     ("MissingQuantity", typeof(bool)), ("IsRequired", typeof(bool)),
                  })
         {
             items.Columns.Add(name, kind);
@@ -355,9 +355,9 @@ public sealed class ShortageService(InventoryCountService counting)
                     row.Rate)),
                 days);
             results.Add(result);
-            if (!result.IsShort) continue;
+            // المالك 27 نوفمبر: غير المطلوب يُحفظ أيضاً ليظهر عند «إظهار الكل» بعلامة «غير مطلوب».
             items.Rows.Add(Guid.NewGuid(), runId, first.ItemId, first.Number, (object?)first.Name ?? DBNull.Value,
-                result.TotalNeed, result.TotalSurplus, result.Required, result.Balance, result.MissingRate, result.MissingQuantity);
+                result.TotalNeed, result.TotalSurplus, result.Required, result.Balance, result.MissingRate, result.MissingQuantity, result.IsShort);
             foreach (var branch in result.Branches)
             {
                 branchRows.Rows.Add(runId, first.ItemId, branch.BranchId, (object?)branch.Quantity ?? DBNull.Value,
@@ -367,7 +367,8 @@ public sealed class ShortageService(InventoryCountService counting)
 
         await BulkAsync(central, transaction, "dbo.ShortageRunItems", items, cancellationToken);
         await BulkAsync(central, transaction, "dbo.ShortageRunItemBranches", branchRows, cancellationToken);
-        return (items.Rows.Count, ShortageScopeSummary.From(results));
+        var summary = ShortageScopeSummary.From(results);
+        return (summary.ShortItems, summary);
     }
 
     private const string ManualFilter = """
@@ -419,8 +420,8 @@ public sealed class ShortageService(InventoryCountService counting)
             """
             SELECT ItemID, ItemNumber, ItemName, TotalNeed, TotalSurplus, RequiredQuantity, BalanceQuantity, MissingRate, MissingQuantity,
                    IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note, ProcessedByName,
-                   SubstituteItemNumber
-            FROM dbo.ShortageRunItems WHERE RunID = @run ORDER BY IsProcessed, ItemNumber;
+                   SubstituteItemNumber, IsRequired
+            FROM dbo.ShortageRunItems WHERE RunID = @run ORDER BY IsRequired DESC, IsProcessed, ItemNumber;
             """,
             central))
         {
@@ -449,6 +450,7 @@ public sealed class ShortageService(InventoryCountService counting)
                     note = Str(reader, 15),
                     processedByName = Str(reader, 16),
                     substituteItemNumber = Str(reader, 17),
+                    isRequired = reader.GetBoolean(18),
                     branches = branchRows.GetValueOrDefault(itemId) ?? new List<object>(),
                 });
             }
@@ -512,7 +514,7 @@ public sealed class ShortageService(InventoryCountService counting)
             await using (var read = new SqlCommand(
                 """
                 SELECT ItemID, ItemNumber, ItemName, IsProcessed, PurchaseQuantity, WarehouseQuantity, BalanceDecision, DeleteRequested, AlreadySupplied, Note,
-                       SubstituteItemID, SubstituteItemNumber
+                       SubstituteItemID, SubstituteItemNumber, IsRequired
                 FROM dbo.ShortageRunItems WHERE RunID = @run;
                 """,
                 central,
@@ -524,7 +526,8 @@ public sealed class ShortageService(InventoryCountService counting)
                 {
                     if (!reader.GetBoolean(3))
                     {
-                        unprocessed++;
+                        // غير المطلوب لا يمنع التثبيت؛ يدخل المهام فقط إن اتُّخذ فيه قرار.
+                        if (reader.GetBoolean(12)) unprocessed++;
                         continue;
                     }
 
@@ -1395,7 +1398,7 @@ public sealed class ShortageService(InventoryCountService counting)
         await using var header = new SqlCommand(
             """
             SELECT run.ShortageType, run.SupplyDays, run.Pages, run.Status, run.CreatedByName, run.CreatedAt, run.LastSavedAt, run.CompletedAt,
-                   run.ItemCount, (SELECT COUNT(*) FROM dbo.ShortageRunItems WHERE RunID = run.RunID AND IsProcessed = 1),
+                   run.ItemCount, (SELECT COUNT(*) FROM dbo.ShortageRunItems WHERE RunID = run.RunID AND IsProcessed = 1 AND IsRequired = 1),
                    run.CreatedByUserID, custom.InventoryName, run.ManualFrom, run.ManualTo
             FROM dbo.ShortageRuns AS run
             LEFT JOIN dbo.CustomInventories AS custom ON custom.CustomInventoryID = run.CustomInventoryID
