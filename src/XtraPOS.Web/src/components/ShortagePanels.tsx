@@ -730,7 +730,7 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
             {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
           </select>
         </label>
-        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
+        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" saveOnConfirm={false} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
         {(() => {
           const branch = branches.find((entry) => entry.branchId === target);
           if (!branch || branch.current) return null;
@@ -821,7 +821,7 @@ export function BranchQuantities({ client, itemId, canCorrect, onMessage, onBusy
           ) : null}
           {target === branch.branchId ? (
             <div className="inventory-decision">
-              <label>الكمية الصحيحة<CountQuantityField label={`الكمية الصحيحة ${branch.branchName}`} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => correct(branch)} /></label>
+              <label>الكمية الصحيحة<CountQuantityField label={`الكمية الصحيحة ${branch.branchName}`} saveOnConfirm={false} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => correct(branch)} /></label>
               <p className="inventory-hint" aria-label="فارق التصحيح">
                 المفترضة {formatQuantity(branch.quantity)} · الفارق {formatDifference(correctionDifference(branch.quantity, parseCountInput(quantity.trim() === "" ? "0" : quantity)))}
               </p>

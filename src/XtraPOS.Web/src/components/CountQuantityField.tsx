@@ -37,6 +37,7 @@ export function CountQuantityField({
   onEnter,
   label,
   title,
+  saveOnConfirm = true,
   ...rest
 }: {
   value: string;
@@ -45,6 +46,8 @@ export function CountQuantityField({
   label: string;
   /** عنوان لوحة الأرقام على الكمبيوتر (اسم الصنف). الافتراض: label. */
   title?: string;
+  /** «تأكيد» في لوحة الكمبيوتر يحفظ مثل Enter (الجرد). false: يكتب الكمية فقط (التصحيح يحتاج سبباً بعدها). */
+  saveOnConfirm?: boolean;
 } & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "inputMode" | "placeholder">) {
   const desktop = usesDesktopCustomerKeyboard();
   const [focused, setFocused] = useState(false);
@@ -104,7 +107,7 @@ export function CountQuantityField({
           onConfirm={(next) => {
             setPadOpen(false);
             onChange(next);
-            window.setTimeout(() => latestEnter.current(), 0);
+            if (saveOnConfirm) window.setTimeout(() => latestEnter.current(), 0);
           }}
           onCancel={() => setPadOpen(false)}
         />
