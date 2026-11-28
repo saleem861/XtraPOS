@@ -6,6 +6,18 @@ namespace XtraPOS.Api.Inventory;
 /// </summary>
 public static class CustomInventoryScope
 {
+    /// <summary>فروع نشطة بنفس الاسم داخل النشاط. المعامل صيغة معرّف الفرع، مثل <c>@branch</c>.</summary>
+    public static string SameNameBranches(string branchParameter) =>
+        $"""
+        SELECT scopeSibling.BranchID
+        FROM dbo.Branches AS scopeMine
+        INNER JOIN dbo.Branches AS scopeSibling
+            ON scopeSibling.IsActive = 1
+           AND scopeSibling.BusinessID = scopeMine.BusinessID
+           AND LTRIM(RTRIM(scopeSibling.BranchName)) = LTRIM(RTRIM(scopeMine.BranchName))
+        WHERE scopeMine.BranchID = {branchParameter}
+        """;
+
     public const string AssignedToBranch = """
         EXISTS (
             SELECT 1

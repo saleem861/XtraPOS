@@ -28,6 +28,7 @@ public sealed class InventoryReviewService(
     public async Task<object> ReportAsync(
         PosDeviceContext actor,
         Guid? branchId,
+        bool allBranches,
         DateOnly? from,
         DateOnly? to,
         string? type,
@@ -49,12 +50,15 @@ public sealed class InventoryReviewService(
         };
 
         var branch = branchId ?? actor.BranchId;
-        var remote = branch != actor.BranchId;
+        var remote = allBranches || branch != actor.BranchId;
         await using var connection = await OpenSessionsAsync(remote, cancellationToken);
+        var branchScope = allBranches
+            ? "SELECT listed.BranchID FROM dbo.Branches AS listed WHERE listed.IsActive = 1 AND listed.BusinessID = @business"
+            : CustomInventoryScope.SameNameBranches("@branch");
         var sessions = new List<object>();
         await using (var command = new SqlCommand(
-            """
-            SELECT session.SessionID, session.InventoryType, session.Status, session.UserID, session.UserName,
+            $"""
+            SELECT session.SessionID, session.BranchID, branch.BranchName, session.InventoryType, session.Status, session.UserID, session.UserName,
                    session.BusinessDate, session.StartedAt, session.LastSavedAt, session.CompletedAt,
                    session.TotalItems, session.CountedItems, session.PostedItems,
                    (SELECT COUNT(*) FROM dbo.InventorySessionItems AS line
@@ -68,7 +72,8 @@ public sealed class InventoryReviewService(
                           ORDER BY page.InventoryPage
                           FOR XML PATH(N'')), 1, 1, N'') AS Pages
             FROM dbo.InventorySessions AS session
-            WHERE session.BranchID = @branch
+            INNER JOIN dbo.Branches AS branch ON branch.BranchID = session.BranchID
+            WHERE session.BranchID IN ({branchScope})
               AND session.BusinessDate BETWEEN @from AND @to
               AND (@type IS NULL OR session.InventoryType = @type)
               AND (@user IS NULL OR session.UserID = @user)
@@ -79,6 +84,7 @@ public sealed class InventoryReviewService(
             connection))
         {
             command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = actor.BusinessId;
             command.Parameters.Add("@from", SqlDbType.Date).Value = start.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@to", SqlDbType.Date).Value = end.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@type", SqlDbType.NVarChar, 20).Value = (object?)normalizedType ?? DBNull.Value;
@@ -87,44 +93,47 @@ public sealed class InventoryReviewService(
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                var total = reader.GetInt32(9);
-                var counted = reader.GetInt32(10);
-                var sessionType = reader.GetString(1);
+                var total = reader.GetInt32(11);
+                var counted = reader.GetInt32(12);
+                var sessionType = reader.GetString(3);
                 sessions.Add(new
                 {
                     sessionId = reader.GetGuid(0),
+                    branchId = reader.GetGuid(1),
+                    branchName = reader.GetString(2),
                     inventoryType = sessionType,
                     inventoryTypeLabel = InventoryTypes.Label(sessionType),
-                    status = reader.GetString(2),
-                    userId = reader.GetGuid(3),
-                    userName = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    businessDate = DateOnly.FromDateTime(reader.GetDateTime(5)).ToString("yyyy-MM-dd"),
-                    startedAt = Utc(reader.GetDateTime(6)),
-                    lastSavedAt = Utc(reader.GetDateTime(7)),
-                    completedAt = reader.IsDBNull(8) ? (DateTime?)null : Utc(reader.GetDateTime(8)),
+                    status = reader.GetString(4),
+                    userId = reader.GetGuid(5),
+                    userName = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    businessDate = DateOnly.FromDateTime(reader.GetDateTime(7)).ToString("yyyy-MM-dd"),
+                    startedAt = Utc(reader.GetDateTime(8)),
+                    lastSavedAt = Utc(reader.GetDateTime(9)),
+                    completedAt = reader.IsDBNull(10) ? (DateTime?)null : Utc(reader.GetDateTime(10)),
                     totalItems = total,
                     countedItems = counted,
-                    postedItems = reader.GetInt32(11),
+                    postedItems = reader.GetInt32(13),
                     completionPercent = total > 0 ? Math.Round(counted * 100m / total, 0) : (counted > 0 ? 100m : 0m),
-                    differences = reader.GetInt32(12),
-                    audits = reader.GetInt32(13),
-                    pages = reader.IsDBNull(14) ? Array.Empty<int>() : reader.GetString(14).Split(',').Select(int.Parse).ToArray(),
+                    differences = reader.GetInt32(14),
+                    audits = reader.GetInt32(15),
+                    pages = reader.IsDBNull(16) ? Array.Empty<int>() : reader.GetString(16).Split(',').Select(int.Parse).ToArray(),
                 });
             }
         }
 
         var employees = new List<object>();
         await using (var command = new SqlCommand(
-            """
+            $"""
             SELECT UserID, MAX(UserName) AS UserName
             FROM dbo.InventorySessions
-            WHERE BranchID = @branch AND BusinessDate BETWEEN @from AND @to
+            WHERE BranchID IN ({branchScope}) AND BusinessDate BETWEEN @from AND @to
             GROUP BY UserID
             ORDER BY MAX(UserName);
             """,
             connection))
         {
             command.Parameters.Add("@branch", SqlDbType.UniqueIdentifier).Value = branch;
+            command.Parameters.Add("@business", SqlDbType.UniqueIdentifier).Value = actor.BusinessId;
             command.Parameters.Add("@from", SqlDbType.Date).Value = start.ToDateTime(TimeOnly.MinValue);
             command.Parameters.Add("@to", SqlDbType.Date).Value = end.ToDateTime(TimeOnly.MinValue);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -136,7 +145,8 @@ public sealed class InventoryReviewService(
 
         return new
         {
-            branchId = branch,
+            branchId = allBranches ? (Guid?)null : branch,
+            allBranches,
             remote,
             from = start.ToString("yyyy-MM-dd"),
             to = end.ToString("yyyy-MM-dd"),
