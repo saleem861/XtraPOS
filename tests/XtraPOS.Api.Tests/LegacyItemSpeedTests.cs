@@ -36,5 +36,9 @@ public sealed class LegacyItemSpeedTests
     {
         Assert.Contains("scopeAssignedBranch.BranchName", CustomInventoryScope.AssignedToBranch, StringComparison.Ordinal);
         Assert.Contains("scopeMine.BranchName", CustomInventoryScope.AssignedToBranch, StringComparison.Ordinal);
+        Assert.Contains("scopeAssignedBranch.BranchName", CustomInventoryScope.BranchStatusSql, StringComparison.Ordinal);
+        Assert.Contains("scopeAssignedBranch.BranchName", CustomInventoryScope.AssignedPullSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("{CustomInventoryScope", CustomInventoryScope.BranchStatusSql, StringComparison.Ordinal);
+        Assert.DoesNotContain("{CustomInventoryScope", CustomInventoryScope.AssignedPullSql, StringComparison.Ordinal);
     }
 }

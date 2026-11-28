@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { correctionDifference, parseItemCodes, parseOptionalQuantity } from "../inventory/inventoryRules";
+import { correctionDifference, customShortageRefusal, parseItemCodes, parseOptionalQuantity } from "../inventory/inventoryRules";
 import type { DeviceSession } from "../types/setup";
 import { InventoryScreen } from "./InventoryScreen";
 
@@ -285,6 +285,9 @@ describe("custom count", () => {
 describe("shortage rules", () => {
   it("parses pasted item numbers and optional quantities", () => {
     expect(parseItemCodes("650\n١٣٠٠، 650 224")).toEqual(["650", "1300", "224"]);
+    expect(customShortageRefusal(["br"], [{ branchId: "br", branchName: "Labtop", completed: false }])).toContain("غير المكتملة");
+    expect(customShortageRefusal(["other"], [{ branchId: "br", branchName: "Labtop", completed: true }])).toContain("غير معيّن");
+    expect(customShortageRefusal(["br"], [{ branchId: "br", branchName: "Labtop", completed: true }])).toBe("");
     expect(parseOptionalQuantity("")).toBeNull();
     expect(parseOptionalQuantity("٣")).toBe(3);
     expect(parseOptionalQuantity("-2")).toBeUndefined();

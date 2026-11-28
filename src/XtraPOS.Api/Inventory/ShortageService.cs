@@ -37,10 +37,52 @@ public sealed class ShortageService(InventoryCountService counting)
             central))
         {
             Id(command, "@business", actor.BusinessId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            var rows = new List<(Guid Id, string Name, int Items)>();
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
-                customs.Add(new { customInventoryId = reader.GetGuid(0), name = reader.GetString(1), items = reader.GetInt32(2) });
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    rows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetInt32(2)));
+                }
+            }
+
+            var branchesByInventory = new Dictionary<Guid, List<object>>();
+            if (rows.Count > 0)
+            {
+                await using var statuses = new SqlCommand(
+                    """
+                    SELECT assigned.CustomInventoryID, branch.BranchID, branch.BranchName,
+                           CASE WHEN EXISTS (SELECT 1 FROM dbo.InventorySessions AS countSession
+                                             WHERE countSession.CustomInventoryID = assigned.CustomInventoryID
+                                               AND countSession.BranchID = assigned.BranchID
+                                               AND countSession.Status = N'Completed'
+                                               AND countSession.CompletedAt >= inventory.UpdatedAt) THEN 1 ELSE 0 END
+                    FROM dbo.CustomInventoryBranches AS assigned
+                    INNER JOIN dbo.CustomInventories AS inventory ON inventory.CustomInventoryID = assigned.CustomInventoryID
+                    INNER JOIN dbo.Branches AS branch ON branch.BranchID = assigned.BranchID AND branch.IsActive = 1
+                    WHERE inventory.BusinessID = @business AND inventory.IsActive = 1
+                    ORDER BY branch.BranchName;
+                    """,
+                    central);
+                Id(statuses, "@business", actor.BusinessId);
+                await using var statusReader = await statuses.ExecuteReaderAsync(cancellationToken);
+                while (await statusReader.ReadAsync(cancellationToken))
+                {
+                    var id = statusReader.GetGuid(0);
+                    if (!branchesByInventory.TryGetValue(id, out var list)) branchesByInventory[id] = list = [];
+                    list.Add(new { branchId = statusReader.GetGuid(1), branchName = statusReader.GetString(2), completed = statusReader.GetInt32(3) == 1 });
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                customs.Add(new
+                {
+                    customInventoryId = row.Id,
+                    name = row.Name,
+                    items = row.Items,
+                    branches = branchesByInventory.TryGetValue(row.Id, out var assigned) ? assigned : new List<object>(),
+                });
             }
         }
 

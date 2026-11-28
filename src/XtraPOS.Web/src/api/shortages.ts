@@ -48,7 +48,7 @@ export interface RunHeader {
 
 export interface ShortageOptions {
   branches: ShortageBranchOption[];
-  customInventories: { customInventoryId: string; name: string; items: number }[];
+  customInventories: { customInventoryId: string; name: string; items: number; branches?: { branchId: string; branchName: string; completed: boolean }[] }[];
   users: UserOption[];
   draft: RunHeader | null;
   pageCount: number;
