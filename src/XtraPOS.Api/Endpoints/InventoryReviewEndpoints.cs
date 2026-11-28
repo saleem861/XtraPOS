@@ -37,12 +37,12 @@ public static class InventoryReviewEndpoints
     }
 
     private static async Task<IResult> ReportAsync(
-        Guid? branchId, DateOnly? from, DateOnly? to, string? type, Guid? userId, string? status,
+        Guid? branchId, bool allBranches, DateOnly? from, DateOnly? to, string? type, Guid? userId, string? status,
         HttpContext http, AuthService auth, PermissionService permissions, InventoryReviewService review, CancellationToken cancellationToken)
     {
         var caller = await CallerAsync(http, auth, permissions, [ReviewPermission], cancellationToken);
         if (caller.Result is not null) return caller.Result;
-        return await RunAsync(() => review.ReportAsync(caller.Context!, branchId, from, to, type, userId, status, cancellationToken));
+        return await RunAsync(() => review.ReportAsync(caller.Context!, branchId, allBranches, from, to, type, userId, status, cancellationToken));
     }
 
     private static async Task<IResult> SessionAsync(

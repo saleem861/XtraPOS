@@ -144,9 +144,10 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         className="inventory-filter"
         onSubmit={(event) => { event.preventDefault(); void load(filter); }}
       >
-        {branches.length > 1 ? (
+        {branches.length > 0 ? (
           <label>الفرع
             <select value={filter.branchId} onChange={(event) => setFilter({ ...filter, branchId: event.target.value, userId: "" })}>
+              <option value="all">الكل</option>
               {branches.map((branch) => (
                 <option key={branch.branchId} value={branch.current ? "" : branch.branchId}>
                   {branch.branchName}{branch.current ? " (هذا الفرع)" : ""}
@@ -181,7 +182,7 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         <button type="submit" className="primary-button" disabled={loading}>عرض</button>
       </form>
 
-      {selectedBranch && !selectedBranch.current ? (
+      {filter.branchId === "all" || (selectedBranch && !selectedBranch.current) ? (
         <p className="inventory-hint">من المركز، وهو مرجع الكميات والجرد لكل الفروع.</p>
       ) : null}
 
@@ -189,12 +190,12 @@ export function InventoryReportPanel({ client, onMessage, onBusy, onConfirm, onR
         {loading ? <Waiting compact label="جاري تحميل التقرير..." /> : null}
         {!loading && report && report.sessions.length === 0 ? <p className="inventory-hint">لا يوجد جرد في هذه الفترة.</p> : null}
         {!loading && report ? sessionsPaging.visible.map((entry) => (
-          <button key={entry.sessionId} type="button" className="inventory-report-row" onClick={() => setView({ kind: "session", sessionId: entry.sessionId, branchId: report.remote ? report.branchId : "" })}>
+          <button key={entry.sessionId} type="button" className="inventory-report-row" onClick={() => setView({ kind: "session", sessionId: entry.sessionId, branchId: entry.branchId && entry.branchId !== "" ? entry.branchId : (report.remote ? report.branchId ?? "" : "") })}>
             <span className="inventory-report-title">
               <strong>{entry.inventoryTypeLabel}</strong>
               {entry.pages.length > 0 ? <small>الصفحات: {entry.pages.join("، ")}</small> : null}
             </span>
-            <span>{entry.userName ?? "—"} · {entry.businessDate}</span>
+            <span>{entry.branchName ? `${entry.branchName} · ` : ""}{entry.userName ?? "—"} · {entry.businessDate}</span>
             <span>تم جرد {entry.countedItems}{entry.inventoryType === "Manual" ? "" : ` من ${entry.totalItems}`} ({entry.completionPercent}%)</span>
             <span className={entry.differences > 0 ? "inventory-badge is-warning" : "inventory-badge"}>الفروقات: {entry.differences}</span>
             <span className="inventory-badge">{sessionStatusLabel(entry.status)}{entry.audits > 0 ? ` · مُدقق ${entry.audits}` : ""}</span>

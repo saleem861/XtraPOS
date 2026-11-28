@@ -6,6 +6,8 @@ export type AuditMode = "All" | "Differences" | "Manual";
 
 export interface ReportSession {
   sessionId: string;
+  branchId?: string;
+  branchName?: string | null;
   inventoryType: InventoryType;
   inventoryTypeLabel: string;
   status: "Open" | "Completed" | "Discarded";
@@ -33,7 +35,8 @@ export interface ReportBranch {
 }
 
 export interface InventoryReport {
-  branchId: string;
+  branchId: string | null;
+  allBranches?: boolean;
   remote: boolean;
   from: string;
   to: string;
@@ -187,7 +190,8 @@ export function createInventoryReviewClient(session: DeviceSession) {
     },
     async report(filter: ReportFilter) {
       const params = new URLSearchParams();
-      if (filter.branchId) params.set("branchId", filter.branchId);
+      if (filter.branchId === "all") params.set("allBranches", "true");
+      else if (filter.branchId) params.set("branchId", filter.branchId);
       if (filter.from) params.set("from", filter.from);
       if (filter.to) params.set("to", filter.to);
       if (filter.type) params.set("type", filter.type);

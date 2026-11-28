@@ -221,7 +221,10 @@ describe("inventory report across branches", () => {
     await userEvent.click(screen.getByRole("button", { name: /^تقرير الجرد/ }));
     const branch = await screen.findByRole("combobox", { name: /^الفرع/ });
     // لا يتكرر اسم في القائمة.
-    expect(within(branch).getAllByRole("option").map((option) => option.textContent)).toEqual(["فرع نابلس (هذا الفرع)", "فرع رام الله"]);
+    expect(within(branch).getAllByRole("option").map((option) => option.textContent)).toEqual(["الكل", "فرع نابلس (هذا الفرع)", "فرع رام الله"]);
+    await userEvent.selectOptions(branch, "all");
+    await userEvent.click(screen.getByRole("button", { name: "عرض" }));
+    expect(calls.some((url) => url.includes("allBranches=true"))).toBe(true);
     await userEvent.selectOptions(branch, "br2");
     await userEvent.click(screen.getByRole("button", { name: "عرض" }));
     expect(await screen.findByText(/من المركز، وهو مرجع الكميات/)).toBeTruthy();

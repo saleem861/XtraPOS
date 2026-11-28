@@ -298,6 +298,20 @@ public sealed class ShortageService(InventoryCountService counting)
                 SELECT item.ItemID FROM dbo.ItemInventorySettings AS setting
                 INNER JOIN dbo.Items AS item ON item.ItemNumber = setting.ItemNumber AND item.IsActive = 1
                 WHERE (setting.IsImportant = 1 OR setting.InventoryPage = 0) AND {owner}
+                UNION
+                SELECT line.ItemID FROM dbo.InventorySessionItems AS line
+                INNER JOIN dbo.InventorySessions AS countSession ON countSession.SessionID = line.SessionID
+                INNER JOIN dbo.Items AS item ON item.ItemID = line.ItemID AND item.IsActive = 1
+                WHERE {ImportantCountFilter} AND {owner}
+                  AND countSession.BranchID IN (
+                      SELECT scopeSibling.BranchID
+                      FROM dbo.ShortageRunBranches AS chosen
+                      INNER JOIN dbo.Branches AS scopeMine ON scopeMine.BranchID = chosen.BranchID
+                      INNER JOIN dbo.Branches AS scopeSibling
+                          ON scopeSibling.IsActive = 1
+                         AND scopeSibling.BusinessID = scopeMine.BusinessID
+                         AND LTRIM(RTRIM(scopeSibling.BranchName)) = LTRIM(RTRIM(scopeMine.BranchName))
+                      WHERE chosen.RunID = @run)
                 """,
             InventoryTypes.Periodic => $"""
                 SELECT item.ItemID FROM dbo.ItemInventorySettings AS setting
@@ -343,8 +357,29 @@ public sealed class ShortageService(InventoryCountService counting)
         }
 
         // اليدوي: آخر عدّ مكتمل لكل فرع وصنف بدل الرصيد، كما في التطبيق القديم.
+        // المهم: آخر جرد مهم مكتمل، بما فيه صفوف الفرع التي تحمل نفس الاسم.
         var counted = new Dictionary<(Guid, Guid), decimal>();
-        if (type == InventoryTypes.Manual)
+        if (type == InventoryTypes.Important)
+        {
+            await using var command = new SqlCommand(
+                $"""
+                 SELECT BranchID, ItemID, CountedQuantity FROM (
+                     SELECT chosen.BranchID, line.ItemID, line.CountedQuantity,
+                            ROW_NUMBER() OVER (PARTITION BY chosen.BranchID, line.ItemID ORDER BY line.CountedAt DESC) AS Position
+                     FROM dbo.ShortageRunBranches AS chosen
+                     INNER JOIN dbo.Branches AS sibling ON sibling.BranchID IN ({CustomInventoryScope.SameNameBranches("chosen.BranchID")})
+                     INNER JOIN dbo.InventorySessions AS countSession ON countSession.BranchID = sibling.BranchID
+                     INNER JOIN dbo.InventorySessionItems AS line ON line.SessionID = countSession.SessionID
+                     WHERE chosen.RunID = @run AND {ImportantCountFilter} AND line.CountedQuantity IS NOT NULL) AS latest
+                 WHERE Position = 1;
+                 """,
+                central,
+                transaction);
+            Id(command, "@run", runId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) counted[(reader.GetGuid(0), reader.GetGuid(1))] = reader.GetDecimal(2);
+        }
+        else if (type == InventoryTypes.Manual)
         {
             await using var command = new SqlCommand(
                 $"""
@@ -412,6 +447,10 @@ public sealed class ShortageService(InventoryCountService counting)
         var summary = ShortageScopeSummary.From(results);
         return (summary.ShortItems, summary);
     }
+
+    private const string ImportantCountFilter = """
+        countSession.InventoryType = N'Important' AND countSession.Status = N'Completed' AND line.IsCounted = 1
+        """;
 
     private const string ManualFilter = """
         countSession.InventoryType = N'Manual' AND countSession.Status = N'Completed' AND line.IsCounted = 1
