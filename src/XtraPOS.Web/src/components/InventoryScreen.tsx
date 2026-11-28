@@ -427,7 +427,7 @@ export function InventoryScreen({ session, permissions, onBack }: {
             onMessage={setMessage}
             onConfirm={setConfirmation}
             onSaveAndExit={() => back()}
-            onFinished={(result) => { setFinished(result); setActive(null); setStep("done"); }}
+            onFinished={(result) => { setConfirmation(null); setFinished(result); setActive(null); setStep("done"); }}
           />
         ) : null}
 
@@ -513,8 +513,8 @@ export function InventoryScreen({ session, permissions, onBack }: {
             <strong>{confirmation.title}</strong>
             <p>{confirmation.message}</p>
             <div className="inventory-dialog-actions">
-              <button type="button" className="primary-button" onClick={() => { const action = confirmation.onAccept; setConfirmation(null); action(); }}>{confirmation.accept}</button>
-              <button type="button" className="ghost-button" onClick={() => setConfirmation(null)}>إلغاء</button>
+              <button type="button" className="primary-button" onMouseDown={(event) => event.preventDefault()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); const action = confirmation.onAccept; setConfirmation(null); window.setTimeout(action, 0); }}>{confirmation.accept}</button>
+              <button type="button" className="ghost-button" onMouseDown={(event) => event.preventDefault()} onClick={() => setConfirmation(null)}>إلغاء</button>
             </div>
           </div>
         </div>
@@ -813,6 +813,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   }
 
   function finalize() {
+    if (finalizing) return;
     onConfirm({
       title: "تثبيت الجرد",
       message: "سيتم إغلاق الجرد وكتابة كل فروق الكمية على المركز الآن. لا يُثبَّت جرد ناقص. هل تريد المتابعة؟",
@@ -822,6 +823,7 @@ function CountingPanel({ client, session, canReview, onSession, onPendingChange,
   }
 
   async function acceptFinalize() {
+    if (finalizing) return;
     setFinalizing(true);
     onMessage("");
     // التثبيت لا ينتظر ترحيل الأصناف. العدّ الذي ما زال على الجهاز يُرسل مع طلب التثبيت نفسه.

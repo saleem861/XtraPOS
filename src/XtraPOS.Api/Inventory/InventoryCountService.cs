@@ -1301,13 +1301,28 @@ public sealed class InventoryCountService(
         try
         {
             await CentralStock.RequireReadyAsync(connection, transaction, cancellationToken);
+            string? lockedStatus;
             await using (var lockSession = new SqlCommand(
                 "SELECT Status FROM dbo.InventorySessions WITH (UPDLOCK, HOLDLOCK) WHERE SessionID = @id;",
                 connection,
                 transaction))
             {
                 lockSession.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
-                await lockSession.ExecuteScalarAsync(cancellationToken);
+                lockedStatus = await lockSession.ExecuteScalarAsync(cancellationToken) as string;
+            }
+
+            if (lockedStatus == InventorySessionStatuses.Completed)
+            {
+                var done = await SessionSummaryAsync(connection, transaction, sessionId, cancellationToken);
+                int postedAlready;
+                await using (var readPosted = new SqlCommand("SELECT PostedItems FROM dbo.InventorySessions WHERE SessionID = @id;", connection, transaction))
+                {
+                    readPosted.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = sessionId;
+                    postedAlready = Convert.ToInt32(await readPosted.ExecuteScalarAsync(cancellationToken));
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                return new { session = done, posted = postedAlready, remote = true, central = true, queued = false };
             }
 
             var owned = await RequireOwnedAsync(connection, transaction, actor, sessionId, requireOpen: true, cancellationToken);

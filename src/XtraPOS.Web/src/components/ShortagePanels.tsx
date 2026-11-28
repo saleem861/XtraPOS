@@ -691,8 +691,14 @@ function ShortageActionDialog({ kind, client, item, onClose, onCommit, onMessage
         {kind === "purchase" ? <PurchaseFields item={item} onClose={onClose} onCommit={onCommit} onMessage={onMessage} /> : null}
         {kind === "balance" ? <BalanceFields item={item} onClose={onClose} onCommit={onCommit} onMessage={onMessage} /> : null}
         {kind === "delete" ? <DeleteFields item={item} onClose={onClose} onCommit={onCommit} /> : null}
-        {kind === "count" || kind === "quantities" ? (
-          <LiveBranchLines client={client} item={item} kind={kind} onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
+        {kind === "count" ? (
+          <LiveBranchLines client={client} item={item} kind={kind} onMessage={onMessage} />
+        ) : null}
+        {kind === "quantities" ? (
+          <>
+            <QuantityMath item={item} />
+            <BranchQuantities client={client} itemId={item.itemId} canCorrect quiet onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
+          </>
         ) : null}
         {kind === "count" || kind === "quantities" ? (
           <div className="inventory-dialog-actions">
@@ -858,7 +864,25 @@ function DeleteFields({ item, onClose, onCommit }: {
   );
 }
 
-function LiveBranchLines({ client, item, kind, onMessage, onBusy, onConfirm }: PanelProps & { item: RunItem; kind: "count" | "quantities" }) {
+function QuantityMath({ item }: { item: RunItem }) {
+  return (
+    <>
+      {item.branches.map((branch) => (
+        <section key={branch.branchId}>
+          <strong>{branch.branchName ?? "فرع"}</strong>
+          <p>الكمية وقت الحساب: {knownQuantity(branch.currentQuantity)}</p>
+          <p>{branch.dailySalesRate === null ? "السرعة اليومية: غير محسوبة" : `السرعة المستخدمة في الحساب: ${formatQuantity(branch.dailySalesRate)}`}</p>
+          <p>الهدف حسب أيام التوفير: {formatQuantity(branch.target)}</p>
+          <p>المطلوب حسب الحساب: {formatQuantity(branch.need)}</p>
+          <p>الفائض حسب الحساب: {formatQuantity(branch.surplus)}</p>
+        </section>
+      ))}
+      <p>إجمالي المطلوب: {formatQuantity(item.requiredQuantity)}</p>
+    </>
+  );
+}
+
+function LiveBranchLines({ client, item, kind, onMessage }: { client: ShortageClient; item: RunItem; kind: "count" | "quantities"; onMessage: (message: string) => void }) {
   const [branches, setBranches] = useState<ItemBranchState[] | null>(null);
   useEffect(() => {
     let gone = false;
@@ -909,14 +933,15 @@ function LiveBranchLines({ client, item, kind, onMessage, onBusy, onConfirm }: P
         );
       })}
       {kind === "quantities" ? <p>إجمالي المطلوب: {formatQuantity(item.requiredQuantity)}</p> : null}
-      {kind === "quantities" && branches !== null ? (
-        <BranchCountsAndCorrection client={client} itemId={item.itemId} onMessage={onMessage} onBusy={onBusy} onConfirm={onConfirm} />
-      ) : null}
     </>
   );
 }
 
-function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfirm }: PanelProps & { itemId: string }) {
+/**
+ * «كمية صنف» كما في النظام القديم: بطاقة لكل فرع فيها رصيده على المركز وزر «تصحيح»، ثم «إجمالي الكمية المتاحة» و«تحديث».
+ * التصحيح يُثبَّت على المركز أولاً بالفارق (المفترضة = الرصيد الظاهر)، ويأخذه الفرع في أول مزامنة.
+ */
+export function BranchQuantities({ client, itemId, canCorrect, quiet = false, onMessage, onBusy, onConfirm }: PanelProps & { itemId: string; canCorrect: boolean; quiet?: boolean }) {
   const run = useAction(onMessage, onBusy);
   const [branches, setBranches] = useState<ItemBranchState[] | null>(null);
   const [target, setTarget] = useState("");
@@ -926,105 +951,14 @@ function BranchCountsAndCorrection({ client, itemId, onMessage, onBusy, onConfir
 
   const load = useCallback(async () => {
     try {
-      setBranches(distinctBy((await client.itemBranches(itemId)).branches, (branch) => branch.branchName));
+      const value = quiet
+        ? await client.itemBranches(itemId)
+        : await run("جاري تحميل الكميات...", () => client.itemBranches(itemId));
+      if (value) setBranches(value.branches);
     } catch (error) {
       onMessage((error as Error).message);
     }
-  }, [client, itemId, onMessage]);
-
-  useEffect(() => { void load(); }, [load]);
-  if (!branches) return <p className="inventory-hint">جاري تحميل الكميات الحالية...</p>;
-
-  function correct() {
-    const branch = branches?.find((entry) => entry.branchId === target);
-    const value = parseCountInput(quantity.trim() === "" ? "0" : quantity);
-    if (!branch) { onMessage("اختر الفرع."); return; }
-    if (value === null) { onMessage("أدخل الكمية الصحيحة."); return; }
-    if (reason.trim().length < 3) { onMessage("يرجى كتابة سبب التصحيح."); return; }
-    const difference = correctionDifference(branch.quantity, value);
-    onConfirm({
-      title: "تصحيح الكمية",
-      // قرار المالك (25 نوفمبر 2026): التصحيح لأي فرع، حتى فرع الجهاز، يُثبَّت على المركز أولاً بالفارق،
-      // ويأخذه الفرع في أول مزامنة بإضافته إلى رصيده الحالي.
-      message: difference === null
-        ? `رصيد ${branch.branchName} غير معروف على المركز، فسيُكتب ${formatQuantity(value)} على المركز كما هو، ويأخذه الفرع في أول مزامنة. هل تريد المتابعة؟`
-        : `المفترضة ${formatQuantity(branch.quantity)}، المعدودة ${formatQuantity(value)}، الفارق ${formatDifference(difference)}. يُثبَّت الفارق على المركز فوراً، ويأخذه ${branch.branchName} في أول مزامنة بإضافته إلى رصيده الحالي، فلا يضيع بيع حدث قبل المزامنة. هل تريد المتابعة؟`,
-      accept: "تصحيح",
-      onAccept: () => {
-        void run("جاري التصحيح...", () => client.correct(itemId, branch.branchId, requestId, value, reason.trim(), branch.quantity)).then((result) => {
-          if (!result) return;
-          setQuantity("");
-          setReason("");
-          setRequestId(newRequestId());
-          onMessage(result.pending
-            ? "ثُبّت التصحيح على المركز. يظهر «قيد التنفيذ في الفرع» حتى يأخذه الفرع في أول مزامنة."
-            : "تم تصحيح الكمية.");
-          void load();
-        });
-      },
-    });
-  }
-
-  return (
-    <div className="inventory-branch-counts">
-      <table className="inventory-table">
-        <thead><tr><th>الفرع</th><th>الرصيد على المركز</th><th>آخر جرد</th><th>تصحيح</th></tr></thead>
-        <tbody>
-          {branches.map((branch) => (
-            <tr key={branch.branchId}>
-              <td>{branch.branchName}{branch.current ? " (هذا الفرع)" : ""}</td>
-              <td>{branch.quantity === null ? "غير معروف" : formatQuantity(branch.quantity)} <small>{formatDateTime(branch.snapshotAt)}</small></td>
-              <td>{branch.lastCountedQuantity === null ? "—" : `${formatQuantity(branch.lastCountedQuantity)} · ${formatDateTime(branch.lastCountedAt)}`}</td>
-              <td>{branch.pendingCorrection === null
-                ? "—"
-                : branch.pendingDelta === null
-                  ? `قيد التنفيذ في الفرع (${formatQuantity(branch.pendingCorrection)})`
-                  : `قيد التنفيذ في الفرع: المفترضة ${formatQuantity(branch.pendingExpected)}، المعدودة ${formatQuantity(branch.pendingCorrection)}، الفارق ${formatDifference(branch.pendingDelta)}`}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="inventory-decision">
-        <label>الفرع
-          <select value={target} onChange={(event) => setTarget(event.target.value)}>
-            <option value="">اختر الفرع</option>
-            {branches.map((branch) => <option key={branch.branchId} value={branch.branchId}>{branch.branchName}</option>)}
-          </select>
-        </label>
-        <label>الكمية المعدودة<CountQuantityField label="الكمية المعدودة" saveOnConfirm={false} value={quantity} onChange={(next) => { setQuantity(next); setRequestId(newRequestId()); }} onEnter={() => undefined} /></label>
-        {(() => {
-          const branch = branches.find((entry) => entry.branchId === target);
-          if (!branch || branch.current) return null;
-          const difference = correctionDifference(branch.quantity, parseCountInput(quantity));
-          return (
-            <p className="inventory-hint" aria-label="فارق التصحيح">
-              المفترضة {formatQuantity(branch.quantity)} · الفارق {formatDifference(difference)}
-            </p>
-          );
-        })()}
-        <label>السبب<input value={reason} maxLength={500} onChange={(event) => { setReason(event.target.value); setRequestId(newRequestId()); }} /></label>
-        <button type="button" className="ghost-button" onClick={correct}>تصحيح</button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * «كمية صنف» كما في النظام القديم: بطاقة لكل فرع فيها رصيده على المركز وزر «تصحيح»، ثم «إجمالي الكمية المتاحة» و«تحديث».
- * التصحيح يُثبَّت على المركز أولاً بالفارق (المفترضة = الرصيد الظاهر)، ويأخذه الفرع في أول مزامنة.
- */
-export function BranchQuantities({ client, itemId, canCorrect, onMessage, onBusy, onConfirm }: PanelProps & { itemId: string; canCorrect: boolean }) {
-  const run = useAction(onMessage, onBusy);
-  const [branches, setBranches] = useState<ItemBranchState[] | null>(null);
-  const [target, setTarget] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [reason, setReason] = useState("");
-  const [requestId, setRequestId] = useState(() => newRequestId());
-
-  const load = useCallback(async () => {
-    const value = await run("جاري تحميل الكميات...", () => client.itemBranches(itemId));
-    if (value) setBranches(distinctBy(value.branches, (branch) => branch.branchName));
-  }, [client, itemId, run]);
+  }, [client, itemId, onMessage, quiet, run]);
 
   useEffect(() => { void load(); }, [load]);
 
